@@ -80,6 +80,4 @@ isolated ephemeral runner (network-isolated, filesystem-isolated, no access to
 host secrets), you would need a VM or a container runtime, which is outside
 the scope of this project.
 
-For public repos, the [GitHub Actions security guidance](
-https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#hardening-for-self-hosted-runners)
-applies regardless.
+For public repos, the [GitHub Actions security guidance](https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#hardening-for-self-hosted-runners) applies regardless.

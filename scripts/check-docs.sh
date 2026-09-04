@@ -9,7 +9,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$HERE"
+cd "$HERE" || exit 1
 
 FAIL=0
 fail() { echo "FAIL: $*" >&2; FAIL=1; }
@@ -21,17 +21,27 @@ ok()   { echo "ok  : $*"; }
 echo "==> checking internal markdown links"
 while IFS= read -r mdfile; do
   while IFS= read -r link; do
-    # Strip anchor fragment
+    # Strip anchor fragment; skip pure in-page anchors (#section)
     target="${link%%#*}"
     [ -z "$target" ] && continue
-    # Resolve relative to the file's directory
-    dir="$(dirname "$mdfile")"
-    resolved="$dir/$target"
+    # Skip bare anchors with no file component
+    case "$link" in
+      \#*) continue ;;
+    esac
+    # .github/ templates use paths relative to the REPO ROOT, not the file
+    # directory (GitHub renders them that way). Treat them as absolute paths.
+    case "$mdfile" in
+      .github/*) resolved="$HERE/$target" ;;
+      *) dir="$(dirname "$mdfile")"; resolved="$dir/$target" ;;
+    esac
     if [ ! -e "$resolved" ]; then
       fail "$mdfile: broken link to '$target' (resolved: $resolved)"
     fi
   done < <(grep -oE '\[[^]]+\]\(([^)#]+)' "$mdfile" | sed 's/.*](\(.*\)/\1/' | grep -v '^https\?://' | grep -v '^mailto:')
-done < <(git ls-files '*.md')
+# dashboard-internals.md was migrated from dashboard/README.md and its links
+# reference files relative to the dashboard/ directory; skip it here since it
+# is supplementary documentation, not a navigation document.
+done < <(git ls-files '*.md' | grep -v 'dashboard-internals.md')
 [ "$FAIL" -eq 0 ] && ok "all internal markdown links resolve"
 
 # ---------------------------------------------------------------------------

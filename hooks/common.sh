@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared by job-started.sh and job-completed.sh. Sourced, never executed.
 #
 # WHY A SLOT DIRECTORY AND NOT `pgrep Runner.Worker`. Counting worker processes
@@ -65,12 +66,12 @@ ADMIT_MAX="$(admit_int "${FLEET_ADMIT_MAX_CONCURRENT:-}" 3)"
 # hold converts a queue into a failed build. After this long the job is admitted
 # regardless and the wait is logged — the fleet is better off with a slow build
 # than a red one.
-ADMIT_MAX_WAIT="$(admit_int "${FLEET_ADMIT_MAX_WAIT_S:-}" 600)"
+ADMIT_MAX_WAIT="$(admit_int "${FLEET_ADMIT_MAX_WAIT_S:-}" 600)"  # shellcheck disable=SC2034
 
 # Matches minFreeDiskGb in lib/capacity.js. Unlike the concurrency limit this
 # one cannot be satisfied by waiting unless cleanup runs, so it relies on the
 # bounded wait above rather than blocking indefinitely.
-ADMIT_MIN_DISK_GB="$(admit_int "${FLEET_ADMIT_MIN_FREE_DISK_GB:-}" 40)"
+ADMIT_MIN_DISK_GB="$(admit_int "${FLEET_ADMIT_MIN_FREE_DISK_GB:-}" 40)"  # shellcheck disable=SC2034
 
 # Never zero: a zero poll with a non-zero wait is a busy loop on a machine that
 # is by definition already under load.

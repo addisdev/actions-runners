@@ -66,6 +66,13 @@ OWN_OWNER="$(basename "$(dirname "${REMOTE%.git}")" 2>/dev/null || echo '')"
 # the coverage buys.
 MIN_LEN=4
 
+# Generic system usernames that must never become patterns. GitHub-hosted
+# macOS runners run as 'runner', Ubuntu runners as 'ubuntu' or 'runner', and
+# many CI environments use 'admin', 'user', or 'ec2-user'. Any of these would
+# match almost every line in a codebase about GitHub Actions runners, turning
+# a security check into a noise generator that gets disabled.
+GENERIC_USERS="runner ubuntu admin user root ec2-user github actions macos linux"
+
 # gh is asked ONCE, up front, and its exit status is checked — because both ways
 # this can fail are bad and they fail in opposite directions.
 #
@@ -153,6 +160,13 @@ patterns \
       case "$p" in
         *[!A-Za-z0-9._-]*) continue ;;
       esac
+      # Skip generic system/CI usernames that appear in almost every project
+      # about GitHub Actions runners (e.g. GitHub-hosted runners run as 'runner').
+      skip=0
+      for _g in $GENERIC_USERS; do
+        [ "$p" = "$_g" ] && skip=1 && break
+      done
+      [ "$skip" -eq 1 ] && continue
       echo "$p"
     done > "$PATTERN_FILE"
 

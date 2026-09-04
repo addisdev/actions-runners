@@ -65,8 +65,7 @@ be lost.
 
 ## The runner binary is updated separately
 
-This project installs the [GitHub Actions runner binary](
-https://github.com/actions/runner/releases), but does not version or update it.
+This project installs the [GitHub Actions runner binary](https://github.com/actions/runner/releases), but does not version or update it.
 The runner binary updates itself via GitHub's runner update mechanism. Check the
 runner version in the dashboard's runner drawer.
 

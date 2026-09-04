@@ -77,8 +77,7 @@ Or use `--scratch-path` (SwiftPM) and `-clonedSourcePackagesDirPath` (Xcode)
 to move caches out of the checkout. One iOS repo went from 236 s to 95 s
 per run after this change.
 
-If you want a clean build (e.g. a release job), use an [ephemeral runner](
-ephemeral-runners.md) instead of disabling caching on the persistent runner —
+If you want a clean build (e.g. a release job), use an [ephemeral runner](ephemeral-runners.md) instead of disabling caching on the persistent runner —
 the cache is the point of running on persistent hardware.
 
 ## Concurrency groups
@@ -131,8 +130,7 @@ If you must use self-hosted runners with a public repo:
 - Use ephemeral runners (they delete their working directory after each job)
 - Never store secrets accessible to the runner outside the GitHub Secrets vault
 - Run the runner as a dedicated limited account, not as yourself
-- Read [GitHub's guidance on self-hosted runner security](
-  https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#hardening-for-self-hosted-runners)
+- Read [GitHub's guidance on self-hosted runner security](https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#hardening-for-self-hosted-runners)
 
 The plan for this fleet is private repos only.
 

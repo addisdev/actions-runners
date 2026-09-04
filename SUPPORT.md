@@ -19,9 +19,7 @@ pressure, auth issues, and migration errors.
 
 ## Questions
 
-For general usage questions, open a [GitHub Discussion](
-https://github.com/addisdev/actions-runners/discussions) if the project has
-Discussions enabled, or an issue tagged `question`.
+For general usage questions, open a [GitHub Discussion](https://github.com/addisdev/actions-runners/discussions) if the project has Discussions enabled, or an issue tagged `question`.
 
 ## Scope
 

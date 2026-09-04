@@ -9,4 +9,4 @@ labels: []
 Use GitHub's private vulnerability reporting instead:
 https://github.com/addisdev/actions-runners/security/advisories/new
 
-See [SECURITY.md](../SECURITY.md) for more information.
+See [SECURITY.md](SECURITY.md) for more information.
