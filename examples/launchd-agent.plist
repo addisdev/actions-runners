@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- LaunchAgent for agent.js on a remote (non-coordinator) Mac.
+     Install: cp launchd-agent.plist ~/Library/LaunchAgents/com.runner-fleet.agent.plist
+     Load:    launchctl load ~/Library/LaunchAgents/com.runner-fleet.agent.plist -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.runner-fleet.agent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/node</string>
+        <!-- Adjust to your fleet root -->
+        <string>/Users/YOURUSERNAME/actions-runners/dashboard/agent.js</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>FLEET_COORDINATOR</key>
+        <!-- Replace with the coordinator's LAN address -->
+        <string>http://coordinator-mac:7878</string>
+
+        <key>FLEET_AGENT_TOKEN</key>
+        <!-- Replace with the token from ./fleetctl.sh token on the coordinator -->
+        <string>REPLACE_WITH_AGENT_TOKEN</string>
+
+        <key>FLEET_HOST_NAME</key>
+        <!-- Replace with a friendly name for this Mac -->
+        <string>mac-studio</string>
+
+        <key>FLEET_ROOT</key>
+        <string>/Users/YOURUSERNAME/actions-runners</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOURUSERNAME/Library/Logs/fleet-agent.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOURUSERNAME/Library/Logs/fleet-agent.log</string>
+</dict>
+</plist>

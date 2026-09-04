@@ -1,0 +1,158 @@
+# Deny by default, then allow back the few files that are actually ours.
+#
+# This is the only safe shape for this directory. It holds sixteen runner
+# installations, and each one carries a `.credentials` and a
+# `.credentials_rsaparams` — the RSA private key that authenticates that runner
+# to GitHub. It also holds 8.4 GB of runner binaries, a 121 MB release tarball,
+# and `_work` trees containing full checkouts of every repo.
+#
+# An allowlist that starts from `*` cannot leak any of that by accident. A
+# denylist enumerating what to exclude would leak the first time a new file
+# appeared in a runner directory — and the thing it leaked would be a key.
+#
+# Because `*` also ignores the runner directories themselves, git never descends
+# into them, so the `svc.sh` / `config.sh` / `run.sh` that ship inside each
+# runner are not picked up by the `!*.sh` rule below. Only the scripts at the
+# top level are.
+*
+
+!.gitignore
+!.gitattributes
+!.node-version
+!README.md
+!*.sh
+
+# GitHub Actions CI and community files. All paths inside .github/ are listed
+# explicitly — a catch-all !.github/**/* would also un-ignore any secrets or
+# workflow outputs that landed there accidentally.
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
+!.github/ISSUE_TEMPLATE/
+!.github/ISSUE_TEMPLATE/*.yml
+!.github/ISSUE_TEMPLATE/*.md
+!.github/PULL_REQUEST_TEMPLATE.md
+!.github/CODEOWNERS
+!.github/dependabot.yml
+
+# Project metadata. Each is named explicitly because `*` denies everything and
+# there is no `!*.md` rule at this level — a blanket one would start tracking
+# whatever notes happened to be left in this directory.
+!LICENSE
+!CONTRIBUTING.md
+!SECURITY.md
+!CODE_OF_CONDUCT.md
+!SUPPORT.md
+!THIRD_PARTY_NOTICES.md
+!CHANGELOG.md
+!.node-version
+
+# Host-local settings: GitHub owner, repo list, launchd label prefix, dashboard
+# grouping. The example is tracked; the real file is not, because everything in
+# it is specific to one machine or one account.
+!fleet.env.example
+
+# Repo tooling. `!scripts/` first: with `*` in force git never descends into an
+# ignored directory, so a rule for the files inside can never match.
+!scripts/
+!scripts/*.sh
+!scripts/*.py
+
+# Runner job hooks, referenced from each runner's .env. Same directory-first
+# rule as above. The admission state these write — .admission/, holding one slot
+# file per running job — is runtime and falls through to the `*` by not being
+# named here, which is the correct default for a directory whose contents are
+# live PIDs.
+!hooks/
+!hooks/*.sh
+
+# Shell tests for the hooks. The JS side lives in dashboard/test/ with the rest
+# of the suite; these are here because what they exercise is bash, run against a
+# throwaway fleet root rather than a real runner.
+!hooks/tests/
+!hooks/tests/*.sh
+
+# runs.sh's discovered repo list. Derived, host-specific, and rebuilt on demand
+# — it falls through to the `*` above by not being named here.
+
+# The dashboard. Un-ignore the directory first — with `*` in force, git never
+# descends into a directory it has ignored, so a rule for the files inside can
+# never match. Then allow back only source extensions: fleet.db, logs/ and
+# anything else the daemon writes at runtime stay ignored by falling through.
+!dashboard/
+!dashboard/lib/
+!dashboard/public/
+!dashboard/*.js
+!dashboard/*.json
+!dashboard/*.md
+!dashboard/lib/*.js
+!dashboard/public/*.js
+!dashboard/public/*.css
+!dashboard/public/*.html
+!dashboard/public/*.webmanifest
+!dashboard/public/assets/
+!dashboard/public/assets/*.svg
+
+# The test suite. Un-ignored for the same reason the source is: a released
+# project whose tests are missing cannot be verified by whoever clones it, and
+# every one of these runs against fixtures with no network and no fleet.
+!dashboard/test/
+!dashboard/test/*.js
+!dashboard/test/fixtures/
+!dashboard/test/fixtures/*.js
+
+# Re-ignore the runtime alert config. `!dashboard/*.json` above un-ignores it,
+# which contradicted the README's claim that it was safe to put a webhook URL
+# there — and a webhook URL usually carries a token in the path. The example
+# file stays tracked; the real one does not.
+dashboard/alerts.config.json
+
+# The auto-remediation bridge. Source in, runtime state out: state.json holds
+# per-alert attempt counts, runs/ holds agent transcripts, and repos/ holds
+# scratch clones — none of which belong in this repo. They fall through to the
+# `*` above by not being un-ignored here, which is why there is no *.json rule.
+!dashboard/autofix/
+!dashboard/autofix/*.js
+!dashboard/autofix/*.sh
+!dashboard/autofix/*.md
+
+# Escalation, the one part of this tree with a dependency. Its source and its
+# lock file are tracked — the lock especially, because an unattended daemon
+# resolving a floating version at install time is how it breaks on a Tuesday.
+# node_modules is not un-ignored here, so it keeps falling through to the `*`
+# above, and so does the Cursor API key: with a deny-by-default list, a
+# credential is excluded because nothing ever allowed it, not because someone
+# remembered to name it.
+!dashboard/autofix/escalate/
+!dashboard/autofix/escalate/*.mjs
+!dashboard/autofix/escalate/package.json
+!dashboard/autofix/escalate/package-lock.json
+
+# The watchdog. Un-ignoring the directory is what makes the difference here:
+# without it `*` kept git from ever descending, so the `!*.sh` rule at the top
+# could not match watchctl.sh and neither file was tracked — the source was
+# present on disk, absent from the repo, and nothing reported that.
+!dashboard/watch/
+!dashboard/watch/*.mjs
+!dashboard/watch/*.sh
+
+# Documentation handbook. Un-ignore directory first (same reason as above),
+# then allow Markdown files. Images go in docs/images/ as optimised PNGs.
+!docs/
+!docs/*.md
+!docs/images/README.md
+!docs/images/
+!docs/images/*.png
+!docs/images/*.svg
+!docs/images/*.md
+
+# Generic setup examples. Exact filename set so a real config accidentally
+# dropped here (e.g. fleet.env) still falls through to `*` and stays ignored.
+!examples/
+!examples/*.yml
+!examples/*.yaml
+!examples/*.json
+!examples/*.plist
+!examples/fleet.env.single-host
+!examples/fleet.env.federated-coordinator
+!examples/fleet.env.federated-agent

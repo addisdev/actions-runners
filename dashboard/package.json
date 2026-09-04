@@ -1,0 +1,16 @@
+{
+  "name": "fleet-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted GitHub Actions runner fleet dashboard. Zero runtime dependencies on purpose.",
+  "type": "module",
+  "main": "fleetd.js",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node fleetd.js",
+    "test": "node --test \"test/*.test.js\"",
+    "test:watch": "node --test --watch \"test/*.test.js\""
+  }
+}

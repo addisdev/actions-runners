@@ -1,0 +1,36 @@
+{
+  "_comment": [
+    "Copy to alerts.config.json to override. That filename is gitignored because",
+    "a webhook URL usually has a token in it. Every key is optional; anything",
+    "omitted falls back to the defaults in lib/alerts.js.",
+    "",
+    "There is deliberately no load-average rule (one ordinary Xcode build drives",
+    "this host past 100 on 12 cores) and no swap-LEVEL rule: macOS never reclaims",
+    "swap, so the number only climbs. swapinWarnPerSec is pages/sec read BACK from",
+    "swap, which is threads stalling — the thing you actually feel.",
+    "",
+    "The webhook is a plain JSON POST, so anything that accepts one works. Use",
+    "'template' to reshape the body for services that want their own keys —",
+    "{severity} {title} {body} {host} {at} are substituted.",
+    "",
+    "ntfy:     url https://ntfy.sh/your-private-topic",
+    "          template { \"topic\": \"your-private-topic\", \"message\": \"{title} — {body}\", \"priority\": 4 }",
+    "Pushover: url https://api.pushover.net/1/messages.json",
+    "          template { \"token\": \"…\", \"user\": \"…\", \"title\": \"{title}\", \"message\": \"{body}\" }",
+    "Slack:    url https://hooks.slack.com/services/…",
+    "          template { \"text\": \"*{title}*\\n{body}\" }",
+    "",
+    "Nothing is sent anywhere until 'webhook.url' is filled in."
+  ],
+
+  "diskWarnGb": 40,
+  "diskCriticalGb": 20,
+  "swapinWarnPerSec": 50,
+  "pressureSustainMs": 300000,
+  "swapSustainMs": 600000,
+  "diskSustainMs": 300000,
+  "stormThreshold": 5,
+
+  "macos": true,
+  "webhook": null
+}

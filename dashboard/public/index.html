@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#111827" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b0f17" media="(prefers-color-scheme: dark)">
+<meta name="description" content="Local operations dashboard for self-hosted GitHub Actions runners.">
+<title>Runner Fleet</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="/site.webmanifest">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-id">
+    <span class="brand-symbol is-connecting" aria-hidden="true">
+      <img class="brand-mark" src="/assets/fleet-mark.svg" alt="">
+      <i class="brand-signal"></i>
+    </span>
+    <div class="brand-copy">
+      <span class="brand-eyebrow">Runner fleet</span>
+      <div class="host-line">
+        <h1 id="host-name">fleet</h1>
+        <span class="host-meta" id="host-meta"></span>
+      </div>
+    </div>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button class="tab is-active" id="tab-fleet" data-view="fleet" role="tab" aria-controls="view-fleet" aria-selected="true" tabindex="0"><span>Fleet</span></button>
+    <button class="tab" id="tab-runs" data-view="runs" role="tab" aria-controls="view-runs" aria-selected="false" tabindex="-1"><span>Runs</span><b class="tab-badge" id="runs-badge" hidden></b></button>
+    <button class="tab" id="tab-analytics" data-view="analytics" role="tab" aria-controls="view-analytics" aria-selected="false" tabindex="-1"><span>Analytics</span></button>
+    <button class="tab" id="tab-lint" data-view="lint" role="tab" aria-controls="view-lint" aria-selected="false" tabindex="-1"><span>Lint</span></button>
+    <button class="tab" id="tab-alerts" data-view="alerts" role="tab" aria-controls="view-alerts" aria-selected="false" tabindex="-1"><span>Alerts</span><b class="tab-badge is-warning" id="alerts-badge" hidden></b></button>
+    <button class="tab" id="tab-capacity" data-view="capacity" role="tab" aria-controls="view-capacity" aria-selected="false" tabindex="-1"><span>Capacity</span></button>
+    <button class="tab" id="tab-hosts" data-view="hosts" role="tab" aria-controls="view-hosts" aria-selected="false" tabindex="-1"><span>Hosts</span></button>
+    <button class="tab" id="tab-control" data-view="control" role="tab" aria-controls="view-control" aria-selected="false" tabindex="-1"><span>Control</span></button>
+  </nav>
+  <div class="topbar-right">
+    <span class="stale" id="stale"></span>
+    <span class="connection" title="Live dashboard connection" aria-live="polite">
+      <span class="dot" id="conn-dot"></span>
+      <span id="conn-label">Connecting</span>
+    </span>
+    <button class="theme-toggle" id="theme-toggle" title="Theme: system" aria-label="Theme: system">
+      <span class="theme-icon theme-icon-moon" aria-hidden="true"></span>
+      <span class="theme-icon theme-icon-sun" aria-hidden="true"></span>
+    </button>
+  </div>
+</header>
+
+<main>
+  <section class="kpis" id="kpis" aria-label="Fleet overview"></section>
+  <section id="drift"></section>
+
+  <div class="view" id="view-fleet" role="tabpanel" aria-labelledby="tab-fleet">
+    <section id="fleet">
+      <div class="empty-state is-loading" role="status">
+        <div class="empty-visual">
+          <img src="/assets/empty-fleet.svg" alt="">
+          <i class="scan-line" aria-hidden="true"></i>
+        </div>
+        <div>
+          <span class="empty-eyebrow">Starting collector</span>
+          <strong>Reading the fleet</strong>
+          <p>Connecting local runners, GitHub state, and host telemetry.</p>
+        </div>
+      </div>
+    </section>
+    <section id="fleet-queue"></section>
+    <section id="unserved"></section>
+  </div>
+
+  <div class="view is-hidden" id="view-runs" role="tabpanel" aria-labelledby="tab-runs" aria-hidden="true">
+    <section id="active"></section>
+    <section id="recent"></section>
+  </div>
+
+  <div class="view is-hidden" id="view-analytics" role="tabpanel" aria-labelledby="tab-analytics" aria-hidden="true"></div>
+
+  <div class="view is-hidden" id="view-lint" role="tabpanel" aria-labelledby="tab-lint" aria-hidden="true"></div>
+
+  <div class="view is-hidden" id="view-alerts" role="tabpanel" aria-labelledby="tab-alerts" aria-hidden="true"></div>
+
+  <div class="view is-hidden" id="view-capacity" role="tabpanel" aria-labelledby="tab-capacity" aria-hidden="true"></div>
+
+  <div class="view is-hidden" id="view-hosts" role="tabpanel" aria-labelledby="tab-hosts" aria-hidden="true"></div>
+
+  <div class="view is-hidden" id="view-control" role="tabpanel" aria-labelledby="tab-control" aria-hidden="true"></div>
+</main>
+
+<div class="drawer" id="drawer" aria-hidden="true" hidden>
+  <div class="drawer-scrim" data-close></div>
+  <aside class="drawer-panel" role="dialog" aria-modal="true" aria-label="Runner detail" tabindex="-1">
+    <button class="drawer-close" data-close aria-label="Close">×</button>
+    <div id="drawer-body"></div>
+  </aside>
+</div>
+
+<footer class="footer" id="footer"></footer>
+<script src="/app.js" type="module"></script>
+</body>
+</html>

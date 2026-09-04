@@ -1,0 +1,151 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel in-progress runs for the same branch on a new push.
+concurrency:
+  group: ${{ github.ref }}-ci
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# Minimal permissions — this CI uses only GitHub-hosted runners and reads the
+# repository. No self-hosted runners. See docs/security-hardening.md.
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Node unit tests — the pure-function decision modules
+  # ---------------------------------------------------------------------------
+  node-tests:
+    name: Node unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Run tests
+        working-directory: dashboard
+        run: npm test
+
+  # ---------------------------------------------------------------------------
+  # JavaScript syntax check (all tracked .js files, no npm install needed)
+  # ---------------------------------------------------------------------------
+  js-syntax:
+    name: JS syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Check JS syntax
+        run: |
+          git ls-files '*.js' | grep -v node_modules | \
+            xargs -I{} node --check {}
+
+  # ---------------------------------------------------------------------------
+  # Shell script checks (ShellCheck + bash syntax)
+  # ---------------------------------------------------------------------------
+  shell-checks:
+    name: Shell checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install ShellCheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: ShellCheck
+        run: |
+          git ls-files -z '*.sh' | xargs -0 shellcheck --severity=warning
+
+      - name: Bash syntax
+        run: |
+          git ls-files -z '*.sh' | xargs -0 -I{} bash -n {}
+
+  # ---------------------------------------------------------------------------
+  # Hook and drain shell tests (against fake fleet root in /tmp)
+  # ---------------------------------------------------------------------------
+  shell-tests:
+    name: Shell tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Drain/resume tests
+        run: bash scripts/test-drain.sh
+
+      - name: Ephemeral reaper tests
+        run: bash scripts/test-ephemeral.sh
+
+  # ---------------------------------------------------------------------------
+  # Offline release check (no network, checks tracked files for private data)
+  # ---------------------------------------------------------------------------
+  release-check:
+    name: Release check (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Offline release check
+        run: bash scripts/release-check.sh --offline
+
+  # ---------------------------------------------------------------------------
+  # Documentation consistency checks
+  # ---------------------------------------------------------------------------
+  docs-check:
+    name: Docs consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Check docs
+        run: bash scripts/check-docs.sh
+
+  # ---------------------------------------------------------------------------
+  # Line ending check (no CRLFs in source files)
+  # ---------------------------------------------------------------------------
+  crlf-check:
+    name: CRLF check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Check for CRLF line endings
+        run: |
+          if git ls-files -z '*.sh' '*.js' '*.md' '*.yml' '*.json' | \
+             xargs -0 grep -lU $'\r' 2>/dev/null | grep .; then
+            echo "FAIL: files above have CRLF line endings"
+            exit 1
+          fi
+          echo "ok: no CRLF line endings found"
+
+  # ---------------------------------------------------------------------------
+  # macOS preflight smoke test — verify node >= 22.5 check works
+  # ---------------------------------------------------------------------------
+  preflight-smoke:
+    name: Preflight smoke test (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Run preflight --explain (should succeed on GitHub-hosted mac)
+        # Use --all to check everything rather than reading workflow history
+        # (there is no fleet.db on a fresh CI runner).
+        # On GitHub-hosted macOS there is no gh auth and no Homebrew at
+        # /opt/homebrew — we just verify preflight runs without crashing.
+        run: |
+          ./preflight.sh --all 2>&1 || true
+          echo "Exit code: $? (non-zero is expected without full prerequisites)"

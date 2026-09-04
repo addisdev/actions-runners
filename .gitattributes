@@ -1,0 +1,5 @@
+# Everything here is shell, JS or Markdown consumed on macOS. A CRLF file that
+# reaches this repo breaks more than it looks like it should: a `\r` on a blank
+# line in fleet.env is a command bash cannot find, and a `\r` at the end of
+# FLEET_LABEL_PREFIX=... silently becomes part of the launchd label.
+* text=auto eol=lf

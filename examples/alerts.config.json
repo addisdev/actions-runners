@@ -1,0 +1,34 @@
+{
+  "rules": [
+    {
+      "id": "runner-offline",
+      "type": "runner-offline",
+      "thresholdMinutes": 5,
+      "note": "Alert if a runner has been offline for more than 5 minutes"
+    },
+    {
+      "id": "queue-stuck",
+      "type": "queue-stuck",
+      "thresholdMinutes": 10,
+      "note": "Alert if any job has been queued for more than 10 minutes"
+    },
+    {
+      "id": "load-high",
+      "type": "load-high",
+      "thresholdLoadPerCore": 1.0,
+      "note": "Alert if load per core exceeds 1.0 (host under heavy pressure)"
+    },
+    {
+      "id": "swap-high",
+      "type": "swap-high",
+      "thresholdSwapinsPerSec": 100,
+      "note": "Alert if swap in rate exceeds 100/s (memory pressure)"
+    },
+    {
+      "id": "disk-low",
+      "type": "disk-low",
+      "thresholdFreeGb": 20,
+      "note": "Alert if free disk falls below 20 GB"
+    }
+  ]
+}

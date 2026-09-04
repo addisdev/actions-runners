@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 190" role="img" aria-labelledby="title desc">
+  <title id="title">Runner fleet waiting for its first snapshot</title>
+  <desc id="desc">A small command center with connected runner nodes coming online.</desc>
+  <defs>
+    <linearGradient id="panel" x1="73" y1="31" x2="284" y2="168" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1E293B"/>
+      <stop offset="1" stop-color="#0B1120"/>
+    </linearGradient>
+    <linearGradient id="rail" x1="44" y1="53" x2="316" y2="144" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#93C5FD"/>
+      <stop offset="1" stop-color="#3B82F6"/>
+    </linearGradient>
+    <filter id="shadow" x="44" y="10" width="272" height="178" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#0F172A" flood-opacity=".22"/>
+    </filter>
+  </defs>
+  <g opacity=".55" stroke="#60A5FA" stroke-width="1.5" stroke-linecap="round">
+    <path d="M22 61h53M285 61h53M22 132h53M285 132h53"/>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="66" y="22" width="228" height="146" rx="24" fill="url(#panel)"/>
+    <rect x="66.75" y="22.75" width="226.5" height="144.5" rx="23.25" stroke="#334155" stroke-width="1.5"/>
+  </g>
+  <rect x="86" y="44" width="188" height="14" rx="7" fill="#172033"/>
+  <circle cx="98" cy="51" r="3" fill="#22C55E"/>
+  <rect x="108" y="48.5" width="40" height="5" rx="2.5" fill="#64748B"/>
+  <rect x="86" y="72" width="51" height="68" rx="12" fill="#172033" stroke="#334155"/>
+  <rect x="154" y="72" width="51" height="68" rx="12" fill="#172033" stroke="#334155"/>
+  <rect x="222" y="72" width="51" height="68" rx="12" fill="#172033" stroke="#334155"/>
+  <path d="M111 91h72c10 0 16 6 16 16v14h48" fill="none" stroke="url(#rail)" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="111" cy="91" r="7" fill="#60A5FA"/>
+  <circle cx="179" cy="121" r="7" fill="#60A5FA"/>
+  <circle cx="247" cy="121" r="8" fill="#22C55E"/>
+  <path d="m243 121 2.4 2.4 5-5.8" fill="none" stroke="#052E16" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="#475569">
+    <rect x="96" y="119" width="30" height="4" rx="2"/>
+    <rect x="96" y="128" width="21" height="4" rx="2"/>
+    <rect x="164" y="88" width="29" height="4" rx="2"/>
+    <rect x="164" y="97" width="19" height="4" rx="2"/>
+    <rect x="232" y="88" width="29" height="4" rx="2"/>
+  </g>
+  <g fill="#60A5FA">
+    <circle cx="22" cy="61" r="4"/>
+    <circle cx="338" cy="132" r="4"/>
+  </g>
+  <g fill="#22C55E">
+    <circle cx="22" cy="132" r="4"/>
+    <circle cx="338" cy="61" r="4"/>
+  </g>
+</svg>

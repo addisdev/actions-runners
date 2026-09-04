@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-labelledby="title">
+  <title id="title">Runner Fleet</title>
+  <rect x="1" y="1" width="46" height="46" rx="13" fill="#111827"/>
+  <path d="M14 16h13a7 7 0 0 1 7 7v9M14 32h13" fill="none" stroke="#93C5FD" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="14" cy="16" r="4" fill="#60A5FA"/>
+  <circle cx="14" cy="32" r="4" fill="#60A5FA"/>
+  <circle cx="34" cy="32" r="5" fill="#22C55E"/>
+  <path d="m32 32 1.4 1.4L36.5 30" fill="none" stroke="#052E16" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

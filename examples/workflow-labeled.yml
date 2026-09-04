@@ -1,0 +1,38 @@
+# Workflow using extra runner labels to target a specific Xcode version.
+#
+# Register the runner with the matching label:
+#   ./register.sh owner/project-ios xcode-16.3
+#
+# If you have a second runner, it must carry the same label:
+#   RUNNER_INSTANCE=2 ./register.sh owner/project-ios xcode-16.3
+# Or use the dashboard's Duplicate button, which copies labels automatically.
+
+name: iOS CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.ref }}-ios-build
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build:
+    runs-on: [self-hosted, macos, xcode-16.3]
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        env:
+          # Point DerivedData outside the checkout so git clean -ffdx keeps it
+          DERIVED_DATA: ${{ github.workspace }}/../DerivedData
+        run: |
+          xcodebuild \
+            -scheme ProjectApp \
+            -derivedDataPath "$DERIVED_DATA" \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            test

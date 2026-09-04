@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Periodically reap ephemeral runner directories left by crashes.
+     Install: cp this to ~/Library/LaunchAgents/com.runner-fleet.reap-ephemeral.plist
+     Load:    launchctl load ~/Library/LaunchAgents/com.runner-fleet.reap-ephemeral.plist -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.runner-fleet.reap-ephemeral</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <!-- Adjust the path to your fleet root -->
+        <string>cd "$HOME/actions-runners" &amp;&amp; scripts/reap-ephemeral.sh --apply &gt;&gt; "$HOME/Library/Logs/fleet-reap.log" 2&gt;&amp;1</string>
+    </array>
+
+    <!-- Run every 4 hours -->
+    <key>StartInterval</key>
+    <integer>14400</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+    <key>StandardErrorPath</key>
+    <string>/dev/null</string>
+</dict>
+</plist>

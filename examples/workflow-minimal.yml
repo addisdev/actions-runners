@@ -1,0 +1,22 @@
+# Minimal workflow targeting the self-hosted fleet.
+#
+# Replace "owner/project-ios" with your GitHub repository.
+# The runner must be registered with ./register.sh owner/project-ios.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: [self-hosted, macos, arm64]
+    timeout-minutes: 30      # always set on self-hosted — no 6h default here
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: ./scripts/build.sh

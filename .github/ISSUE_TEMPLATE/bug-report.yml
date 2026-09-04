@@ -1,0 +1,72 @@
+name: Bug report
+description: Something is not working correctly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time to file a bug report. Please fill in as
+        much detail as you can — the more context you provide, the faster this
+        can be investigated.
+
+        **Security vulnerabilities:** please use
+        [private reporting](https://github.com/addisdev/actions-runners/security/advisories/new)
+        rather than this form.
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      description: "e.g. Sequoia 15.4 on Apple Silicon"
+    validations:
+      required: true
+
+  - type: input
+    id: node-version
+    attributes:
+      label: Node version
+      description: "Output of `node -v`"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug. What did you expect, and what did you get?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to trigger the bug.
+      placeholder: |
+        1. Run ./register.sh owner/repo
+        2. Start the dashboard
+        3. ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or error output
+      description: |
+        Paste any relevant log output here. Run `cd dashboard && ./fleetctl.sh logs`
+        for daemon logs, or `tail -200 ~/actions-runners/<runner>/_diag/Runner_*.log`
+        for runner logs.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues before opening this one
+          required: true
+        - label: This is not a security vulnerability (if it is, I will use private reporting)
+          required: true

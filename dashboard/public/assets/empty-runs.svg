@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 190" role="img" aria-labelledby="title desc">
+  <title id="title">Runner fleet at rest</title>
+  <desc id="desc">A healthy runner pipeline with no jobs waiting.</desc>
+  <defs>
+    <linearGradient id="panel" x1="64" y1="33" x2="296" y2="157" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1E293B"/>
+      <stop offset="1" stop-color="#0B1120"/>
+    </linearGradient>
+    <linearGradient id="flow" x1="93" y1="95" x2="267" y2="95" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#60A5FA"/>
+      <stop offset=".68" stop-color="#93C5FD"/>
+      <stop offset="1" stop-color="#22C55E"/>
+    </linearGradient>
+    <filter id="shadow" x="42" y="12" width="276" height="166" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#0F172A" flood-opacity=".22"/>
+    </filter>
+  </defs>
+  <g filter="url(#shadow)">
+    <rect x="62" y="26" width="236" height="138" rx="28" fill="url(#panel)"/>
+    <rect x="62.75" y="26.75" width="234.5" height="136.5" rx="27.25" stroke="#334155" stroke-width="1.5"/>
+  </g>
+  <path d="M94 95h172" stroke="#334155" stroke-width="16" stroke-linecap="round"/>
+  <path d="M94 95h172" stroke="url(#flow)" stroke-width="4" stroke-linecap="round" stroke-dasharray="8 8"/>
+  <g>
+    <rect x="78" y="76" width="34" height="38" rx="10" fill="#172033" stroke="#60A5FA" stroke-width="2"/>
+    <rect x="163" y="76" width="34" height="38" rx="10" fill="#172033" stroke="#60A5FA" stroke-width="2"/>
+    <rect x="248" y="76" width="34" height="38" rx="10" fill="#172033" stroke="#22C55E" stroke-width="2"/>
+    <circle cx="95" cy="91" r="5" fill="#60A5FA"/>
+    <circle cx="180" cy="91" r="5" fill="#60A5FA"/>
+    <circle cx="265" cy="91" r="5" fill="#22C55E"/>
+    <rect x="88" y="103" width="14" height="3" rx="1.5" fill="#475569"/>
+    <rect x="173" y="103" width="14" height="3" rx="1.5" fill="#475569"/>
+    <path d="m259 103 4 4 8-9" fill="none" stroke="#22C55E" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g fill="#60A5FA" opacity=".72">
+    <circle cx="132" cy="95" r="3"/>
+    <circle cx="218" cy="95" r="3"/>
+  </g>
+  <path d="M124 49h112" stroke="#334155" stroke-width="5" stroke-linecap="round"/>
+  <path d="M143 140h74" stroke="#334155" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="124" cy="49" r="3" fill="#60A5FA"/>
+  <circle cx="236" cy="49" r="3" fill="#22C55E"/>
+</svg>

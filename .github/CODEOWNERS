@@ -1,0 +1,4 @@
+# Default owner for everything.
+# When a pull request is opened, the owner below is automatically requested
+# for review. Adjust this to your GitHub username.
+* @addisdev
