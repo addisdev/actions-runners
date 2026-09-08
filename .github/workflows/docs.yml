@@ -69,6 +69,17 @@ jobs:
           # That tag does not exist until after this workflow has passed, so
           # checking them means a release can never be prepared without a red
           # build.
+          #
+          # badge.svg is excluded for the same bootstrap reason: a workflow's
+          # badge 404s until that workflow exists on the default branch, so the
+          # pull request that adds a workflow could never go green. A broken
+          # badge is a visibly broken image; it does not need a link check.
+          #
+          # The last exclusion is any host with no dot in it — coordinator-mac,
+          # mac-main, runner-host. Those are the example hostnames in the
+          # federation and SSH guides. A name with no public suffix cannot
+          # resolve for anyone, which is exactly why it is safe to use as an
+          # example.
           args: >-
             --no-progress
             --max-concurrency 8
@@ -77,6 +88,8 @@ jobs:
             --exclude '^https?://(127\.0\.0\.1|localhost|\[::1\])(:|/|$)'
             --exclude '^https?://[^/]*\.local(:|/|$)'
             --exclude '^https://github\.com/addisdev/actions-runners/(compare|releases/tag)/'
+            --exclude '/badge\.svg'
+            --exclude '^https?://[^/.]+(:[0-9]+)?(/|$)'
             --accept 200,206,429
             site/**/*.html README.md CHANGELOG.md dashboard/README.md
           fail: true
