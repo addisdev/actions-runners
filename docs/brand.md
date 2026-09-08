@@ -99,7 +99,7 @@ opens each one in headless Chromium and screenshots the `.figure` element at
 | `img/social-preview.png` | 2560x1280 (2x of GitHub's 1280x640) | `figures/social-preview.html` |
 | `img/fleet-tab.png`, `runs-tab.png`, `analytics-tab.png`, `lint-tab.png`, `alerts-tab.png`, `capacity-tab.png`, `hosts-tab.png`, `control-tab.png`, `runner-drawer.png` | 2880x1800 (1440x900 at 2x) | `npm run shoot`, against the fixture fleet |
 | `img/fleet-live.png`, `img/analytics-live.png` | 2880x1800 | A real fleet, names replaced. See below |
-| `img/drift-repair.gif` | 1280 wide | `npm run motion`, against a real fleet — **not made yet**; see below |
+| `img/drift-repair.gif`, `img/drift-repair.mp4` | 1280x800 | `npm run motion`, against a real fleet. See below |
 
 ### Why PNG, and why each figure carries its own ground
 
@@ -156,10 +156,10 @@ drift, a drained one, a label mismatch, a repo at capacity, an open alert, a
 stale second host and a lint finding — because a screenshot of a fleet with
 nothing wrong shows none of what the dashboard is for.
 
-!!! warning "Two screenshots are not from fixtures, on purpose"
+!!! warning "Three assets are not from fixtures, on purpose"
 
-    `fleet-live.png` and `analytics-live.png` come from a **real fleet**, with
-    repository and host names replaced.
+    `fleet-live.png`, `analytics-live.png` and `drift-repair.gif` come from a
+    **real fleet**, with repository and host names replaced.
 
     The Analytics tab is the reason. A thirty-day success rate, a p90 queue
     wait and an hosted-macOS allowance saved are numbers a reader would
@@ -167,23 +167,76 @@ nothing wrong shows none of what the dashboard is for.
     invented measurements under a heading that says measured. The Fleet tab is
     shown live alongside it so the two agree about the same fleet.
 
+    The recording is the third because a fixture fleet cannot die; the section
+    below says how it was made.
+
     Everything else in `docs/img/` is fixture data and says so in its alt text.
 
 The convention for both, taken from the project this documentation borrows its
 method from: a number that gets believed and turns out to be wrong costs more
 than one that was never reported.
 
-## The recording that does not exist yet
+## The recording
 
-The one asset here that cannot be produced from fixtures is fifteen seconds of
-a runner dying and being repaired: the Fleet tab watching a runner go from
-`online` to `dead`, drift opening, the alert opening, `health.sh --repair`
-running, and the runner coming back.
+`npm run motion` in `docs/tools/` records `img/drift-repair.gif`: a runner
+dying and being repaired, on a real fleet. It is the one asset here that cannot
+come from fixtures, and `shoot-motion.mjs` is the one tool here that needs a
+fleet to run at all.
 
-It needs a real fleet with a real LaunchAgent to unload, which is the one thing
-a documentation machine does not have. A fixture fleet can hold a dead runner,
-but it cannot *die* — and a recording of a state machine being stepped by a
-script would be a recording of the script, not of the product.
+`deriveDrift` opens `launchd-dead` when launchd holds a job with no process
+behind it, and `health.sh --repair` closes it by restarting the service. A
+fixture fleet can hold a dead runner, but it cannot *die* — and a recording of a
+state machine being stepped by a script would be a recording of the script. So
+the rig drives a real fleet over SSH and films the real page:
 
-So it is missing on purpose rather than approximated, for the same reason there
-is no Analytics screenshot from seeded runs.
+- the front-end is served from `dashboard/public/` in the working tree, so the
+  recording matches the screenshots captured beside it rather than whatever
+  build the fleet host happens to be running;
+- every `/api/` request is proxied to the `fleetd` already running on that
+  host, so every number on screen was measured;
+- the service is killed with `launchctl kill 9`, which leaves the launchd job
+  loaded. Not `launchctl unload` — an unloaded job reads as `launchd-missing`,
+  a different finding with a different fix. `dead` is a loaded job with no
+  process, which is the failure no runner plist's `KeepAlive` will undo,
+  because none of them sets it;
+- the auto-remediation bridge is stopped for the take and started again
+  afterwards. `dashboard/autofix/bridge.js` answers the alert by running
+  `health.sh --repair` within seconds of it opening, which is the right
+  behaviour and the wrong recording.
+
+Frames, not a video stream, for the same reason every figure here is rendered
+rather than drawn: a frame is a screenshot of the real page with animations
+disabled, so each one is a state the dashboard actually held.
+
+**Fifteen seconds is the length of the GIF, not of the take.** `fleetd` polls
+launchd every 15s while the fleet is busy and every 45s while it is idle, and a
+restarted listener needs another 10-20s to reach GitHub — so the sequence runs
+to a hundred-odd seconds and no setting makes it fifteen. Frames are captured
+throughout every 400 ms and sampled onto the output grid uniformly at the end.
+The take behind the committed GIF ran 98 seconds, so the clock runs at 6.5x and
+nothing else does.
+
+The terminal strip is composited into the page rather than over the frames
+afterwards, so a captured frame is a screenshot of the whole composition and
+there is no second pipeline to fall out of step with the first. It shows the
+tail of the real output, with one deliberate exception: `health.sh` sweeps the
+whole fleet, so the dead runner's row and the `-> restarting` line under it
+arrive early and would scroll out of a seven-line strip long before the command
+returns — one frame at playback speed, which is no frames. Those lines are held
+at the bottom of the strip instead of scrolling away. Nothing is invented and
+nothing is reordered.
+
+Names are replaced on the way through, the same substitution `fleet-live.png`
+and `analytics-live.png` use: the daemon's own project order becomes
+`project-a`, `project-b`, …, each repository keeps the role word that makes its
+tile readable, the owner becomes `owner`, and the host becomes `runner-host`.
+The mapping is derived from the snapshot rather than written down, so the
+recording and `fleet-live.png` name the same fleet the same way rather than
+agreeing by hand. A project name that is also a word this product says about
+itself — this fleet has a group called `actions` and one called `fleet` — is
+replaced only where it is a whole value, because replacing those blind rewrites
+`actions.runner.<label>` and the fleet root along with them.
+
+There is no repository name in `shoot-motion.mjs`. The runner to kill is named
+on the command line, and should be one whose repository has a second runner
+still serving it — the rig says so at startup when it is not.

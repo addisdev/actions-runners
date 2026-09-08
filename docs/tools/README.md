@@ -16,6 +16,7 @@ npx playwright install chromium     # once
 | `npm run assets` | Renders every `docs/figures/*.html` to `docs/img/<name>.png` at 2x |
 | `npm run assets -- --only architecture` | One figure, by file name without `.html` |
 | `npm run shoot` | Serves the real dashboard against the fixture fleet and captures every tab |
+| `npm run motion -- --runner <dir>` | Records `drift-repair.gif` and `.mp4` against a **real** fleet — see below |
 
 The rendered PNGs are committed, so building the documentation site needs
 neither Node nor a browser — only `mkdocs`.
@@ -39,10 +40,33 @@ The fleet root is a real temporary directory, because `runnerVersions`,
 `/Users/testowner/actions-runners` on the way out so no capture carries this
 machine's own temp path.
 
-There is deliberately no motion capture here. Fifteen seconds of a runner dying
-and being repaired needs a real LaunchAgent to unload; a fixture fleet can hold
-a dead runner but cannot die, and a recording of a state machine being stepped
-by a script is a recording of the script. See `docs/brand.md`.
+## The one tool here that needs a fleet
+
+`shoot-motion.mjs` records `drift-repair.gif`, and it is the exception to
+everything above: a runner dying and being repaired needs a real LaunchAgent to
+lose a real process. A fixture fleet can hold a dead runner but cannot die, and
+a recording of a state machine being stepped by a script is a recording of the
+script.
+
+So it drives a fleet host over SSH. It serves `dashboard/public/` from this
+working tree, proxies `/api/` to the `fleetd` already running there, replaces
+repository and host names on the way through, kills the named runner's service,
+runs `health.sh --repair` into a terminal strip over the page, and waits for the
+runner to come back — capturing frames throughout.
+
+```bash
+npm run motion -- --runner <dir-name>     # the take
+npm run motion -- --runner <dir-name> --dry-run
+npm run motion -- --serve                 # the redacted dashboard, no take
+```
+
+It stops the auto-remediation bridge for the length of the take and starts it
+again afterwards, because `autofix/bridge.js` would otherwise repair the runner
+within seconds of the alert. `--runner` has no default: it should name a runner
+whose repository has a second runner still serving it, which is a judgement
+about a particular fleet rather than a constant, and it is why there is no
+repository name anywhere in the file. `docs/brand.md` has the rest, including
+why fifteen seconds is the length of the GIF and not of the take.
 
 ## Why the figures are PNG and not SVG
 
