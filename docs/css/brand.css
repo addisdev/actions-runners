@@ -1,0 +1,43 @@
+/* The dashboard's own palette, pinned exactly.
+   `dashboard/public/style.css` is the source of these values, and it is the
+   thing a reader will have open in another tab — a docs site in a different
+   blue is a docs site for a different product. Material's palette names are a
+   fixed set, so `accent: blue` gets close and these make it right. */
+:root {
+  --fleet-plane: #0b0f17;
+  --fleet-surface: #121925;
+  --fleet-accent: #60a5fa;
+  --fleet-accent-dark: #2563d9;
+  --md-accent-fg-color: #2563d9;
+}
+[data-md-color-scheme="slate"] {
+  --md-accent-fg-color: var(--fleet-accent);
+  --md-primary-fg-color: var(--fleet-plane);
+  --md-default-bg-color: var(--fleet-plane);
+}
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: var(--fleet-plane);
+}
+
+/* Tables carry most of the reference material here — every drift kind, every
+   queue cause, every environment variable — so give them room and stop long
+   code cells wrapping mid-identifier. */
+.md-typeset table:not([class]) th { white-space: nowrap; }
+.md-typeset table:not([class]) code { white-space: nowrap; }
+.md-typeset__table { width: 100%; }
+
+/* Figures are screenshots and diagrams on a near-black ground; a hairline
+   keeps them from bleeding into a light page. */
+.md-typeset img[src*="img/"] {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 3px;
+}
+
+/* Status words appear in prose all over this handbook — `dead`, `offline`,
+   `drift`. Where one is a state the dashboard paints, paint it the same. */
+.md-typeset .status-good { color: #15803d; font-weight: 600; }
+.md-typeset .status-warn { color: #c97900; font-weight: 600; }
+.md-typeset .status-bad  { color: #c93636; font-weight: 600; }
+[data-md-color-scheme="slate"] .md-typeset .status-good { color: #4ade80; }
+[data-md-color-scheme="slate"] .md-typeset .status-warn { color: #f5b942; }
+[data-md-color-scheme="slate"] .md-typeset .status-bad  { color: #f36a6a; }

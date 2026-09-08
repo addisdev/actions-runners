@@ -52,6 +52,10 @@
 # it is specific to one machine or one account.
 !fleet.env.example
 
+# The documentation site's build config and its pinned dependencies.
+!mkdocs.yml
+!requirements-docs.txt
+
 # Repo tooling. `!scripts/` first: with `*` in force git never descends into an
 # ignored directory, so a rule for the files inside can never match.
 !scripts/
@@ -137,14 +141,50 @@ dashboard/alerts.config.json
 !dashboard/watch/*.sh
 
 # Documentation handbook. Un-ignore directory first (same reason as above),
-# then allow Markdown files. Images go in docs/images/ as optimised PNGs.
+# then allow Markdown files. Subdirectories each need their own directory rule:
+# with `*` in force git never descends into a directory it has ignored, so a
+# rule for the files inside can never match on its own.
 !docs/
 !docs/*.md
-!docs/images/README.md
-!docs/images/
-!docs/images/*.png
-!docs/images/*.svg
-!docs/images/*.md
+!docs/design/
+!docs/design/*.md
+!docs/reference/
+!docs/reference/*.md
+
+# The site's stylesheet and its rendered images. docs/img/ is output — every
+# file in it is produced by `npm run assets` or `npm run shoot` in docs/tools/
+# from a source in docs/figures/, and committed so that building the site needs
+# no browser.
+!docs/css/
+!docs/css/*.css
+!docs/img/
+!docs/img/*.png
+!docs/img/*.svg
+!docs/img/*.gif
+
+# Figure sources: one HTML file per figure, the stylesheet they share, and the
+# two OFL font families, so a figure can be regenerated when the mark changes.
+!docs/figures/
+!docs/figures/*.html
+!docs/figures/*.css
+!docs/figures/*.js
+!docs/figures/fonts/
+!docs/figures/fonts/*.woff2
+!docs/figures/fonts/*.txt
+!docs/figures/fonts/*.md
+
+# The rendering and screenshot rig. Source and lock file only: node_modules and
+# the generated demo database fall through to the `*` above by not being named
+# here, which is why there is no *.db rule.
+!docs/tools/
+!docs/tools/*.mjs
+!docs/tools/package.json
+!docs/tools/package-lock.json
+!docs/tools/README.md
+
+# The site build and the Python virtualenv that produces it.
+site/
+.venv/
 
 # Generic setup examples. Exact filename set so a real config accidentally
 # dropped here (e.g. fleet.env) still falls through to `*` and stays ignored.

@@ -1,6 +1,6 @@
 {
-  "name": "Runner Fleet",
-  "short_name": "Fleet",
+  "name": "Actions Runners",
+  "short_name": "Runners",
   "description": "Local operations dashboard for self-hosted GitHub Actions runners.",
   "start_url": "/",
   "display": "standalone",

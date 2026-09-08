@@ -2,7 +2,7 @@
   "name": "fleet-dashboard",
   "version": "0.1.0",
   "private": true,
-  "description": "Self-hosted GitHub Actions runner fleet dashboard. Zero runtime dependencies on purpose.",
+  "description": "Actions Runners: the fleet dashboard. Zero runtime dependencies on purpose.",
   "type": "module",
   "main": "fleetd.js",
   "engines": {
