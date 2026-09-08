@@ -1,37 +1,42 @@
-# Self-hosted GitHub Actions runner fleet
+# Actions Runners
 
-Register, supervise, and observe many self-hosted GitHub Actions runners on
-one Apple Silicon Mac — one runner per repo, each its own directory and
-LaunchAgent — plus a dashboard that puts every runner and every repo's CI
-on a single page.
+[![CI](https://github.com/addisdev/actions-runners/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/addisdev/actions-runners/actions/workflows/ci.yml)
+[![Docs](https://github.com/addisdev/actions-runners/actions/workflows/docs.yml/badge.svg?branch=main)](https://addisdev.github.io/actions-runners/)
+[![Release](https://img.shields.io/github/v/release/addisdev/actions-runners?display_name=tag&sort=semver)](https://github.com/addisdev/actions-runners/releases)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-**Platform:** macOS on Apple Silicon only. One Mac, no Kubernetes, no cloud
-control plane. If you want cloud autoscaling, use
-[actions-runner-controller](https://github.com/actions/actions-runner-controller)
-instead.
+![Actions Runners: many self-hosted GitHub Actions runners on one Mac, and the page that says whether any of them is broken](docs/img/banner.png)
 
-> ⚠️ **Self-hosted runners on public repos are a security risk.** Any fork PR
-> can execute code on your Mac. This project is designed for private repos with
-> trusted contributors. Read the [security guide](docs/security-hardening.md)
-> before proceeding.
+Register, supervise and observe a fleet of self-hosted GitHub Actions runners
+on one Apple Silicon Mac — one runner per repo, each its own directory and its
+own LaunchAgent. One Node daemon with no dependencies and no build step polls
+GitHub and the machine, keeps everything it learns in SQLite forever, and
+serves a single page.
 
-## Why self-host on Apple Silicon
+The dashboard exists because GitHub has no cross-repo Actions view, and half of
+the question — *is that runner even alive* — is not answerable from GitHub at
+all.
 
-GitHub-hosted macOS minutes bill at **10×** against the included allowance on
-private repos. More critically, one iOS repo exhausting the allowance blocks
-Actions **account-wide**, which takes down cheap Ubuntu jobs in unrelated repos.
-A fleet on hardware you own removes that shared fate.
+![The Fleet tab on a live host: every registered runner online, zero drift, memory pressure normal, and a grid of runner cards grouped by project, every one idle](docs/img/fleet-live.png)
 
-The cost you pay is owning the host's health. Idle listeners are nearly free
-(~7 MB each); two simultaneous Xcode builds are not. The dashboard and admission
-control exist to make that visible and manageable.
+> A live fleet, with repository and host names replaced. Green means launchd,
+> GitHub and this machine agree.
 
-## Requirements
+> [!CAUTION]
+> **Self-hosted runners on public repositories are a security risk.** Any
+> fork's pull request can execute code on your Mac. This project is built for
+> **private repos with trusted contributors**. Read the
+> [security guide](docs/security-hardening.md) before you register anything.
 
-- macOS 14+ on Apple Silicon, with Homebrew at `/opt/homebrew`
-- [`gh` CLI](https://cli.github.com) authenticated with `gh auth login`
-- `python3` (any version) — used by scripts for JSON handling
-- Node **>= 22.5.0** — dashboard only (uses `node:sqlite`)
+## Documentation
+
+**[addisdev.github.io/actions-runners](https://addisdev.github.io/actions-runners/)**
+
+| | |
+|---|---|
+| **[Get started](https://addisdev.github.io/actions-runners/getting-started/)** | A runner registered, the dashboard up, and a real workflow job running on your own Mac. |
+| **[Concepts](https://addisdev.github.io/actions-runners/concepts/)** | What a runner is here, what launchd will not do for it, what drift means, and why a job is queued. |
+| **[Design notes](https://addisdev.github.io/actions-runners/design/)** | Why it is shaped this way. Every argument is grounded in something that went wrong on a real fleet. |
 
 ## Five-minute quick start
 
@@ -45,7 +50,9 @@ cd dashboard && ./fleetctl.sh install   # start the dashboard
 # Open http://localhost:7878
 ```
 
-Point your workflow at the runner:
+Then point a workflow at it. `timeout-minutes` is not optional: GitHub's
+six-hour default never applied to self-hosted runners, so a hung job holds its
+runner until somebody notices.
 
 ```yaml
 jobs:
@@ -57,44 +64,121 @@ jobs:
       - run: ./scripts/build.sh
 ```
 
-## Feature map
+Needs macOS 14+ on Apple Silicon, Homebrew at `/opt/homebrew`, the
+[`gh` CLI](https://cli.github.com) authenticated, `python3`, and Node 22.5 or
+newer for the dashboard. The full list is in
+[Get started](docs/getting-started.md).
 
-| What you need | Where to go |
+## How it fits together
+
+![One macOS host running the runner LaunchAgents, the job hooks and local probes alongside the fleetd daemon, whose collector and server share one in-memory snapshot backed by SQLite; GitHub above it, and below it a browser dashboard reading over SSE and a second Mac's agent reporting inbound over a heartbeat](docs/img/architecture.png)
+
+One process does both jobs. The collector and the server share the snapshot in
+memory, so the live view never polls, and there is one LaunchAgent to reason
+about at 3 am instead of two. Everything runs under launchd — which is also how
+it gets a GitHub token, because `gh` keeps that token in the login keychain and
+only a launchd job can read it.
+
+## What it watches
+
+![A matrix of what this machine says against what GitHub says, with the six disagreeing cells named: launchd-missing, launchd-dead, offline and orphan, plus label-mismatch and stuck-queue as a separate kind of problem](docs/img/drift.png)
+
+**Drift is the set of states where launchd and GitHub disagree about a runner**,
+and each one is silent from whichever side you happen to be looking at. A
+runner registered on GitHub with no LaunchAgent queues jobs forever. A listener
+GitHub calls offline looks fine locally.
+
+One rule exists because **no runner plist sets `KeepAlive`** — launchd loads the
+service, starts it, and then does nothing further. A crashed runner is never
+revived, and the only symptom is one repo's jobs queuing while every other repo
+looks healthy.
+
+The other question the fleet has to answer is why a job is sitting in a queue.
+That used to be one check — *is a runner idle* — which separated the wrong pair,
+because "every runner is busy" and "the host is saturated" both look like *no
+runner is idle*, and only the first is fixed by adding a runner. It is now
+[eight classified causes](https://addisdev.github.io/actions-runners/concepts/#why-a-job-is-queued),
+each carrying the evidence it used, and exactly one of them offers to add a
+runner.
+
+## The numbers exclude what would make them wrong
+
+![The Analytics tab: runs, success rate, CI time, hosted-macOS allowance saved, peak concurrency, never-scheduled runs, and a table classifying why jobs failed and whose problem each cause is](docs/img/analytics-live.png)
+
+Cancelled runs are out of every duration percentile, because a cancelled run's
+duration measures how long until something killed it. Jobs that never reached a
+runner are out of concurrency, because they present as day-long intervals
+overlapping everything — 139 of them once reported a peak concurrency of 34 on
+a host with 16 runners, a number that cannot happen.
+
+`conclusion = 'failure'` is one value covering causes that need different people
+to do different things. Measured over 30 days on this fleet, **58% of failed
+jobs were not about the code at all** — they were the account's Actions spending
+limit refusing to start the job, which blocks self-hosted jobs too, on runners
+that were idle and healthy the whole time.
+
+## Why self-host on Apple Silicon
+
+GitHub-hosted macOS minutes bill at **10x** against the included allowance on
+private repos. More critically, one iOS repo exhausting that allowance blocks
+Actions **account-wide**, taking down the cheap Ubuntu jobs in unrelated repos
+with it. A fleet on hardware you own removes that shared fate.
+
+The cost you pay is owning the host's health. Idle listeners are nearly free at
+about 7 MB each; two simultaneous Xcode builds are not. Sizing is per repo
+rather than fleet-wide, because average concurrency across 27 runners was
+**0.2** while **21% of 7,631 jobs still waited over a minute to start** — work
+queueing while 26 runners sat idle, because a runner serves one job at a time
+and each repo had exactly one.
+
+If you want cloud autoscaling, use
+[actions-runner-controller](https://github.com/actions/actions-runner-controller)
+instead. This is one Mac, no Kubernetes, no cloud control plane.
+
+## What is in here
+
+| | What it is |
 |---|---|
-| First runner, dashboard up | [Installation guide](docs/installation.md) |
-| Workflow labels and caching | [Workflows guide](docs/workflows.md) |
-| Understand the dashboard tabs | [Dashboard guide](docs/dashboard.md) |
-| Health checks and cleanup schedules | [Operations guide](docs/operations.md) |
-| Stop a runner gracefully | [Drain/resume](docs/operations.md#draining-a-runner-for-maintenance) |
-| Cap concurrent builds | [Admission and scaling](docs/admission-and-scaling.md) |
-| Add a second Mac | [Federation guide](docs/federation.md) |
-| Isolate a release build | [Ephemeral runners](docs/ephemeral-runners.md) |
-| LAN access or SSH tunnels | [Security hardening](docs/security-hardening.md) |
-| All config variables | [Configuration reference](docs/configuration.md) |
-| Something is broken | [Troubleshooting](docs/troubleshooting.md) |
-| Upgrade or roll back | [Upgrading guide](docs/upgrading.md) |
+| **[`dashboard/`](dashboard)** | The daemon and the page. `fleetd.js`, the collector and server, SQLite, and a browser UI with no build step. Zero runtime dependencies, on purpose. |
+| **Fleet scripts** | `preflight.sh`, `register.sh`, `status.sh`, `health.sh`, `runs.sh`, `cleanup.sh` at the top level; the rest in [`scripts/`](scripts). Every destructive one is dry-run by default. |
+| **[`hooks/`](hooks)** | `job-started` and `job-completed`. The only mechanism that can hold a job already dispatched to a runner. |
+| **[`examples/`](examples)** | Workflow files, `fleet.env` for three deployment shapes, and the LaunchAgent plists. |
+| **[`docs/`](docs)** | The handbook, its figures, and the rig that renders them. |
 
-## Scripts
+Every script is documented with its flags and what it refuses to do in the
+[scripts reference](docs/reference/scripts.md).
 
-| Script | What it does |
-|---|---|
-| `preflight.sh` | Check a host for what the workflows assume. `--explain` shows inference. |
-| `register.sh` | Register a runner for a repo. `RUNNER_INSTANCE=2` adds a second. |
-| `status.sh` | Fleet at a glance: every runner, its status, and what it costs idle. |
-| `health.sh` | Per-runner launchd + GitHub state. `--repair` restarts dead services. |
-| `runs.sh` | Fleet-wide view of what is building. `--watch` to follow. |
-| `cleanup.sh` | Prune stale DerivedData, dead simulators, old `_diag`. Dry run unless `--apply`. |
-| `scripts/deregister.sh` | Remove one named runner. Dry run unless `--apply`. |
-| `scripts/drain-runner.sh` | Stop a runner after its current job. |
-| `scripts/install-hooks.sh` | Point every runner at the job hooks. Dry run unless `--apply`. |
-| `scripts/ephemeral-runner.sh` | One job in a fresh directory, then delete it. |
-| `scripts/reap-ephemeral.sh` | Remove ephemeral directories a crash left behind. |
-| `scripts/release-check.sh` | Fail if anything host-specific reached a tracked file. |
-| `dashboard/` | The fleet dashboard. See [dashboard/README.md](dashboard/README.md). |
+## Things learned the hard way
 
-## Documentation
+Each of these changed the design, and each is written up properly in the
+[design notes](https://addisdev.github.io/actions-runners/design/).
 
-Full handbook at **[docs/README.md](docs/README.md)**.
+- **Swap used on macOS is an accumulator, not a gauge.** The host tile once led
+  with it and showed orange on a perfectly healthy machine: 4.3 GB of swap
+  "used" while memory was 71% free, load was 1.0, and thirty seconds of
+  sampling showed zero swapins. It now leads with the kernel's own memory
+  pressure and the swap-in *rate*.
+- **Alerting on levels rather than transitions sends 240 notifications an hour
+  for one dead runner**, and the second one is already ignored.
+- **There is deliberately no load-average rule.** One ordinary Xcode build
+  drives load past 100 on 12 cores. Alerting on that fires on healthy behaviour
+  every day, which is how people learn to ignore alerts.
+- **Removal has to name its target.** `deregister.sh` replaced a script whose
+  only selector was `--keep <dir,dir,…>` — to remove one runner you named every
+  *other* runner, and an empty or mistyped keep-list removed everything.
+- **A `done` flag that is only recomputed inside the pass it gates is a latch.**
+  The backfill reported `complete, 0 pending` while 17 completed runs had no job
+  detail at all. The symptom was silence.
+- **The YAML is parsed, not grepped.** A line scanner reads `runs-on:` out of a
+  heredoc and reports a job that does not exist, and one finding like that is
+  enough for somebody to stop believing the whole screen.
+
+## Contributing
+
+Issues and pull requests are welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) has
+the layout, the test commands and the release gates;
+[`SUPPORT.md`](SUPPORT.md) says where to ask a question. Security reports go
+through [`SECURITY.md`](SECURITY.md), not the issue tracker.
 
 ## License
 
