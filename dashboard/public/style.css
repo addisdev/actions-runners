@@ -258,7 +258,15 @@ section { margin-bottom: 26px; }
 
 .view.is-hidden { display: none; }
 .view.is-entering { animation: view-enter 280ms cubic-bezier(.2, .7, .2, 1) both; }
-.is-hidden { display: none; }
+
+/* `!important` because this is a utility class competing with layout rules on
+   equal specificity, and source order decided the winner. `.kpis` sets
+   `display: grid` four rules below, so `#kpis.is-hidden` stayed a grid and the
+   live KPI row rendered on every tab — including Analytics, which brings its
+   own KPIs for the selected window. app.js toggles this class precisely to
+   stop that, with a comment saying showing both "stacks two different meanings
+   of 'runs' on one screen", and the toggle had no effect. */
+.is-hidden { display: none !important; }
 
 /* -------------------------------------------------------------- stat tiles */
 
