@@ -6,9 +6,19 @@ that runs on the same machine as your runners. Open
 
 For installation, see [Get started → Install the dashboard](getting-started.md#5-install-the-dashboard).
 
+!!! note "The screenshots on this page are a fixture fleet"
+
+    Every repository, host and runner name below is invented, and the numbers
+    come with them. They are the real interface rendering fixture data, so that
+    a screenshot of the Analytics tab cannot be mistaken for a measurement.
+    `docs/tools/shoot-dash.mjs` builds the fleet and captures them; the two
+    images in the README that *are* from a live fleet say so where they appear.
+
 ## Tabs
 
 ### Fleet
+
+![The Fleet tab: seven summary tiles across the top, three drift rows naming a dead LaunchAgent, a label mismatch and a repo at capacity, then every runner as a card grouped by project](img/fleet-tab.png)
 
 The main view. Shows every registered runner grouped by project, with live
 status badges.
@@ -28,11 +38,15 @@ status badges.
 Click any runner to open the **runner drawer**: recent events, job history,
 version info, diagnostic log summary, and action buttons.
 
+![The runner drawer for a runner in launchd-dead drift: last exit code, the errors its own log recorded, a runner version that GitHub auto-updated, seven-day utilisation, and the actions available on it](img/runner-drawer.png)
+
 **Drift alerts** appear under a runner when the local and GitHub states
 disagree — for example, the service is running but GitHub says the runner is
 offline, which usually means a registration that needs re-running.
 
 ### Runs
+
+![The Runs tab: what is building now with elapsed time and the runner that claimed it, the queued jobs with their diagnosed cause, and the recent runs below](img/runs-tab.png)
 
 Live and recent runs across all repos. Job status, duration, and runner
 assignment. Click a run to open it on GitHub.
@@ -44,10 +58,14 @@ the autoscaler could help.
 
 ### Analytics
 
+![The Analytics tab: runs, success rate, CI time, allowance saved, peak concurrency and never-scheduled runs, over a table classifying why jobs failed and whose problem each cause is](img/analytics-tab.png)
+
 30-day job history: count, duration percentiles (p50/p95), failure rate, and
 runner utilisation per repo. Updated when you open the tab. Not live-streamed.
 
 ### Lint
+
+![The Lint tab: workflow findings grouped by rule, each naming the file, the branches it applies to, and what the rule catches](img/lint-tab.png)
 
 Workflow file analysis across all repos with registered runners. Flags:
 - Unbounded matrix jobs (n×m runners needed)
@@ -60,11 +78,15 @@ suggested fix.
 
 ### Alerts
 
+![The Alerts tab: one open alert with how long it has been open, above the history of rules that fired and closed](img/alerts-tab.png)
+
 Configurable alert rules for runner offline time, queue depth, error rates,
 and more. Configure in `dashboard/alerts.config.json` — see the example in
 `examples/alerts.config.json`.
 
 ### Capacity
+
+![The Capacity tab: the per-repo sizing verdict, the headroom gate with the reason it would refuse, and the admission panel](img/capacity-tab.png)
 
 **Sizing panel**: shows the recommended runner count for each repo based on
 observed peak concurrent jobs. Toggle autoscaling on/off here.
@@ -81,6 +103,8 @@ reality before any action is taken.
 
 ### Control
 
+![The Control tab: the action catalogue, the live settings table showing which layer each value came from, and the audit log](img/control-tab.png)
+
 Manual actions: duplicate a runner, deregister one, drain/resume, run a health
 check. Every action requires the bearer token (paste once; stored in
 `localStorage`). Dangerous actions show a confirmation dialog.
@@ -89,6 +113,8 @@ check. Every action requires the bearer token (paste once; stored in
 action.
 
 ### Hosts
+
+![The Hosts tab: this machine live, and a second Mac marked stale after six minutes without a heartbeat, its runners greyed rather than removed](img/hosts-tab.png)
 
 Federated host view (when agents are configured). Shows each remote Mac's
 runners, load, disk, and drain state. A host whose heartbeat is stale (>2

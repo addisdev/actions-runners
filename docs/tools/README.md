@@ -15,12 +15,34 @@ npx playwright install chromium     # once
 |---|---|
 | `npm run assets` | Renders every `docs/figures/*.html` to `docs/img/<name>.png` at 2x |
 | `npm run assets -- --only architecture` | One figure, by file name without `.html` |
-| `npm run demo-db` | Builds `demo.db`, the fixture fleet the screenshots are taken against |
-| `npm run shoot` | Starts `fleetd` on a spare port against `demo.db` and captures every tab |
-| `npm run motion` | Records the drift-and-repair loop as a GIF. Needs a real fleet |
+| `npm run shoot` | Serves the real dashboard against the fixture fleet and captures every tab |
 
 The rendered PNGs are committed, so building the documentation site needs
 neither Node nor a browser — only `mkdocs`.
+
+## How the screenshots are possible without a fleet
+
+`fleetd` builds its runner list from `discoverRunnerDirs`, `launchctl list`,
+`ps` and the GitHub API. None of those exist on a machine that is only writing
+documentation, which is why this repository shipped v0.1.0 with no screenshot
+of any of its eight tabs.
+
+`shoot-dash.mjs` serves the real `dashboard/public/` and answers every `/api/`
+route from `fixture-fleet.mjs`. The page is unmodified product code; only its
+data is fixture. The snapshot comes from calling the daemon's own
+`buildRunners`, `deriveDrift` and `deriveGroups` rather than from hand-writing
+what they return — a hand-written snapshot stops matching the code the first
+time somebody changes it, and does so silently.
+
+The fleet root is a real temporary directory, because `runnerVersions`,
+`diagSummary` and `diagTail` have to read actual files. It is presented as
+`/Users/testowner/actions-runners` on the way out so no capture carries this
+machine's own temp path.
+
+There is deliberately no motion capture here. Fifteen seconds of a runner dying
+and being repaired needs a real LaunchAgent to unload; a fixture fleet can hold
+a dead runner but cannot die, and a recording of a state machine being stepped
+by a script is a recording of the script. See `docs/brand.md`.
 
 ## Why the figures are PNG and not SVG
 
