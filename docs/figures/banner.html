@@ -1,0 +1,68 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Banner</title>
+<link rel="stylesheet" href="brand.css">
+<style>
+  .figure { width: 1280px; height: 640px; }
+
+  /* The two display sizes brand.css does not carry, because no diagram needs
+   * them: a 22 px title is the largest thing in a figure that is mostly
+   * labels, and the largest thing on a banner is the name. Same faces, same
+   * tokens, no new colours. */
+  svg .t-display { font-size: 56px; font-weight: 700; letter-spacing: -1.4px; }
+  svg .t-lede    { font-size: 20px; font-weight: 400; }
+</style>
+
+<div class="figure">
+  <svg width="1280" height="640" viewBox="0 0 1280 640" xmlns="http://www.w3.org/2000/svg"
+       role="img" aria-label="Actions Runners: the project mark and name, above the line — many self-hosted GitHub Actions runners on one Mac, and the page that says whether any of them is broken. To the right, one Mac holding sixteen runner LaunchAgents as small chips: thirteen idle, two running a job, and one dead. A footer names the parts: fleetd, dashboard, hooks, agent.js.">
+
+    <!-- ── the mark ───────────────────────────────────────────────────────
+         Inlined from docs/img/mark-mono.svg rather than referenced, because a
+         figure that loads an external image can render a hole. Its viewBox is
+         48x48; the transform puts its ink at x 80, y 178, about 77 px wide.
+         currentColor resolves to .figure's colour, which is --ink. -->
+    <g transform="translate(54, 146.8) scale(2.6)">
+      <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+        <path d="M14 16h13a7 7 0 0 1 7 7v9M14 32h13"/>
+      </g>
+      <circle cx="14" cy="16" r="4" fill="currentColor"/>
+      <circle cx="14" cy="32" r="4" fill="currentColor"/>
+      <circle cx="34" cy="32" r="5.5" fill="currentColor"/>
+      <!-- The tick is cut out of the node in the ground colour, not drawn in
+           green: a monochrome mark with a second colour in it is two marks. -->
+      <path d="m31.6 32 1.7 1.7L36.8 30" fill="none" stroke="#0b0f17"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <!-- ── the name, and what it is ───────────────────────────────────── -->
+    <text x="80" y="310" class="t-display">Actions Runners</text>
+    <text x="80" y="368" class="t-lede">Many self-hosted GitHub Actions runners on one Mac,</text>
+    <text x="80" y="398" class="t-lede">and the page that says whether any of them is broken.</text>
+
+    <!-- ── the fleet ──────────────────────────────────────────────────── -->
+    <rect x="688" y="118" width="512" height="340" rx="14" class="enclosure"/>
+    <text x="716" y="152" class="t-cap muted">ONE MAC</text>
+    <g id="fleet"></g>
+    <text x="716" y="436" class="t-sm muted">one runner per repo, one LaunchAgent each</text>
+
+    <!-- ── the parts ──────────────────────────────────────────────────── -->
+    <path d="M80 548 H1200" class="enclosure"/>
+    <text x="80" y="584" class="mono t-sm muted">fleetd · dashboard · hooks · agent.js</text>
+  </svg>
+</div>
+
+<script type="module">
+  import { agentGrid } from "./symbols.js";
+
+  // Sixteen runner LaunchAgents: thirteen idle, two with a job on them, and
+  // one that launchd loaded and will never revive. The red one is the whole
+  // argument of the project, so it is placed off the centre and off the edge —
+  // somewhere a reader finds it by scanning rather than by being shouted at.
+  document.getElementById("fleet").innerHTML = agentGrid(728, 190, [
+    "good", "good",    "good",     "good",
+    "good", "busy",    "good",     "good",
+    "good", "good",    "critical", "good",
+    "busy", "good",    "good",     "good",
+  ], { perRow: 4, gapX: 116, gapY: 60, w: 84, h: 34 });
+</script>

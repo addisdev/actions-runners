@@ -1,0 +1,154 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Architecture</title>
+<link rel="stylesheet" href="brand.css">
+<style>
+  .figure { width: 1280px; height: 800px; }
+</style>
+
+<div class="figure">
+  <svg width="1280" height="800" viewBox="0 0 1280 800" xmlns="http://www.w3.org/2000/svg"
+       role="img" aria-label="GitHub above; one Mac running the runner LaunchAgents, the job hooks, local probes and the fleetd daemon, whose collector and server share an in-memory snapshot backed by SQLite; a browser dashboard and a second Mac's agent below.">
+    <defs id="defs"></defs>
+
+    <!-- ── GitHub ─────────────────────────────────────────────────────── -->
+    <rect x="430" y="28" width="420" height="62" rx="10" class="panel"/>
+    <text x="454" y="54" class="t-head">GitHub</text>
+    <text x="454" y="76" class="mono t-sm muted">runs · runners · repo roster · rate limit</text>
+
+    <!-- edges to and from the daemon -->
+    <path d="M556 92 V214" class="edge" marker-end="url(#arw)"/>
+    <path d="M724 214 V96" class="edge" marker-end="url(#arw)"/>
+    <text x="544" y="132" class="t-label" text-anchor="end">fast loop</text>
+    <text x="544" y="150" class="t-sm muted" text-anchor="end">15 s building · 45 s asleep</text>
+    <text x="736" y="132" class="t-label">backfill</text>
+    <text x="736" y="150" class="t-sm muted">10 min · 350 calls a pass</text>
+    <text x="736" y="168" class="t-sm muted">until it has caught up, then never</text>
+
+    <!-- ── the host ───────────────────────────────────────────────────── -->
+    <rect x="40" y="186" width="1200" height="380" rx="14" class="enclosure"/>
+    <text x="64" y="214" class="t-head">macOS host</text>
+    <text x="176" y="214" class="t-sm muted">Apple Silicon · your hardware · one user account</text>
+    <text x="1216" y="214" class="t-sm muted" text-anchor="end">everything inside runs under launchd</text>
+
+    <!-- runner LaunchAgents -->
+    <rect x="64" y="238" width="330" height="192" rx="10" class="panel"/>
+    <text x="86" y="266" class="t-cap muted">RUNNER LAUNCHAGENTS</text>
+    <g id="agents"></g>
+    <text x="86" y="374" class="t-sm muted">one per repo · one job at a time</text>
+    <text x="86" y="394" class="t-sm muted">no plist sets KeepAlive, so launchd</text>
+    <text x="86" y="412" class="t-sm muted">never revives a crashed one</text>
+
+    <!-- job hooks -->
+    <rect x="64" y="446" width="330" height="90" rx="10" class="panel"/>
+    <text x="86" y="472" class="t-cap muted">JOB HOOKS</text>
+    <text x="86" y="496" class="mono t-sm">job-started · job-completed</text>
+    <text x="86" y="518" class="t-sm muted">the only thing that can hold a job</text>
+
+    <!-- fleetd -->
+    <rect x="424" y="238" width="400" height="298" rx="10" class="panel-lead"/>
+    <text x="448" y="268" class="t-head">fleetd</text>
+    <text x="516" y="268" class="t-sm muted">one process, two jobs</text>
+
+    <rect x="448" y="286" width="164" height="62" rx="8" class="chip"/>
+    <text x="530" y="312" class="t-label" text-anchor="middle">collector</text>
+    <text x="530" y="332" class="t-sm muted" text-anchor="middle">polls, probes, persists</text>
+
+    <rect x="636" y="286" width="164" height="62" rx="8" class="chip"/>
+    <text x="718" y="312" class="t-label" text-anchor="middle">server</text>
+    <text x="718" y="332" class="t-sm muted" text-anchor="middle">:7878, loopback</text>
+
+    <rect x="448" y="364" width="352" height="44" rx="8" fill="#1d2b40" stroke="#2563d9" stroke-width="1"/>
+    <text x="624" y="392" class="t-label accent" text-anchor="middle">one snapshot, in memory</text>
+    <path d="M530 348 V364" class="edge-accent"/>
+    <path d="M718 348 V364" class="edge-accent"/>
+    <text x="624" y="428" class="t-sm muted" text-anchor="middle">so the live view never polls, and there is</text>
+    <text x="624" y="446" class="t-sm muted" text-anchor="middle">one LaunchAgent to reason about at 3 am</text>
+
+    <g id="db"></g>
+    <text x="624" y="524" class="t-sm muted" text-anchor="middle">runs · jobs · state transitions · host samples, kept forever</text>
+
+    <!-- local probes -->
+    <rect x="854" y="238" width="330" height="176" rx="10" class="panel"/>
+    <text x="876" y="266" class="t-cap muted">LOCAL PROBES</text>
+    <text x="876" y="292" class="mono t-body">launchctl list</text>
+    <text x="876" y="316" class="mono t-body">ps · Runner.Worker</text>
+    <text x="876" y="340" class="mono t-body">vm_stat · df · du</text>
+    <text x="876" y="376" class="t-sm muted">half the question — is that runner</text>
+    <text x="876" y="394" class="t-sm muted">even alive — is not on GitHub</text>
+
+    <!-- the token -->
+    <rect x="854" y="430" width="330" height="106" rx="10" class="panel"/>
+    <text x="876" y="458" class="t-cap muted">THE GITHUB TOKEN</text>
+    <text x="876" y="482" class="mono t-sm">gh auth token, once at startup</text>
+    <text x="876" y="504" class="t-sm muted">from the login keychain, which only</text>
+    <text x="876" y="522" class="t-sm muted">a launchd job can read</text>
+
+    <!-- ── below the host ─────────────────────────────────────────────── -->
+    <text x="64" y="646" class="t-head">the dashboard</text>
+    <text x="64" y="676" class="t-sm muted">one page: Fleet, Runs, Analytics,</text>
+    <text x="64" y="694" class="t-sm muted">Lint, Alerts, Capacity, Hosts, Control</text>
+    <text x="64" y="726" class="mono t-sm muted">localhost:7878</text>
+    <text x="64" y="748" class="t-sm muted">or an SSH tunnel to it, because the</text>
+    <text x="64" y="766" class="t-sm muted">control plane runs shell as this user</text>
+
+    <g id="browser"></g>
+
+    <path d="M556 566 V606" class="edge-accent" marker-end="url(#arw-a)"/>
+    <text x="546" y="592" class="t-sm accent" text-anchor="end">SSE</text>
+    <path d="M700 606 V566" class="edge" marker-end="url(#arw)"/>
+    <text x="712" y="592" class="t-sm muted">actions, bearer token</text>
+
+    <!-- agent.js on another Mac -->
+    <rect x="880" y="606" width="304" height="92" rx="10" class="panel"/>
+    <text x="902" y="636" class="t-head">agent.js</text>
+    <text x="902" y="662" class="t-sm muted">a second Mac, reporting its</text>
+    <text x="902" y="680" class="t-sm muted">runners and its own headroom</text>
+    <path d="M1032 606 V566" class="edge-dashed" marker-end="url(#arw)"/>
+    <text x="1044" y="592" class="t-sm muted">heartbeat, outbound only</text>
+
+    <!-- legend -->
+    <path d="M880 728 h34" class="edge"/>
+    <text x="924" y="733" class="t-sm muted">this host</text>
+    <path d="M880 754 h34" class="edge-dashed"/>
+    <text x="924" y="759" class="t-sm muted">another Mac, no inbound port</text>
+  </svg>
+</div>
+
+<script type="module">
+  import { agentGrid, cylinder, browserFrame, markers } from "./symbols.js";
+  document.getElementById("defs").innerHTML = markers();
+  // Eight runners: six healthy, one building, one that launchd loaded and will
+  // never revive. The dead one is the reason this whole project exists.
+  // Sixteen runners: thirteen idle, two building, and one that launchd loaded
+  // and will never revive. The red one is the reason this project exists.
+  document.getElementById("agents").innerHTML = agentGrid(86, 282, [
+    "good", "good", "busy", "good", "good", "good", "good", "good",
+    "good", "critical", "good", "good", "busy", "good", "good", "good",
+  ], { perRow: 8, gapX: 36, gapY: 28, w: 30, h: 20 });
+  document.getElementById("db").innerHTML = cylinder(544, 462, 160, 54, "fleet.db");
+  // A schematic of the Fleet tab, not a screenshot: eight runner tiles grouped
+  // into two projects, one of them red. The real screenshot is two images
+  // further down the page and does not need previewing here.
+  const bx = 444, by = 606;
+  const tiles = ["good", "good", "busy", "good", "critical", "good", "good", "good"]
+    .map((state, i) => {
+      const x = bx + 20 + (i % 4) * 82, y = by + 62 + Math.floor(i / 4) * 44;
+      const fill = { good: "#4ade80", busy: "#60a5fa", critical: "#f36a6a" }[state];
+      return `<rect x="${x}" y="${y}" width="72" height="34" rx="6" class="chip"/>
+              <circle cx="${x + 11}" cy="${y + 17}" r="3.5" fill="${fill}"/>
+              <rect x="${x + 21}" y="${y + 12}" width="38" height="3" rx="1.5" fill="#3a4658"/>
+              <rect x="${x + 21}" y="${y + 19}" width="26" height="3" rx="1.5" fill="#2c3746"/>`;
+    })
+    .join("");
+  document.getElementById("browser").innerHTML =
+    browserFrame(bx, by, 360, 166, { lead: true }) +
+    // Separate elements rather than one string with padding: SVG collapses
+    // runs of whitespace, so "RUNS  ANALYTICS" renders as one word.
+    ["FLEET", "RUNS", "ANALYTICS", "LINT"]
+      .map((t, i) => `<text x="${bx + 20 + [0, 78, 140, 244][i]}" y="${by + 50}"
+                            class="t-cap ${i === 0 ? "accent" : "muted"}">${t}</text>`)
+      .join("") +
+    tiles +
+    `<text x="${bx + 20}" y="${by + 156}" class="t-sm muted">grouped by project, inferred from the repo names</text>`;
+</script>

@@ -1,0 +1,74 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Social preview</title>
+<link rel="stylesheet" href="brand.css">
+<style>
+  /* GitHub renders this at 1280x640 and crops nothing, but it is shown at
+   * 600 px wide in a link unfurl and at about 320 px in a mobile timeline. So
+   * every size here is set for the 600 px case, which is why the smallest type
+   * on this card is 20 px rather than the 13 px floor the figures use. */
+  .figure { width: 1280px; height: 640px; }
+
+  svg .t-display { font-size: 80px; font-weight: 700; letter-spacing: -2px; }
+  svg .t-lede    { font-size: 34px; font-weight: 400; }
+  svg .t-claim   { font-size: 20px; font-weight: 500; }
+  svg .t-url     { font-size: 20px; font-weight: 400; }
+</style>
+
+<div class="figure">
+  <svg width="1280" height="640" viewBox="0 0 1280 640" xmlns="http://www.w3.org/2000/svg"
+       role="img" aria-label="Actions Runners: many runners on one Mac, and the page that says what is broken. Four labels — one runner per repo, drift detection, zero dependencies, launchd — above the address github.com/addisdev/actions-runners.">
+
+    <!-- ── the mark ───────────────────────────────────────────────────────
+         Inlined from docs/img/mark-mono.svg, not referenced: an external
+         image in a rendered figure is a resource that can fail to load. Its
+         viewBox is 48x48, and it is larger here in proportion to the name
+         than on the banner, because at 320 px wide the mark is the only part
+         of this card still doing any work. -->
+    <g transform="translate(555.85, 55.2) scale(3.4)">
+      <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+        <path d="M14 16h13a7 7 0 0 1 7 7v9M14 32h13"/>
+      </g>
+      <circle cx="14" cy="16" r="4" fill="currentColor"/>
+      <circle cx="14" cy="32" r="4" fill="currentColor"/>
+      <circle cx="34" cy="32" r="5.5" fill="currentColor"/>
+      <path d="m31.6 32 1.7 1.7L36.8 30" fill="none" stroke="#0b0f17"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <text x="640" y="282" class="t-display" text-anchor="middle">Actions Runners</text>
+    <text x="640" y="348" class="t-lede" text-anchor="middle">Many runners on one Mac, and the page that says what is broken.</text>
+
+    <g id="claims"></g>
+
+    <text x="640" y="552" class="mono t-url muted" text-anchor="middle">github.com/addisdev/actions-runners</text>
+  </svg>
+</div>
+
+<script type="module">
+  // Nothing in symbols.js is a labelled chip — agentChip is a status plate
+  // with a dot and two bars, and putting a status dot on the word "launchd"
+  // would be using a state colour as decoration. The shared thing these
+  // borrow is brand.css's own `.chip`, which is what agentChip draws too.
+  //
+  // Four things the project actually does, each checked against the
+  // repository rather than written to fill the row.
+  const claims = ["one runner per repo", "drift detection", "zero dependencies", "launchd"];
+
+  // JetBrains Mono is fixed-pitch at 0.6 em, so a chip can be measured from
+  // its label rather than guessed at and nudged until it stops overlapping.
+  const SIZE = 20, ADVANCE = SIZE * 0.6, PAD = 24, GAP = 20, H = 56, Y = 424;
+  const widths = claims.map((c) => c.length * ADVANCE + PAD * 2);
+  const total = widths.reduce((a, b) => a + b, 0) + GAP * (claims.length - 1);
+
+  let x = (1280 - total) / 2;
+  document.getElementById("claims").innerHTML = claims
+    .map((c, i) => {
+      const w = widths[i], cx = x + w / 2;
+      const frag = `<rect x="${x}" y="${Y}" width="${w}" height="${H}" rx="10" class="chip"/>
+                    <text x="${cx}" y="${Y + H / 2 + 7}" class="mono t-claim" text-anchor="middle">${c}</text>`;
+      x += w + GAP;
+      return frag;
+    })
+    .join("");
+</script>

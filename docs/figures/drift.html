@@ -1,0 +1,117 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Drift</title>
+<link rel="stylesheet" href="brand.css">
+<style>
+  .figure { width: 1280px; height: 680px; }
+</style>
+
+<div class="figure">
+  <svg width="1280" height="680" viewBox="0 0 1280 680" xmlns="http://www.w3.org/2000/svg"
+       role="img" aria-label="A three-by-three matrix. Down the left, what this machine says from launchctl and ps: running, loaded but dead, no LaunchAgent. Across the top, what GitHub says: online, offline, not registered. The three cells on the diagonal agree and are drawn quiet. The other six are the drift kinds: offline and orphan where the runner is running here, launchd-dead and orphan where it is loaded but dead, launchd-missing where there is no LaunchAgent — each with what it costs. A strip below carries the two drift kinds that are not about one runner's liveness: label-mismatch and stuck-queue.">
+    <defs id="defs"></defs>
+
+    <text x="48" y="52" class="t-title">Drift: when this machine and GitHub disagree</text>
+    <text x="48" y="80" class="t-sm muted">Six kinds. Four of them are cells of this grid; each is silent from whichever side you happen to be looking at.</text>
+
+    <!-- ── axes ───────────────────────────────────────────────────────── -->
+    <text x="48" y="116" class="t-cap muted">this machine says</text>
+    <text x="48" y="140" class="mono t-sm muted">launchctl · ps</text>
+
+    <text x="270" y="116" class="t-cap muted">github says</text>
+    <text x="425"  y="142" class="t-label" text-anchor="middle">online</text>
+    <text x="751"  y="142" class="t-label" text-anchor="middle">offline</text>
+    <text x="1077" y="142" class="t-label" text-anchor="middle">not registered</text>
+
+    <!-- the matrix itself: row labels, then the nine cells -->
+    <g id="rows"></g>
+    <g id="cells"></g>
+
+    <!-- ── the two kinds that are not cells of this matrix ─────────────── -->
+    <rect x="48" y="504" width="1184" height="156" rx="12" class="panel"/>
+    <text x="72" y="532" class="t-cap muted">a different shape of problem</text>
+    <text x="72" y="554" class="t-sm muted">Not about one runner's liveness, so neither is a cell above — one is a disagreement between two runners, one is a job that never lands.</text>
+    <g id="strip"></g>
+  </svg>
+</div>
+
+<script type="module">
+  import { agentChip } from "./symbols.js";
+
+  const COLS = [270, 596, 922], CW = 310;
+  const ROWS = [160, 272, 384], RH = 100;
+
+  // What this host reports, and the chip state that draws it.
+  const rows = [
+    { name: "running",         probe: "Runner.Listener has a pid",  chip: "good" },
+    { name: "loaded but dead", probe: "loaded, no process",         chip: "critical" },
+    { name: "no LaunchAgent",  probe: "launchctl has no job for it", chip: "off" },
+  ];
+
+  // Nine cells, row-major. The diagonal agrees; everything else is a drift kind
+  // straight out of deriveDrift() in dashboard/lib/state.js, with that
+  // function's own severity. `orphan` covers both local states in the last
+  // column because it fires on "not registered here" alone, and `launchd-missing`
+  // covers both GitHub states in the last row because offline is still registered.
+  const A = "agree";
+  const cells = [
+    [{ tone: A, kind: "agree", cost: "the healthy case" },
+     { tone: "critical", kind: "offline",         cost: "looks fine locally" },
+     { tone: "serious",  kind: "orphan",          cost: "will never receive a job" }],
+
+    [{ tone: "critical", kind: "launchd-dead",    cost: "never revived" },
+     { tone: A, kind: "agree", cost: "both sides see it down" },
+     { tone: "serious",  kind: "orphan",          cost: "will never receive a job" }],
+
+    [{ tone: "critical", kind: "launchd-missing", cost: "jobs queue forever" },
+     { tone: "critical", kind: "launchd-missing", cost: "jobs queue forever" },
+     { tone: A, kind: "agree", cost: "nothing here, nothing there" }],
+  ];
+
+  document.getElementById("rows").innerHTML = rows
+    .map((r, i) => {
+      const t = ROWS[i];
+      return agentChip(48, t + 30, { state: r.chip }) +
+        `<text x="92" y="${t + 45}" class="t-label">${r.name}</text>
+         <text x="48" y="${t + 73}" class="t-sm muted">${r.probe}</text>`;
+    })
+    .join("");
+
+  document.getElementById("cells").innerHTML = cells
+    .flatMap((row, ri) =>
+      row.map((c, ci) => {
+        const x = COLS[ci], y = ROWS[ri];
+        const hue = c.tone === A ? "var(--good)" : `var(--${c.tone})`;
+        // Agreement is drawn as an empty outline; disagreement is filled, so
+        // the six that matter are the six you see first.
+        const plate = c.tone === A
+          ? `<rect x="${x}" y="${y}" width="${CW}" height="${RH}" rx="10" class="enclosure"/>`
+          : `<rect x="${x}" y="${y}" width="${CW}" height="${RH}" rx="10"
+                   style="fill:${hue};fill-opacity:0.11;stroke:${hue};stroke-width:1.5"/>`;
+        return `${plate}
+          <circle cx="${x + 24}" cy="${y + 40}" r="4.5" style="fill:${hue}"/>
+          <text x="${x + 40}" y="${y + 45}"
+                class="${c.tone === A ? "t-label" : "mono t-label"}" style="fill:${hue}">${c.kind}</text>
+          <text x="${x + 24}" y="${y + 73}" class="t-sm muted">${c.cost}</text>`;
+      }),
+    )
+    .join("");
+
+  // Both of these are `serious` in deriveDrift(), and neither is a statement
+  // about whether one runner is alive — so they get a strip, not a cell.
+  document.getElementById("strip").innerHTML = [
+    ["label-mismatch", "sibling runners carry different extra labels",
+                       "the odd one out is never scheduled"],
+    ["stuck-queue",    "a run queued 5+ min while a runner for that repo sits idle",
+                       "the tell for a mismatch or a wedged listener"],
+  ]
+    .map(([kind, meaning, cost], i) => {
+      const y = 570 + i * 42;
+      return `<rect x="72" y="${y}" width="1136" height="36" rx="8" class="chip"/>
+        <circle cx="94" cy="${y + 18}" r="4.5" style="fill:var(--serious)"/>
+        <text x="110" y="${y + 23}" class="mono t-label" style="fill:var(--serious)">${kind}</text>
+        <text x="300" y="${y + 23}" class="t-sm muted">${meaning}</text>
+        <text x="1188" y="${y + 23}" class="t-sm muted" text-anchor="end">→ ${cost}</text>`;
+    })
+    .join("");
+</script>
