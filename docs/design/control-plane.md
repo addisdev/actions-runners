@@ -1,8 +1,7 @@
 # The control plane
 
-This page argues that a dashboard someone can see is not a dashboard they can
-act on, and that everything an action or a diagnostic bundle may touch is fixed
-in advance by an allowlist rather than decided at the time.
+This page argues that everything an action or a diagnostic bundle may touch is
+fixed in advance by an allowlist, rather than decided when the request arrives.
 
 Unlock the Control tab once with `./fleetctl.sh token`. The token is stored in
 that browser and **is never served to the page** — read access and the right to

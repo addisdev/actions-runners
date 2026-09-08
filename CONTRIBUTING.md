@@ -109,12 +109,55 @@ that is the part hardest to infer from a diff.
 
 ## Architecture references
 
-Before touching a module, read its docs entry:
-- `lib/queue-cause.js` → [Queue diagnosis](docs/dashboard.md#queue-diagnosis-causes)
+Before touching a module, read its docs entry. The design notes say *why* it is
+shaped the way it is, and most of those arguments are grounded in something
+that went wrong — changing one without reading it usually reintroduces the
+failure that produced it.
+
+- `lib/queue-cause.js` → [Why a job is queued](docs/concepts.md#why-a-job-is-queued) and [Honest analytics](docs/design/analytics.md)
+- `lib/state.js` (`deriveDrift`) → [Drift](docs/concepts.md#drift-when-this-machine-and-github-disagree)
+- `lib/groups.js` → [Inferred groups](docs/design/groups.md)
+- `lib/actions.js` / `lib/bundle.js` → [The control plane](docs/design/control-plane.md)
+- `lib/alerts.js` / `autofix/` → [Alerts and autofix](docs/design/alerts.md)
+- `lib/yaml.js` / `lib/lint.js` → [Workflow lint](docs/design/lint.md)
 - `lib/placement.js` → [Federation placement](docs/federation.md#placement)
-- `lib/simulator.js` / `lib/forecast.js` → [Capacity](docs/dashboard.md#capacity)
+- `lib/autoscale.js` / `lib/sizing.js` / `lib/capacity.js` → [Capacity and autoscaling](docs/design/capacity.md)
+- `lib/simulator.js` / `lib/forecast.js` → [Forecasts are shadow-only](docs/design/capacity.md#forecasts-are-shadow-only)
+- `lib/analytics.js` / `lib/failures.js` → [Honest analytics](docs/design/analytics.md)
 - `lib/auth.js` → [Security hardening](docs/security-hardening.md#token-handling)
 - `lib/db.js` → [Upgrading](docs/upgrading.md#verifying-migration-success)
+
+## Documentation
+
+The handbook in `docs/` is published at
+[addisdev.github.io/actions-runners](https://addisdev.github.io/actions-runners/).
+Build it the way CI does:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements-docs.txt
+.venv/bin/mkdocs serve          # http://127.0.0.1:8000, live reload
+.venv/bin/mkdocs build --strict # what the docs workflow runs
+```
+
+`--strict` turns a link to a page that does not exist into a failed build, and
+a page that exists but is absent from the `nav` in `mkdocs.yml` fails it too.
+
+Figures are rendered from source rather than drawn, so a change to the mark or
+the palette can be pushed through all of them:
+
+```bash
+cd docs/tools && npm install && npx playwright install chromium
+npm run assets                        # every figure in docs/figures/
+npm run assets -- --only architecture # one of them
+npm run shoot                         # the dashboard screenshots
+```
+
+That rig is deliberately outside `dashboard/`, which has **no dependencies** by
+design. Do not add one to it for a documentation reason. The rendered PNGs are
+committed, so building the site itself needs neither Node nor a browser.
+
+[`docs/brand.md`](docs/brand.md) records the palette, the mark, the type
+pairing, and which images came from a real fleet rather than from fixtures.
 
 ## Schema migrations
 
@@ -156,8 +199,9 @@ Before tagging a release:
 2. Run all tests: `cd dashboard && npm test`
 3. Run shell tests: `scripts/test-drain.sh && scripts/test-ephemeral.sh`
 4. Run docs check: `scripts/check-docs.sh`
-5. Update `CHANGELOG.md` and `dashboard/package.json` version
-6. Follow the [fresh repository procedure](docs/upgrading.md) for the public repo
+5. Build the docs: `.venv/bin/mkdocs build --strict`
+6. Update `CHANGELOG.md` and `dashboard/package.json` version
+7. Follow the [fresh repository procedure](docs/upgrading.md) for the public repo
 
 **Never tag a release on the private archive repository.** Tags go on the
 clean public fork only. See [fresh-repository procedure](docs/upgrading.md).
