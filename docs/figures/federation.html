@@ -1,0 +1,157 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Federation</title>
+<link rel="stylesheet" href="brand.css">
+<style>
+  .figure { width: 1280px; height: 760px; }
+</style>
+
+<div class="figure">
+  <svg width="1280" height="760" viewBox="0 0 1280 760" xmlns="http://www.w3.org/2000/svg"
+       role="img" aria-label="Two agent Macs above a coordinator Mac and a browser. Each agent runs agent.js and its own runners and opens no inbound port; its only connection is an outbound dashed heartbeat every 30 seconds, with commands riding back in the reply. The second agent has been silent for six minutes and is drawn in warning orange, marked stale with its runners greyed rather than removed. The coordinator runs fleetd, the dashboard and its own runners. Side notes say that each host computes its own headroom, and that deregistration is deliberately absent from what a coordinator may ask of an agent.">
+    <defs id="defs"></defs>
+
+    <text x="40" y="36" class="t-title">Three Macs and a browser</text>
+    <text x="40" y="58" class="t-sm muted">One coordinator, two agent hosts. Every connection an agent makes is outbound, so nothing has to listen on an agent.</text>
+
+    <!-- ── agent host A, reporting ────────────────────────────────────── -->
+    <rect x="40" y="92" width="372" height="196" rx="10" class="panel"/>
+    <text x="64" y="124" class="t-head">mac-studio</text>
+    <text x="166" y="124" class="t-sm muted">agent host</text>
+    <text x="64" y="148" class="mono t-sm muted">node dashboard/agent.js</text>
+    <g id="runners-a"></g>
+    <text x="64" y="208" class="t-sm muted">4 runners · computes its own headroom</text>
+    <rect x="64" y="222" width="232" height="34" rx="8" class="chip"/>
+    <text x="180" y="245" class="t-label accent" text-anchor="middle">NO INBOUND PORT</text>
+    <text x="64" y="276" class="t-sm muted">it only ever dials out</text>
+
+    <!-- ── agent host B, silent ───────────────────────────────────────── -->
+    <rect x="444" y="92" width="372" height="196" rx="10" fill="#121925" stroke="#f5b942" stroke-width="1.5"/>
+    <text x="468" y="124" class="t-head">mac-mini-2</text>
+    <rect x="580" y="106" width="74" height="24" rx="6" fill="#121925" stroke="#f5b942"/>
+    <text x="617" y="123" class="t-sm" text-anchor="middle" fill="#f5b942">STALE</text>
+    <text x="468" y="148" class="mono t-sm muted">node dashboard/agent.js</text>
+    <g id="runners-b"></g>
+    <text x="468" y="208" class="t-sm" fill="#f5b942">silent for 6 min — marked stale, not removed</text>
+    <rect x="468" y="222" width="232" height="34" rx="8" class="chip"/>
+    <text x="584" y="245" class="t-label accent" text-anchor="middle">NO INBOUND PORT</text>
+    <text x="468" y="276" class="t-sm muted">its runners stay on the page, greyed</text>
+
+    <!-- ── the only direction a connection is ever made ───────────────── -->
+    <path d="M226 290 V368" class="edge-dashed" marker-end="url(#arw)"/>
+    <text x="240" y="312" class="mono t-sm">POST /heartbeat</text>
+    <text x="240" y="332" class="t-sm muted">every 30 s, outbound only</text>
+    <text x="240" y="352" class="t-sm muted">commands ride back in the reply</text>
+
+    <path d="M630 290 V368" fill="none" stroke="#f5b942" stroke-width="1.6"
+          stroke-dasharray="6 5" marker-end="url(#arw-w)"/>
+    <text x="644" y="312" class="mono t-sm muted">POST /heartbeat</text>
+    <text x="644" y="332" class="t-sm" fill="#f5b942">every 30 s — silent</text>
+    <text x="644" y="352" class="t-sm muted">for 6 min, stale at 120 s</text>
+
+    <!-- ── the coordinator ────────────────────────────────────────────── -->
+    <rect x="100" y="372" width="560" height="300" rx="14" class="panel-lead"/>
+    <text x="124" y="404" class="t-head">mac-main</text>
+    <text x="210" y="404" class="t-sm muted">coordinator · a host like any other</text>
+
+    <rect x="124" y="420" width="248" height="64" rx="8" class="chip"/>
+    <text x="248" y="448" class="t-label" text-anchor="middle">fleetd</text>
+    <text x="248" y="468" class="t-sm muted" text-anchor="middle">collector + server</text>
+
+    <rect x="388" y="420" width="248" height="64" rx="8" class="chip"/>
+    <text x="512" y="448" class="t-label" text-anchor="middle">dashboard</text>
+    <text x="512" y="468" class="t-sm muted" text-anchor="middle">:7878, loopback</text>
+
+    <text x="124" y="514" class="t-cap muted">ITS OWN RUNNERS</text>
+    <g id="runners-c"></g>
+
+    <text x="124" y="574" class="t-sm muted">It computes its own headroom exactly as the agents do, and merges</text>
+    <text x="124" y="594" class="t-sm muted">every host's snapshot into one fleet view — leading with how many</text>
+    <text x="124" y="614" class="t-sm muted">of those hosts are stale.</text>
+    <text x="124" y="646" class="t-sm accent">The coordinator never initiates a connection to an agent.</text>
+
+    <!-- ── tokens ─────────────────────────────────────────────────────── -->
+    <text x="692" y="398" class="t-cap muted">TOKENS</text>
+    <text x="692" y="424" class="t-sm muted">Agents authenticate</text>
+    <text x="692" y="444" class="t-sm muted">with a separate agent</text>
+    <text x="692" y="464" class="t-sm muted">token, so compromising</text>
+    <text x="692" y="484" class="t-sm muted">an agent host does not</text>
+    <text x="692" y="504" class="t-sm muted">grant browser control.</text>
+
+    <!-- ── why headroom is computed on the host ───────────────────────── -->
+    <rect x="856" y="92" width="384" height="196" rx="10" class="panel"/>
+    <text x="880" y="124" class="t-cap muted">PLACEMENT</text>
+    <text x="880" y="152" class="t-sm">Each host computes its own headroom</text>
+    <text x="880" y="172" class="t-sm">and reports it. Only the host knows its</text>
+    <text x="880" y="192" class="t-sm">own load and disk.</text>
+    <text x="880" y="218" class="t-sm muted">A coordinator deciding from a 30-second-</text>
+    <text x="880" y="238" class="t-sm muted">old copy would be deciding from stale</text>
+    <text x="880" y="258" class="t-sm muted">data at exactly the moment it matters.</text>
+
+    <!-- ── what a coordinator may ask ─────────────────────────────────── -->
+    <rect x="856" y="308" width="384" height="180" rx="10" class="panel"/>
+    <text x="880" y="338" class="t-cap muted">WHAT A COORDINATOR MAY ASK</text>
+    <text x="880" y="364" class="mono t-sm">runner.drain · runner.resume</text>
+    <text x="880" y="384" class="mono t-sm">health.check</text>
+    <text x="880" y="412" class="t-sm muted">Deregistration is deliberately not on the</text>
+    <text x="880" y="432" class="t-sm muted">list. The host decides — the only setup</text>
+    <text x="880" y="452" class="t-sm muted">where a mistake on the coordinator</text>
+    <text x="880" y="472" class="t-sm muted">cannot become a shell on every machine.</text>
+
+    <!-- ── the browser ────────────────────────────────────────────────── -->
+    <path d="M662 604 H848" class="edge-accent" marker-end="url(#arw-a)"/>
+    <text x="676" y="596" class="t-sm accent">SSE, live view</text>
+    <g id="browser"></g>
+
+    <text x="40" y="732" class="t-sm muted">A silent host is marked stale, never removed: dropping a partitioned host's runners would make them look deregistered — the most alarming possible way to render a network blip.</text>
+  </svg>
+</div>
+
+<script type="module">
+  import { agentGrid, browserFrame, markers } from "./symbols.js";
+
+  // The muted and accent arrowheads plus a warning one, for the heartbeat that
+  // has stopped arriving. The channel is still outbound and still points at the
+  // coordinator; it is the silence that is coloured, not the direction.
+  document.getElementById("defs").innerHTML = markers() + `
+    <marker id="arw-w" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto">
+      <path d="M0 0 L9 4.5 L0 9 z" fill="#f5b942"/>
+    </marker>`;
+
+  const row = { perRow: 4, gapX: 46, gapY: 26, w: 40, h: 20 };
+
+  document.getElementById("runners-a").innerHTML =
+    agentGrid(64, 164, ["good", "good", "busy", "good"], row);
+
+  // Greyed rather than absent. A partitioned host's runners are still there;
+  // what is missing is current knowledge of them, so they are drawn as unknown
+  // instead of being dropped out of the picture.
+  document.getElementById("runners-b").innerHTML =
+    agentGrid(468, 164, ["off", "off", "off", "off"], row);
+
+  document.getElementById("runners-c").innerHTML =
+    agentGrid(124, 524, ["good", "good", "busy", "good", "good", "good"], { ...row, perRow: 6 });
+
+  // The Hosts tab, schematically: three hosts, one of them stale and saying so.
+  const hosts = [
+    ["#4ade80", "mac-main · coordinator"],
+    ["#4ade80", "mac-studio · 4 runners"],
+    ["#f5b942", "mac-mini-2 · stale 6 min"],
+  ];
+  document.getElementById("browser").innerHTML =
+    browserFrame(856, 506, 384, 196) +
+    // Separate elements rather than one padded string: SVG collapses runs of
+    // whitespace, so "FLEET  HOSTS" would render as one word.
+    ["FLEET", "HOSTS", "CAPACITY"]
+      .map((t, i) => `<text x="${[880, 952, 1024][i]}" y="558"
+                            class="t-cap ${i === 1 ? "accent" : "muted"}">${t}</text>`)
+      .join("") +
+    hosts
+      .map(([dot, label], i) => {
+        const y = 572 + i * 44;
+        return `<rect x="876" y="${y}" width="344" height="38" rx="6" class="chip"/>
+                <circle cx="894" cy="${y + 19}" r="4" fill="${dot}"/>
+                <text x="912" y="${y + 24}" class="t-sm">${label}</text>`;
+      })
+      .join("");
+</script>

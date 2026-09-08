@@ -1,0 +1,105 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Loops</title>
+<link rel="stylesheet" href="brand.css">
+<style>
+  .figure { width: 1280px; height: 460px; }
+</style>
+
+<div class="figure">
+  <svg width="1280" height="460" viewBox="0 0 1280 460" xmlns="http://www.w3.org/2000/svg"
+       role="img" aria-label="One minute of the daemon's clock. A 60-second axis carries two fast-loop lanes: a tick every 15 seconds while anything is building, and a tick every 45 seconds when the fleet is asleep. A local ps Runner.Worker check decides which, with no API call. Below an explicit scale change, a 30-minute axis carries the 15-minute slow loop and the 10-minute backfill, which takes 350 API calls a pass and keeps a floor of 1500 rate limit for the fast loop.">
+    <defs id="defs"></defs>
+
+    <text x="40" y="32" class="t-title">One minute of the daemon's clock</text>
+    <text x="40" y="54" class="t-sm muted">The fast loop's rate is set by what the fleet is doing; the slow work runs on a clock of its own.</text>
+
+    <!-- ── fast loop, 60 seconds to scale ─────────────────────────────── -->
+    <text x="40" y="84" class="t-cap muted">FAST LOOP · 60 SECONDS, TO SCALE</text>
+
+    <text x="40" y="118" class="t-label">building</text>
+    <text x="40" y="138" class="t-sm muted">every 15 s</text>
+    <text x="40" y="176" class="t-label">asleep</text>
+    <text x="40" y="196" class="t-sm muted">every 45 s</text>
+
+    <g id="fast"></g>
+
+    <!-- what picks the cadence -->
+    <path d="M944 100 h-8 v82 h8" class="edge"/>
+    <path d="M964 141 H938" class="edge" marker-end="url(#arw)"/>
+    <rect x="968" y="88" width="272" height="126" rx="10" class="panel"/>
+    <text x="988" y="114" class="t-cap muted">WHICH CADENCE</text>
+    <text x="988" y="140" class="mono t-sm">ps · Runner.Worker</text>
+    <text x="988" y="166" class="t-sm muted">answers “is anything</text>
+    <text x="988" y="186" class="t-sm muted">building?” locally, for</text>
+    <text x="988" y="206" class="t-sm muted">free, with no API call</text>
+
+    <!-- ── the scale changes here, and says so ────────────────────────── -->
+    <path d="M40 252 H1240" class="edge-dashed"/>
+    <text x="40" y="246" class="t-cap accent">SCALE CHANGE</text>
+    <text x="190" y="246" class="t-sm muted">the axis below is 30 minutes, not 60 seconds — the whole band above fits in its first minute</text>
+
+    <text x="40" y="278" class="t-cap muted">SLOW WORK · 30 MINUTES</text>
+    <path d="M250 282 v-9 h22.33 v9" class="edge-accent"/>
+    <text x="284" y="278" class="t-sm accent">one minute — the entire band above</text>
+
+    <text x="40" y="312" class="t-label">slow loop</text>
+    <text x="40" y="332" class="t-sm muted">every 15 min</text>
+    <text x="40" y="358" class="t-label">backfill</text>
+    <text x="40" y="378" class="t-sm muted">every 10 min until it has</text>
+    <text x="40" y="396" class="t-sm muted">caught up, then never again</text>
+
+    <g id="slow"></g>
+
+    <rect x="968" y="288" width="272" height="104" rx="10" class="panel"/>
+    <text x="988" y="314" class="t-cap muted">EACH BACKFILL PASS</text>
+    <text x="988" y="340" class="t-sm">350 API calls, no more</text>
+    <text x="988" y="360" class="t-sm muted">and a floor of 1500 rate</text>
+    <text x="988" y="380" class="t-sm muted">limit kept for the fast loop</text>
+
+    <!-- ── why the backfill cannot wait ───────────────────────────────── -->
+    <text x="40" y="430" class="t-sm">The backfill is urgent: a busy repo holds only a few weeks of runs before GitHub ages them out.</text>
+    <text x="40" y="450" class="t-sm muted">On the fleet this was written for, page 3 of the busiest repo's history was already a week old. Whatever is not captured now is gone.</text>
+  </svg>
+</div>
+
+<script type="module">
+  import { markers } from "./symbols.js";
+  document.getElementById("defs").innerHTML = markers();
+
+  // Both bands share one x range, so the scale change is a change of units and
+  // nothing else — which is the only reason the bracket above can claim that a
+  // whole minute of the top band fits inside the first minute of the bottom one.
+  const X0 = 250, X1 = 920, SPAN = X1 - X0;
+  const at = (v, max) => X0 + (v / max) * SPAN;
+
+  const ACCENT = "#60a5fa", MUTED = "#7f8a9b", HAIRLINE = "#253142";
+
+  // Ticks and their axis labels are placed from the same `at()`, so they cannot
+  // drift apart when a number changes.
+  const lane = (base, h, positions, max, fill) =>
+    `<rect x="${X0}" y="${base}" width="${SPAN}" height="1.5" fill="${HAIRLINE}"/>` +
+    positions
+      .map((v) => `<rect x="${at(v, max) - 2.5}" y="${base - h}" width="5" height="${h}" rx="2.5" fill="${fill}"/>`)
+      .join("");
+
+  const axis = (y, positions, max, labels) =>
+    `<path d="M${X0} ${y} H${X1}" class="edge"/>` +
+    positions.map((v) => `<path d="M${at(v, max)} ${y} v6" class="edge"/>`).join("") +
+    positions
+      .map((v, i) => `<text x="${at(v, max)}" y="${y + 24}" class="mono t-sm muted"
+                            text-anchor="middle">${labels[i]}</text>`)
+      .join("");
+
+  // Accent is the hot path in both bands: polling hard because something is
+  // building, and racing GitHub's retention before the history is deleted.
+  document.getElementById("fast").innerHTML =
+    lane(124, 24, [0, 15, 30, 45, 60], 60, ACCENT) +
+    lane(182, 24, [0, 45], 60, MUTED) +
+    axis(200, [0, 15, 30, 45, 60], 60, ["0s", "15s", "30s", "45s", "60s"]);
+
+  document.getElementById("slow").innerHTML =
+    lane(318, 22, [0, 15, 30], 30, MUTED) +
+    lane(364, 22, [0, 10, 20, 30], 30, ACCENT) +
+    axis(380, [0, 10, 15, 20, 30], 30, ["0", "10", "15", "20", "30 min"]);
+</script>
