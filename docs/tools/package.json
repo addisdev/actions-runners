@@ -9,9 +9,7 @@
   },
   "scripts": {
     "assets": "node render-assets.mjs",
-    "demo-db": "node make-demo-db.mjs",
-    "shoot": "node shoot-dash.mjs",
-    "motion": "node shoot-motion.mjs"
+    "shoot": "node shoot-dash.mjs"
   },
   "devDependencies": {
     "playwright": "1.62.1"

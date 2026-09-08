@@ -97,9 +97,9 @@ opens each one in headless Chromium and screenshots the `.figure` element at
 | `img/federation.png` | 2560x1200 | `figures/federation.html` |
 | `img/banner.png` | 2560x1280 | `figures/banner.html` |
 | `img/social-preview.png` | 2560x1280 (2x of GitHub's 1280x640) | `figures/social-preview.html` |
-| `img/fleet-tab.png` and the rest of the tab captures | 1440x900 | `npm run shoot`, against the fixture fleet |
+| `img/fleet-tab.png`, `runs-tab.png`, `analytics-tab.png`, `lint-tab.png`, `alerts-tab.png`, `capacity-tab.png`, `hosts-tab.png`, `control-tab.png`, `runner-drawer.png` | 2880x1800 (1440x900 at 2x) | `npm run shoot`, against the fixture fleet |
 | `img/fleet-live.png`, `img/analytics-live.png` | 2880x1800 | A real fleet, names replaced. See below |
-| `img/drift-repair.gif` | 1280 wide | `npm run motion`, against a real fleet |
+| `img/drift-repair.gif` | 1280 wide | `npm run motion`, against a real fleet — **not made yet**; see below |
 
 ### Why PNG, and why each figure carries its own ground
 
@@ -133,11 +133,28 @@ somebody looks at for ten seconds is placed boxes.
 
 ## The screenshots
 
-`npm run shoot` in `docs/tools/` starts `fleetd` on a spare port with
-`FLEET_READ_ONLY=1` against `demo.db`, a fixture fleet built by
-`npm run demo-db` from the same shapes the test suite uses. Every runner in it
-is visibly a fixture — `testowner/app-ios`, `testowner/app-web` — so no reader
-can mistake it for a measurement.
+`npm run shoot` in `docs/tools/` serves the real `dashboard/public/` and
+answers every `/api/` route from `fixture-fleet.mjs`. The page is unmodified
+product code; only its data is fixture. The snapshot is built by calling the
+daemon's own `buildRunners`, `deriveDrift` and `deriveGroups` rather than by
+hand-writing what they return, so a change to any of them shows up here instead
+of quietly drifting out of date.
+
+It needs no fleet, no GitHub token and no network — which is the point, because
+`fleetd` builds its runner list from `launchctl`, `ps` and the GitHub API, and
+none of those exist on a machine that is only writing documentation.
+
+Every name in it is visibly invented — `testowner/app-ios`, `testhost`,
+`teststudio` — so nothing in a screenshot can be mistaken for a measurement.
+The fleet root is a real temporary directory, because `discoverRunnerDirs`,
+`runnerVersions`, `diagSummary` and `diagTail` have to read actual files; it is
+presented as `/Users/testowner/actions-runners` on the way out, so no capture
+carries this machine's own temp path.
+
+The fixture is deliberately not healthy. It holds a runner in `launchd-dead`
+drift, a drained one, a label mismatch, a repo at capacity, an open alert, a
+stale second host and a lint finding — because a screenshot of a fleet with
+nothing wrong shows none of what the dashboard is for.
 
 !!! warning "Two screenshots are not from fixtures, on purpose"
 
@@ -155,3 +172,18 @@ can mistake it for a measurement.
 The convention for both, taken from the project this documentation borrows its
 method from: a number that gets believed and turns out to be wrong costs more
 than one that was never reported.
+
+## The recording that does not exist yet
+
+The one asset here that cannot be produced from fixtures is fifteen seconds of
+a runner dying and being repaired: the Fleet tab watching a runner go from
+`online` to `dead`, drift opening, the alert opening, `health.sh --repair`
+running, and the runner coming back.
+
+It needs a real fleet with a real LaunchAgent to unload, which is the one thing
+a documentation machine does not have. A fixture fleet can hold a dead runner,
+but it cannot *die* — and a recording of a state machine being stepped by a
+script would be a recording of the script, not of the product.
+
+So it is missing on purpose rather than approximated, for the same reason there
+is no Analytics screenshot from seeded runs.
