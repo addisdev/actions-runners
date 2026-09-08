@@ -152,15 +152,17 @@ dashboard/alerts.config.json
 !docs/reference/*.md
 
 # The site's stylesheet and its rendered images. docs/img/ is output — every
-# file in it is produced by `npm run assets` or `npm run shoot` in docs/tools/
-# from a source in docs/figures/, and committed so that building the site needs
-# no browser.
+# file in it is produced by `npm run assets`, `npm run shoot` or `npm run
+# motion` in docs/tools/, and committed so that building the site needs no
+# browser. The .mp4 is the recording's companion, for the surfaces that can
+# play a video instead of looping a GIF.
 !docs/css/
 !docs/css/*.css
 !docs/img/
 !docs/img/*.png
 !docs/img/*.svg
 !docs/img/*.gif
+!docs/img/*.mp4
 
 # Figure sources: one HTML file per figure, the stylesheet they share, and the
 # two OFL font families, so a figure can be regenerated when the mark changes.

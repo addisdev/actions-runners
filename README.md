@@ -28,6 +28,25 @@ all.
 > **private repos with trusted contributors**. Read the
 > [security guide](docs/security-hardening.md) before you register anything.
 
+## Fifteen seconds
+
+![The Fleet tab while a runner dies and is repaired: one runner card turns red and reads dead with no pid, a critical launchd-dead row opens in Drift naming the last exit code, health.sh --repair restarts the service in a terminal strip along the bottom, and the card returns to idle with a fresh pid as the drift row closes](docs/img/drift-repair.gif)
+
+> A real runner on a real fleet, killed and repaired while the daemon watched.
+> Repository and host names replaced. The clock runs at 6.5x; nothing else does.
+
+The service is killed, leaving the launchd job loaded with no process behind
+it — the failure **no runner plist's `KeepAlive` will undo**, because none of
+them sets it. Nothing external revives it and no job for that repo will ever
+start again. The daemon notices on its own poll, opens `launchd-dead` in Drift
+with the last exit code, and raises an alert; `health.sh --repair` restarts the
+service, and the row closes once launchd and GitHub agree again.
+
+None of it is staged. It is frames of the real dashboard against a real fleet,
+which is why it is the one asset in `docs/img/` that cannot be produced from
+fixtures — a fixture fleet can hold a dead runner, but it cannot die.
+[`docs/brand.md`](docs/brand.md) records how it was made.
+
 ## Documentation
 
 **[addisdev.github.io/actions-runners](https://addisdev.github.io/actions-runners/)**
