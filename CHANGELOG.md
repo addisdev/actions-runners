@@ -53,6 +53,14 @@ beyond one corrected name and two corrected doc claims.
 
 ### Fixed
 
+- **`.is-hidden` did not hide.** It and `.kpis` are both single-class
+  selectors, and `.kpis` comes later in `style.css`, so it won on source
+  order — `#kpis.is-hidden` stayed a grid and the live KPI row rendered on
+  every tab. On Analytics that stacked two different meanings of "runs" on one
+  screen, which `app.js` has a comment saying must not happen, directly above
+  the toggle that was not working.
+- `docs/configuration.md` gave the autoscaler's idle TTL as `0 (off)`;
+  `settings.js` defaults it to 259,200,000 ms, which is three days.
 - `docs/dashboard.md` described the `telemetry-unavailable` queue cause as
   "collector last ran > 2 min ago", which
   [`lib/queue-cause.js`](dashboard/lib/queue-cause.js) does not do, and
