@@ -1,0 +1,93 @@
+/* Tokens for every rendered figure.
+ *
+ * These are the dashboard's own values from dashboard/public/style.css, dark
+ * scheme. A figure in a different blue than the product it describes is a
+ * figure for a different product, so there is no second palette here — when
+ * the dashboard's colours change, these change with them.
+ *
+ * Figures always render dark. They carry their own ground because they get
+ * dropped onto surfaces this repository does not control: the README in
+ * GitHub's light theme, a portfolio page, a slide.
+ */
+
+@font-face {
+  font-family: "Inter Figure";
+  src: url("fonts/Inter-latin.woff2") format("woff2-variations");
+  font-weight: 100 900;
+  font-display: block;
+}
+@font-face {
+  font-family: "JetBrains Figure";
+  src: url("fonts/JetBrainsMono-latin.woff2") format("woff2-variations");
+  font-weight: 100 800;
+  font-display: block;
+}
+
+:root {
+  --plane:    #0b0f17;
+  --surface:  #121925;
+  --raised:   #18212f;
+  --ink:      #f6f8fb;
+  --muted:    #7f8a9b;
+  --hairline: #253142;
+
+  --accent:      #60a5fa;
+  --accent-deep: #2563d9;
+
+  --good:     #4ade80;
+  --warning:  #f5b942;
+  --serious:  #fb8155;
+  --critical: #f36a6a;
+
+  --sans: "Inter Figure", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Figure", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #000;
+}
+
+/* One figure per file. The renderer screenshots this element and nothing else,
+ * at twice its CSS size — so a 1280x800 figure becomes a 2560x1600 image. */
+.figure {
+  background: var(--plane);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-feature-settings: "cv05" 1;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Numbers that sit in a column have to line up. A table of durations where the
+ * digits do not align is harder to read than one with fewer digits in it. */
+.figure text, .figure .mono { font-variant-numeric: tabular-nums; }
+
+svg text { font-family: var(--sans); fill: var(--ink); }
+svg .mono { font-family: var(--mono); }
+svg .muted { fill: var(--muted); }
+svg .accent { fill: var(--accent); }
+
+/* Type scale, in CSS pixels at 1x. Nothing that carries meaning goes below
+ * `sm`: GitHub renders the README column at about 830 px, so a 1280 px figure
+ * is shown at roughly two thirds of its size and 13 px is the floor for
+ * reading it there. A figure needing more words than fit at that size is two
+ * figures. */
+svg .t-title  { font-size: 22px; font-weight: 700; letter-spacing: -0.2px; }
+svg .t-head   { font-size: 16px; font-weight: 700; }
+svg .t-label  { font-size: 15px; font-weight: 600; }
+svg .t-body   { font-size: 14px; font-weight: 400; }
+svg .t-sm     { font-size: 13px; font-weight: 400; }
+svg .t-cap    { font-size: 12px; font-weight: 600; letter-spacing: 0.9px; text-transform: uppercase; }
+
+svg .panel      { fill: var(--surface); stroke: var(--hairline); stroke-width: 1; }
+svg .panel-lead { fill: var(--raised); stroke: var(--accent); stroke-width: 1.5; }
+svg .chip       { fill: var(--raised); stroke: var(--hairline); stroke-width: 1; }
+svg .enclosure  { fill: none; stroke: var(--hairline); stroke-width: 1; stroke-dasharray: 0; }
+
+svg .edge        { stroke: var(--muted); stroke-width: 1.6; fill: none; }
+svg .edge-accent { stroke: var(--accent); stroke-width: 1.8; fill: none; }
+svg .edge-dashed { stroke: var(--muted); stroke-width: 1.6; fill: none; stroke-dasharray: 6 5; }

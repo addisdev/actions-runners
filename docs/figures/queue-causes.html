@@ -1,0 +1,111 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Queue causes</title>
+<link rel="stylesheet" href="brand.css">
+<style>
+  .figure { width: 1280px; height: 700px; }
+</style>
+
+<div class="figure">
+  <svg width="1280" height="700" viewBox="0 0 1280 700" xmlns="http://www.w3.org/2000/svg"
+       role="img" aria-label="A decision path. One node on the left, a job is queued, fans out to five groups by whose problem it is: unknowable, the workflow's, this host's, GitHub's, and the repo's. Those resolve into eight causes — telemetry-unavailable, label-mismatch, concurrency-block, runner-down, host-saturation, unserved, github-delay and repo-capacity — each with what it means and whether adding a runner helps. Only repo-capacity is a yes.">
+    <defs id="defs"></defs>
+
+    <text x="48" y="52" class="t-title">Why a job is queued</text>
+    <text x="48" y="80" class="t-sm muted">Eight causes, each reached with the evidence that drove it. Only one of them is fixed by adding a runner.</text>
+
+    <text x="444"  y="124" class="t-cap muted" text-anchor="end">whose problem</text>
+    <text x="486"  y="124" class="t-cap muted">cause</text>
+    <text x="690"  y="124" class="t-cap muted">what it means</text>
+    <text x="1216" y="124" class="t-cap muted" text-anchor="end">adding a runner?</text>
+
+    <!-- the one node everything starts from -->
+    <rect x="48" y="312" width="210" height="102" rx="10" class="panel-lead"/>
+    <text x="68" y="350" class="t-head">a job is queued</text>
+    <text x="68" y="376" class="t-sm muted">waited past the threshold</text>
+    <text x="68" y="398" class="t-sm muted">one cause, with evidence</text>
+
+    <g id="tree"></g>
+    <g id="causes"></g>
+
+    <text x="48" y="644" class="t-sm muted">This used to be one question — is a runner idle? — and it separated the wrong pair: “every runner is busy”</text>
+    <text x="48" y="668" class="t-sm muted">and “the host is saturated” both look like no runner is idle, and only the first is fixed by adding a runner.</text>
+  </svg>
+</div>
+
+<script type="module">
+  import { markers } from "./symbols.js";
+  document.getElementById("defs").innerHTML = markers();
+
+  const RX = 470, RW = 762, RH = 48;
+
+  // Grouped by whose problem it is, which is the question the reader actually
+  // has. Causes, meanings and verdicts are the rows of the queue-cause table in
+  // docs/concepts.md; the names are CAUSES in dashboard/lib/queue-cause.js.
+  const groups = [
+    { label: "unknowable", causes: [
+      ["telemetry-unavailable", "nothing here is trustworthy this tick", "unknown — refuses to guess"],
+    ]},
+    { label: "the workflow's", causes: [
+      ["label-mismatch",    "the job's runs-on: matches no runner's labels",   "no — a copy has the same labels"],
+      ["concurrency-block", "a workflow concurrency: group is holding it",     "no"],
+    ]},
+    { label: "this host's", causes: [
+      ["runner-down",     "every runner for the repo is down or draining",   "no — repair it"],
+      ["host-saturation", "no runner is free and the headroom gate refuses", "no — it would be refused"],
+      ["unserved",        "no runner exists for the repo at all",            "no — register the first one"],
+    ]},
+    { label: "GitHub's", causes: [
+      ["github-delay", "nothing is wrong here; dispatch is slow", "no"],
+    ]},
+    // The payoff, and the only row the autoscaler is allowed to act on.
+    { label: "the repo's", lead: true, causes: [
+      ["repo-capacity", "every runner is busy, and there is headroom", "yes — adding a runner helps"],
+    ]},
+  ];
+
+  // Lay the groups out top to bottom: rows 6 px apart inside a group, 16 px
+  // between groups, so a group reads as one block without needing a box.
+  let y = 136;
+  for (const g of groups) {
+    g.tops = g.causes.map((_, i) => y + i * (RH + 6));
+    g.top = g.tops[0];
+    g.bottom = g.tops[g.tops.length - 1] + RH;
+    g.cy = (g.top + g.bottom) / 2;
+    y = g.bottom + 16;
+  }
+
+  document.getElementById("tree").innerHTML = groups
+    .map((g) => {
+      const feed = `<path d="M258 363 C 278 363, 286 ${g.cy}, 296 ${g.cy}"
+                          class="${g.lead ? "edge-accent" : "edge"}"
+                          marker-end="url(#${g.lead ? "arw-a" : "arw"})"/>`;
+      const node = `<rect x="300" y="${g.cy - 20}" width="150" height="40" rx="8"
+                          class="${g.lead ? "panel-lead" : "chip"}"/>
+                    <text x="375" y="${g.cy + 5}" text-anchor="middle"
+                          class="t-label${g.lead ? " accent" : ""}">${g.label}</text>`;
+      const cls = g.lead ? "edge-accent" : "edge";
+      // Spine from the group node out to each of its causes.
+      const spine = g.causes.length > 1
+        ? `<path d="M450 ${g.cy} H462" class="${cls}"/>
+           <path d="M462 ${g.top + RH / 2} V ${g.bottom - RH / 2}" class="${cls}"/>` +
+          g.tops.map((t) => `<path d="M462 ${t + RH / 2} H ${RX}" class="${cls}"/>`).join("")
+        : `<path d="M450 ${g.cy} H ${RX}" class="${cls}"/>`;
+      return feed + node + spine;
+    })
+    .join("");
+
+  document.getElementById("causes").innerHTML = groups
+    .flatMap((g) =>
+      g.causes.map(([name, meaning, verdict], i) => {
+        const t = g.tops[i];
+        return `<rect x="${RX}" y="${t}" width="${RW}" height="${RH}" rx="8"
+                      class="${g.lead ? "panel-lead" : "chip"}"/>
+          <text x="486"  y="${t + 30}" class="mono t-label${g.lead ? " accent" : ""}">${name}</text>
+          <text x="690"  y="${t + 30}" class="t-sm muted">${meaning}</text>
+          <text x="1216" y="${t + 30}" text-anchor="end"
+                class="t-sm ${g.lead ? "accent" : "muted"}">${verdict}</text>`;
+      }),
+    )
+    .join("");
+</script>

@@ -1,0 +1,19 @@
+{
+  "name": "actions-runners-docs-tools",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Renders the documentation figures and captures the dashboard screenshots. Deliberately outside dashboard/, which has no dependencies.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "assets": "node render-assets.mjs",
+    "demo-db": "node make-demo-db.mjs",
+    "shoot": "node shoot-dash.mjs",
+    "motion": "node shoot-motion.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}
