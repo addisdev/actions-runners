@@ -15,7 +15,6 @@
   --border:       rgba(17, 24, 39, 0.09);
   --topbar-bg:    rgba(255, 255, 255, 0.88);
   --surface-glass:rgba(255, 255, 255, 0.72);
-  --grid-line:    rgba(37, 99, 217, 0.055);
   --brand-glow:   rgba(37, 99, 217, 0.20);
 
   --good:         #15803d;
@@ -56,7 +55,6 @@
     --border:     rgba(255, 255, 255, 0.10);
     --topbar-bg:  rgba(18, 25, 37, 0.88);
     --surface-glass: rgba(18, 25, 37, 0.76);
-    --grid-line:  rgba(96, 165, 250, 0.055);
     --brand-glow: rgba(96, 165, 250, 0.24);
     --good:       #4ade80;
     --warning:    #f5b942;
@@ -82,7 +80,6 @@
   --border:     rgba(255, 255, 255, 0.10);
   --topbar-bg:  rgba(18, 25, 37, 0.88);
   --surface-glass: rgba(18, 25, 37, 0.76);
-  --grid-line:  rgba(96, 165, 250, 0.055);
   --brand-glow: rgba(96, 165, 250, 0.24);
   --good:       #4ade80;
   --warning:    #f5b942;
@@ -99,30 +96,14 @@
 * { box-sizing: border-box; }
 
 body {
-  position: relative;
   margin: 0;
   min-height: 100vh;
-  background:
-    radial-gradient(circle at 16% -180px, var(--brand-glow) 0, transparent 470px),
-    radial-gradient(circle at 86% 8%, var(--good-wash) 0, transparent 360px),
-    var(--plane);
+  background: var(--plane);
   color: var(--ink);
   font-family: var(--sans);
   font-size: 14px;
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
-}
-body::before {
-  content: "";
-  position: fixed; inset: 0; z-index: -1; pointer-events: none;
-  background:
-    linear-gradient(var(--grid-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px),
-    url("/assets/fleet-topology.svg") 50% 90px / min(1600px, 120vw) auto no-repeat;
-  background-size: 32px 32px, 32px 32px, min(1600px, 120vw) auto;
-  opacity: 0.48;
-  mask-image: linear-gradient(to bottom, #000 0, transparent 78%);
-  -webkit-mask-image: linear-gradient(to bottom, #000 0, transparent 78%);
 }
 body.drawer-open { overflow: hidden; }
 
