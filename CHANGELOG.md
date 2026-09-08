@@ -6,7 +6,61 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project does not use Semantic Versioning — it uses simple sequential
 version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
-## [v0.1.0] — unreleased
+## [v0.2.0] — unreleased
+
+The documentation release. No behaviour changes to the daemon or the scripts,
+beyond one corrected name and two corrected doc claims.
+
+### Added
+
+- **A documentation site** at
+  [addisdev.github.io/actions-runners](https://addisdev.github.io/actions-runners/),
+  built with MkDocs Material and published from `main`. `mkdocs build --strict`
+  and a lychee link check gate every pull request that touches `docs/`.
+- **Concepts** (`docs/concepts.md`): what a runner is here, what launchd will
+  and will not do for it, drift, why a job is queued, admission against
+  autoscaling, inferred groups, and why alerts fire on transitions. The
+  handbook had no page that introduced any of this.
+- **Design notes** (`docs/design/`): `dashboard-internals.md` split into seven
+  arguments, each one grounded in something that went wrong on a real fleet.
+- **A scripts reference** (`docs/reference/scripts.md`): every script, every
+  flag read out of the parsing code, and what each one refuses to do. Nine
+  scripts had reached the tree undocumented, and several flags the README
+  described did not behave as described.
+- **Figures**, rendered from source in `docs/figures/` by `docs/tools/`:
+  architecture, the drift matrix, the queue-cause paths, the daemon's loops,
+  federation, a banner and a social card.
+- **Screenshots** of every dashboard tab, captured from a fixture fleet by
+  `docs/tools/shoot-dash.mjs`. The repository previously contained no image of
+  any kind.
+- `docs/brand.md`, recording the palette, the mark, the type pairing and how
+  every asset is produced.
+
+### Changed
+
+- **One name.** The dashboard tab title, the web manifest, the package
+  description and the mark's own `<title>` said "Runner Fleet"; the repository
+  and the README said other things. Everything now says **Actions Runners**.
+  `fleetd`, `fleetctl.sh` and `fleet.env` are unchanged — those are a daemon
+  and its files, not the product.
+- `docs/architecture.md` carries a rendered figure instead of two Mermaid
+  blocks.
+- `docs/installation.md` became `docs/getting-started.md`, ending on a job
+  running rather than on a `curl`. The old URL redirects.
+- `scripts/check-docs.sh` no longer exempts any file from the link check, and
+  derives the list of scripts that must be documented from the reference page
+  rather than from a hand-maintained array.
+
+### Fixed
+
+- `docs/dashboard.md` described the `telemetry-unavailable` queue cause as
+  "collector last ran > 2 min ago", which
+  [`lib/queue-cause.js`](dashboard/lib/queue-cause.js) does not do, and
+  `host-saturation` as "runners are free but the host is out of headroom",
+  which cannot happen — that branch is only reachable once the idle-runner
+  branch has already returned.
+
+## [v0.1.0] — 2026-09-04
 
 First public release. The project was originally developed as private tooling
 for a macOS runner fleet; this release generalises it for public use.

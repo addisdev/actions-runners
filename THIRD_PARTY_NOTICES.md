@@ -67,3 +67,39 @@ bundled in this repository.
 This project uses `node:sqlite`, `node:test`, `node:crypto`, `node:http`, and
 other built-in Node modules. These are part of the Node.js runtime and are
 governed by the Node.js license (MIT/OpenSSL).
+
+---
+
+## Inter and JetBrains Mono
+
+| Field | Value |
+|---|---|
+| Source | https://github.com/rsms/inter and https://github.com/JetBrains/JetBrainsMono |
+| Bundled at | `docs/figures/fonts/Inter-latin.woff2`, `docs/figures/fonts/JetBrainsMono-latin.woff2` |
+| License | SIL Open Font License 1.1 |
+
+Both are **bundled in this repository**, unlike everything else in this file.
+The documentation figures are rendered to PNG by headless Chromium, and a
+figure whose type falls back to whatever face the renderer happens to have
+installed is a different image on every machine. Self-hosting the two faces is
+what makes `npm run assets` reproducible.
+
+Each licence travels with its font as `docs/figures/fonts/OFL-Inter.txt` and
+`docs/figures/fonts/OFL-JetBrainsMono.txt`. Both files are the latin subset in
+variable-weight `woff2`, taken from the Google Fonts CDN.
+
+Neither font is used by the dashboard, which renders in the system stack and
+loads no font at all.
+
+---
+
+## Documentation toolchain
+
+| Field | Value |
+|---|---|
+| `mkdocs-material`, `mkdocs-redirects` | BSD 2-Clause and MIT; pinned in `requirements-docs.txt` |
+| `playwright` | Apache 2.0; a devDependency of `docs/tools/` only |
+
+None of these is bundled, and none is needed to run a fleet. `dashboard/` still
+has **no dependencies** — that is why the figure and screenshot rig lives in
+`docs/tools/` behind its own `package.json` rather than beside the daemon.
