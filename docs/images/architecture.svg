@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" width="1280" height="800" role="img" aria-label="Architecture of the actions-runners fleet: GitHub above, one Mac running the runner LaunchAgents and the fleetd daemon, and a browser dashboard below.">
+<defs><marker id="arr" markerWidth="8" markerHeight="8" refX="6.5" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#898781"/></marker><marker id="arrb" markerWidth="8" markerHeight="8" refX="6.5" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#3987e5"/></marker></defs>
+<rect width="1280" height="800" fill="#0d0d0d"/>
+<rect x="470" y="40" width="340" height="68" rx="10" fill="#1a1a19" stroke="#2c2c2a" stroke-width="1"/>
+<text x="490" y="68" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="15" font-weight="700" fill="#ffffff" text-anchor="start">GitHub API</text>
+<text x="490" y="92" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="400" fill="#898781" text-anchor="start">runs · runners · repo roster · rate limit</text>
+<polyline points="580,108 580,292" fill="none" stroke="#898781" stroke-width="1.3" marker-end="url(#arr)"/>
+<polyline points="740,292 740,108" fill="none" stroke="#898781" stroke-width="1.3" marker-end="url(#arr)"/>
+<text x="566" y="150" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="600" fill="#c3c2b7" text-anchor="end">fast loop</text>
+<text x="566" y="166" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="400" fill="#898781" text-anchor="end">15 s while building · 45 s asleep</text>
+<text x="754" y="150" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="600" fill="#c3c2b7" text-anchor="start">backfill</text>
+<text x="754" y="166" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="400" fill="#898781" text-anchor="start">10 min · 350 calls a pass · floor 1500</text>
+<rect x="48" y="168" width="1184" height="452" rx="12" fill="none" stroke="#2c2c2a" stroke-width="1"/>
+<text x="72" y="196" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="13" font-weight="700" fill="#ffffff" text-anchor="start">macOS host</text>
+<text x="168" y="196" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="400" fill="#898781" text-anchor="start">Apple Silicon · your hardware · one user account</text>
+<text x="1208" y="196" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" font-weight="400" fill="#898781" text-anchor="end">everything inside runs under launchd</text>
+<rect x="80" y="222" width="350" height="278" rx="10" fill="#1a1a19" stroke="#2c2c2a" stroke-width="1"/>
+<text x="100" y="250" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="600" fill="#c3c2b7" text-anchor="start" letter-spacing="0.8">RUNNER LAUNCHAGENTS</text>
+<rect x="100" y="266" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="108" cy="275" r="2.6" fill="#0ca30c"/>
+<rect x="139" y="266" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="147" cy="275" r="2.6" fill="#0ca30c"/>
+<rect x="178" y="266" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="186" cy="275" r="2.6" fill="#0ca30c"/>
+<rect x="217" y="266" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="225" cy="275" r="2.6" fill="#0ca30c"/>
+<rect x="256" y="266" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="264" cy="275" r="2.6" fill="#0ca30c"/>
+<rect x="295" y="266" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="303" cy="275" r="2.6" fill="#0ca30c"/>
+<rect x="334" y="266" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="342" cy="275" r="2.6" fill="#0ca30c"/>
+<rect x="373" y="266" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="381" cy="275" r="2.6" fill="#0ca30c"/>
+<rect x="100" y="290" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="108" cy="299" r="2.6" fill="#0ca30c"/>
+<rect x="139" y="290" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="147" cy="299" r="2.6" fill="#0ca30c"/>
+<rect x="178" y="290" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="186" cy="299" r="2.6" fill="#0ca30c"/>
+<rect x="217" y="290" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="225" cy="299" r="2.6" fill="#0ca30c"/>
+<rect x="256" y="290" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="264" cy="299" r="2.6" fill="#0ca30c"/>
+<rect x="295" y="290" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="303" cy="299" r="2.6" fill="#0ca30c"/>
+<rect x="334" y="290" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="342" cy="299" r="2.6" fill="#0ca30c"/>
+<rect x="373" y="290" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="381" cy="299" r="2.6" fill="#0ca30c"/>
+<rect x="100" y="314" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="108" cy="323" r="2.6" fill="#0ca30c"/>
+<rect x="139" y="314" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="147" cy="323" r="2.6" fill="#0ca30c"/>
+<rect x="178" y="314" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="186" cy="323" r="2.6" fill="#0ca30c"/>
+<rect x="217" y="314" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="225" cy="323" r="2.6" fill="#0ca30c"/>
+<rect x="256" y="314" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="264" cy="323" r="2.6" fill="#0ca30c"/>
+<rect x="295" y="314" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="303" cy="323" r="2.6" fill="#0ca30c"/>
+<rect x="334" y="314" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="342" cy="323" r="2.6" fill="#0ca30c"/>
+<rect x="373" y="314" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="381" cy="323" r="2.6" fill="#0ca30c"/>
+<rect x="100" y="338" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="108" cy="347" r="2.6" fill="#0ca30c"/>
+<rect x="139" y="338" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="147" cy="347" r="2.6" fill="#0ca30c"/>
+<rect x="178" y="338" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="186" cy="347" r="2.6" fill="#0ca30c"/>
+<rect x="217" y="338" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="225" cy="347" r="2.6" fill="#0ca30c"/>
+<rect x="256" y="338" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="264" cy="347" r="2.6" fill="#0ca30c"/>
+<rect x="295" y="338" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="303" cy="347" r="2.6" fill="#0ca30c"/>
+<rect x="334" y="338" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="342" cy="347" r="2.6" fill="#0ca30c"/>
+<rect x="373" y="338" width="33" height="18" rx="4" fill="#232322" stroke="#2c2c2a"/>
+<circle cx="381" cy="347" r="2.6" fill="#0ca30c"/>
+<text x="100" y="386" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" font-weight="400" fill="#898781" text-anchor="start">one per repo, each its own directory —</text>
+<text x="100" y="403" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" font-weight="400" fill="#898781" text-anchor="start">a second only where a workflow has >1 job</text>
+<text x="100" y="424" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" font-weight="400" fill="#898781" text-anchor="start">idle listeners are nearly free (~7 MB each);</text>
+<text x="100" y="441" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" font-weight="400" fill="#898781" text-anchor="start">two simultaneous Xcode builds are not</text>
+<text x="100" y="468" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="400" fill="#c3c2b7" text-anchor="start">runsvc.sh → RunnerService.js → listener → worker</text>
+<text x="100" y="488" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" font-weight="400" fill="#898781" text-anchor="start">job hooks: admission gate on start, drain on completion</text>
+<rect x="80" y="514" width="350" height="92" rx="10" fill="#1a1a19" stroke="#2c2c2a" stroke-width="1"/>
+<text x="100" y="542" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="600" fill="#c3c2b7" text-anchor="start" letter-spacing="0.8">LOCAL PROBES</text>
+<text x="100" y="566" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="12" font-weight="400" fill="#ffffff" text-anchor="start">launchctl list · ps · vm_stat · df</text>
+<text x="100" y="590" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" font-weight="400" fill="#898781" text-anchor="start">Runner.Worker present? → poll fast. Free; no API call.</text>
+<polyline points="255,500 255,508" fill="none" stroke="#898781" stroke-width="1.3" marker-end="url(#arr)"/>
+<rect x="470" y="222" width="740" height="374" rx="10" fill="#1a1a19" stroke="#3987e5" stroke-width="1.5"/>
+<text x="494" y="250" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="15" font-weight="700" fill="#ffffff" text-anchor="start">fleetd.js</text>
+<text x="590" y="250" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="400" fill="#898781" text-anchor="start">one process, two jobs — on purpose</text>
+<rect x="494" y="296" width="330" height="100" rx="8" fill="#232322" stroke="#2c2c2a" stroke-width="1"/>
+<text x="512" y="322" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="600" fill="#c3c2b7" text-anchor="start" letter-spacing="0.8">COLLECTOR</text>
+<text x="512" y="346" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="12" font-weight="400" fill="#ffffff" text-anchor="start">GitHub API + local probes</text>
+<text x="512" y="366" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="400" fill="#898781" text-anchor="start">fast · slow 15 min (roster, du) · backfill</text>
+<text x="512" y="384" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" font-weight="400" fill="#898781" text-anchor="start">abstains on state it has not read — never guesses</text>
+<rect x="856" y="296" width="330" height="100" rx="8" fill="#232322" stroke="#2c2c2a" stroke-width="1"/>
+<text x="874" y="322" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="600" fill="#c3c2b7" text-anchor="start" letter-spacing="0.8">SERVER</text>
+<text x="874" y="346" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="12" font-weight="400" fill="#ffffff" text-anchor="start">127.0.0.1:7878 — loopback by default</text>
+<text x="874" y="366" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="400" fill="#898781" text-anchor="start">/api/state · /api/stream (SSE) · /api/lint</text>
+<text x="874" y="384" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" font-weight="400" fill="#898781" text-anchor="start">reads are open; every action needs the bearer token</text>
+<rect x="494" y="420" width="692" height="52" rx="8" fill="#232322" stroke="#2c2c2a" stroke-width="1"/>
+<text x="512" y="442" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="600" fill="#c3c2b7" text-anchor="start" letter-spacing="0.8">SNAPSHOT · IN MEMORY</text>
+<text x="512" y="462" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="12" font-weight="400" fill="#ffffff" text-anchor="start">the collector writes it, the server reads it — no polling between them</text>
+<rect x="494" y="496" width="692" height="80" rx="8" fill="#232322" stroke="#2c2c2a" stroke-width="1"/>
+<text x="512" y="520" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="600" fill="#c3c2b7" text-anchor="start" letter-spacing="0.8">SQLITE · fleet.db</text>
+<text x="660" y="520" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="400" fill="#898781" text-anchor="start">node:sqlite — zero dependencies, no build step</text>
+<text x="512" y="542" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="12" font-weight="400" fill="#ffffff" text-anchor="start">runs · jobs · runner state · host samples · queue events · admission log</text>
+<text x="512" y="562" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" font-weight="400" fill="#898781" text-anchor="start">append-only, kept forever — GitHub discards run detail after 90 days</text>
+<polyline points="659,396 659,414" fill="none" stroke="#3987e5" stroke-width="1.3" marker-end="url(#arrb)"/>
+<polyline points="1021,414 1021,402" fill="none" stroke="#3987e5" stroke-width="1.3" marker-end="url(#arrb)"/>
+<polyline points="840,472 840,490" fill="none" stroke="#3987e5" stroke-width="1.3" marker-end="url(#arrb)"/>
+<polyline points="430,562 460,562 460,346 488,346" fill="none" stroke="#898781" stroke-width="1.3" marker-end="url(#arr)"/>
+<rect x="440" y="676" width="400" height="64" rx="10" fill="#1a1a19" stroke="#2c2c2a" stroke-width="1"/>
+<text x="460" y="702" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="13" font-weight="700" fill="#ffffff" text-anchor="start">BROWSER DASHBOARD</text>
+<text x="460" y="724" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="10.5" font-weight="400" fill="#898781" text-anchor="start">Fleet · Runs · Analytics · Lint · Alerts · Control</text>
+<polyline points="600,620 600,670" fill="none" stroke="#898781" stroke-width="1.3" marker-end="url(#arr)"/>
+<text x="588" y="650" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="600" fill="#c3c2b7" text-anchor="end">SSE /api/stream</text>
+<polyline points="690,670 690,626" fill="none" stroke="#898781" stroke-width="1.3" marker-end="url(#arr)"/>
+<text x="702" y="650" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="600" fill="#c3c2b7" text-anchor="start">POST /api/action · bearer</text>
+<text x="640" y="772" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" font-weight="400" fill="#898781" text-anchor="middle">an action is execFile with an argv array — no shell, no free-form commands, every one recorded, refused or not</text>
+<circle cx="1000" cy="700" r="3" fill="#0ca30c"/>
+<text x="1010" y="704" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="400" fill="#898781" text-anchor="start">a runner listening</text>
+<line x1="992" y1="724" x2="1008" y2="724" stroke="#3987e5" stroke-width="1.5"/>
+<text x="1014" y="728" font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-size="11" font-weight="400" fill="#898781" text-anchor="start">the daemon</text>
+</svg>

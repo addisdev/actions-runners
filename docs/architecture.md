@@ -26,6 +26,10 @@ The unit of deployment is a macOS user account.
 
 ## Component diagram
 
+![One macOS host running the runner LaunchAgents, local probes and the fleetd daemon — whose collector and server share an in-memory snapshot backed by SQLite — with GitHub above and the browser dashboard below.](images/architecture.png)
+
+*The SVG source is beside it at `images/architecture.svg`. The Mermaid version below is the same picture in text.*
+
 ```mermaid
 graph TD
     GH["GitHub API\n(api.github.com)"]
