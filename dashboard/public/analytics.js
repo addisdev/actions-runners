@@ -40,7 +40,16 @@ export async function loadAnalytics(days = state.days) {
     state.error = err.message;
   } finally {
     state.loading = false;
-    render();
+    try {
+      render();
+    } catch (err) {
+      // Rendering is part of loading the view. Without this guard, a bad data
+      // shape leaves the previous "Loading…" DOM in place forever and only
+      // reports the real failure in the browser console.
+      state.data = null;
+      state.error = `Could not render data: ${err.message}`;
+      render();
+    }
   }
 }
 
@@ -303,7 +312,7 @@ export function render() {
             noteTone: r.failureRate >= 0.25 ? 'critical' : r.failureRate >= 0.1 ? 'warning' : '',
             title: `${r.jobs} jobs · ${r.failures} failures · ${Math.round(r.busyFrac * 100)}% busy`,
           })),
-          { unit: 'jobs' }
+          { unit: (n) => `${n} jobs` }
         )
       )
     : null;
