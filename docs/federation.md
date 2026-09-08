@@ -6,15 +6,8 @@ coordinator — no inbound port is needed on agent hosts.
 
 ## Architecture
 
-```
-Mac A (coordinator)          Mac B (agent)           Mac C (agent)
-┌──────────────────┐         ┌───────────────┐       ┌───────────────┐
-│ fleetd.js        │         │ agent.js      │       │ agent.js      │
-│ fleet.db         │ ◄──────── POST /heartbeat│       │               │
-│ dashboard UI     │         │               │       │               │
-│                  │ ──────── commands ───────►       │               │
-└──────────────────┘         └───────────────┘       └───────────────┘
-```
+![One coordinator Mac running fleetd and the dashboard, with two agent Macs reporting to it. Every edge from an agent points outbound and is dashed; the second agent is marked stale rather than removed, and each host computes its own headroom](img/federation.png)
+
 
 The coordinator never initiates a connection. Agents poll on their heartbeat
 interval and receive any pending commands in the response.
