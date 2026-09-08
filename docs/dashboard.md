@@ -4,7 +4,7 @@ The dashboard is a single-page web app served by `fleetd.js`, a Node daemon
 that runs on the same machine as your runners. Open
 [http://localhost:7878](http://localhost:7878) after installing it.
 
-For installation, see [Installation → Install the dashboard](installation.md#6-install-the-dashboard).
+For installation, see [Get started → Install the dashboard](getting-started.md#5-install-the-dashboard).
 
 ## Tabs
 
@@ -98,17 +98,21 @@ minutes old) is flagged in orange.
 
 | Cause | Meaning | Autoscale eligible? |
 |---|---|---|
-| `telemetry-unavailable` | Collector last ran > 2 min ago | No |
+| `telemetry-unavailable` | GitHub or the local probes failed, so nothing here is trustworthy | No |
 | `unserved` | No runner registered for this repo | No |
 | `label-mismatch` | No runner has all required labels | No |
 | `runner-down` | All runners for this repo are offline/drained | No |
 | `concurrency-block` | Another job from this run is using the only runner | No |
-| `host-saturation` | Capacity gate refused to add a runner | No |
+| `host-saturation` | No runner is free and the headroom gate is refusing additions | No |
 | `repo-capacity` | More jobs than runners for this repo | **Yes** |
 | `github-delay` | Runner is ready but GitHub has not dispatched | No |
 
 Only `repo-capacity` with high confidence triggers autoscale. A label mismatch
 would only be made worse by cloning the existing runner.
+
+[Why a job is queued](concepts.md#why-a-job-is-queued) explains what each cause
+rules out, and [Honest analytics](design/analytics.md) explains how they are
+recorded.
 
 ## Actions
 

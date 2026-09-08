@@ -38,28 +38,58 @@ while IFS= read -r mdfile; do
       fail "$mdfile: broken link to '$target' (resolved: $resolved)"
     fi
   done < <(grep -oE '\[[^]]+\]\(([^)#]+)' "$mdfile" | sed 's/.*](\(.*\)/\1/' | grep -v '^https\?://' | grep -v '^mailto:')
-# dashboard-internals.md was migrated from dashboard/README.md and its links
-# reference files relative to the dashboard/ directory; skip it here since it
-# is supplementary documentation, not a navigation document.
-done < <(git ls-files '*.md' | grep -v 'dashboard-internals.md')
+# Every tracked Markdown file is checked. There is deliberately no exclusion
+# list here: dashboard-internals.md used to be skipped because its links were
+# relative to a directory it no longer lived in, and a file exempt from the
+# link check is a file whose links rot silently. It has since been split into
+# docs/design/, and the links were fixed rather than exempted.
+done < <(git ls-files '*.md')
 [ "$FAIL" -eq 0 ] && ok "all internal markdown links resolve"
 
 # ---------------------------------------------------------------------------
 # 2. Documented CLI scripts exist
 # ---------------------------------------------------------------------------
-echo "==> checking documented scripts exist"
-documented_scripts=(
-  preflight.sh register.sh status.sh health.sh runs.sh cleanup.sh
-  scripts/deregister.sh scripts/drain-runner.sh scripts/install-hooks.sh
-  scripts/ephemeral-runner.sh scripts/reap-ephemeral.sh scripts/release-check.sh
+# This used to be a hand-maintained array of twelve script names, which checked
+# the direction that never breaks — a documented script is deleted — and missed
+# the one that always does: a script is added and nobody writes it down. Nine
+# scripts had reached the tree undocumented by the time anyone looked. So the
+# reference page is now the list, and every entry point has to appear on it.
+echo "==> checking every script is documented"
+SCRIPT_DOC="docs/reference/scripts.md"
+[ -f "$SCRIPT_DOC" ] || fail "$SCRIPT_DOC is missing"
+
+# Sourced libraries and test helpers, not command-line entry points. Named
+# individually so that adding one to this list is a decision somebody makes in
+# a diff rather than a pattern quietly widening.
+not_entry_points=(
+  hooks/common.sh
+  hooks/tests/install.sh
+  dashboard/autofix/escalate/run.mjs
 )
-for s in "${documented_scripts[@]}"; do
-  if [ -f "$HERE/$s" ]; then
-    ok "$s"
+
+while IFS= read -r script; do
+  case " ${not_entry_points[*]} " in
+    *" $script "*) continue ;;
+  esac
+  # docs/tools/ is the figure and screenshot rig; it documents itself in its
+  # own README and is not part of running a fleet.
+  case "$script" in
+    docs/tools/*) continue ;;
+  esac
+  if grep -q "$(basename "$script")" "$SCRIPT_DOC"; then
+    ok "$script documented"
   else
-    fail "documented script missing: $s"
+    fail "$script is not documented in $SCRIPT_DOC"
   fi
-done
+done < <(git ls-files '*.sh' '*.py' '*.mjs')
+
+# There is deliberately no check in the other direction — that every script
+# name appearing in the reference exists. The page names `teardown.sh`, which
+# was removed and is described as history, and `config.sh`, `svc.sh` and
+# `runsvc.sh`, which ship inside each runner directory and are never tracked
+# here. A check that has to special-case those is a check that will be silenced
+# rather than fixed the next time it is wrong; the link checker above already
+# catches a reference to a path that does not exist.
 
 # ---------------------------------------------------------------------------
 # 3. fleet.env.example variables are mentioned in docs/configuration.md

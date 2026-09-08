@@ -24,7 +24,7 @@ Use this checklist before tagging any release on the public repository.
 ### Documentation
 - [ ] `CHANGELOG.md` updated with release notes
 - [ ] `dashboard/package.json` version matches the release tag
-- [ ] Quick start in `docs/installation.md` has been tested on a clean Mac
+- [ ] Quick start in `docs/getting-started.md` has been tested on a clean Mac
 - [ ] All links in `docs/*.md` resolve (run `scripts/check-docs.sh`)
 
 ### Repository state

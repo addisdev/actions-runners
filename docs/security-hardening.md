@@ -169,4 +169,4 @@ SSH configured with key authentication only (`PasswordAuthentication no` in
 
 ## Security contact
 
-See [SECURITY.md](../SECURITY.md) for the vulnerability reporting process.
+See [SECURITY.md](https://github.com/addisdev/actions-runners/blob/main/SECURITY.md) for the vulnerability reporting process.
