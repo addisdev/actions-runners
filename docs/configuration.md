@@ -82,6 +82,9 @@ that `fleetctl.sh install` writes. To change after install:
 | `FLEET_ALERTS` | `1` | Set to `0` to disable the alerts system. | No |
 | `FLEET_ALERT_CONFIG` | `dashboard/alerts.config.json` | Alert configuration file. | No |
 | `FLEET_ADMISSION_LOG` | `dashboard/logs/admission.ndjson` | Where job-started.sh appends decisions. | Yes |
+| `FLEET_BACKFILL_MS` | `600000` (10 min) | How often a backfill pass runs, until it has caught up. | No |
+| `FLEET_BACKFILL_CALLS` | `350` | API calls one pass may spend. Bounded on purpose: ~1,100 runs need ~1,100 job calls, and a greedy sweep starves the fast loop. | No |
+| `FLEET_BACKFILL_FLOOR` | `1500` | Rate-limit budget the backfill will not dip below, so the fast loop always has calls left. | No |
 
 ## Capacity and autoscaling
 
@@ -96,7 +99,7 @@ the daemon. A value in `fleet.env` seeds the setting on first boot.
 | `FLEET_MIN_FREE_DISK_GB` | `20` | Refuse to add runners below this free-disk threshold. |
 | Autoscale on/off | off | Toggle on Capacity tab. |
 | Autoscale dry-run | off | Log decisions without acting; toggle on Capacity tab. |
-| Idle TTL | 0 (off) | Deregister a duplicate runner idle for this many hours. |
+| Idle TTL | `259200000` ms (3 days) | Deregister a duplicate runner idle for this long. Three days rather than hours: a dry run at six hours proposed removing a duplicate that had run 103 jobs and last worked that morning — six hours does not mean unused, it means overnight. See [Capacity and autoscaling](design/capacity.md#the-autoscaler). |
 
 ## Job admission variables
 
