@@ -1,0 +1,12 @@
+# The documentation site's only dependencies. Pinned rather than floating: a
+# theme upgrade that changes the rendered HTML should be a commit somebody
+# made, not something that happens to a build on a Tuesday.
+#
+# Build it locally exactly as CI does:
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements-docs.txt
+#   .venv/bin/mkdocs serve
+mkdocs-material==9.7.7
+
+# installation.md became getting-started.md. Without this, every link anyone
+# saved to the install guide 404s on the site.
+mkdocs-redirects==1.2.2

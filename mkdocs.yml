@@ -1,0 +1,125 @@
+site_name: Actions Runners
+site_description: Many self-hosted GitHub Actions runners on one Mac, and the page that says whether any of them is broken.
+site_url: https://addisdev.github.io/actions-runners/
+repo_url: https://github.com/addisdev/actions-runners
+repo_name: addisdev/actions-runners
+edit_uri: edit/main/docs/
+copyright: MIT licensed
+
+theme:
+  name: material
+  logo: img/mark-mono.svg
+  favicon: img/mark.svg
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - content.tabs.link
+    - search.highlight
+    - search.suggest
+    - toc.follow
+  palette:
+    # The dashboard's own colours: plane #0b0f17 and accent #60a5fa. Material's
+    # palette is a fixed set of names, so the accent is the nearest one and the
+    # exact hexes are pinned in docs/css/brand.css.
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: blue
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: blue
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+# docs/figures/ holds the SOURCES the figures are rendered from — one HTML file
+# per figure, the stylesheet they share, and the self-hosted fonts. docs/tools/
+# holds the scripts that render them and the screenshot rig. Both are inputs to
+# `npm run assets`, not pages.
+#
+# The directory is `figures/` and not `assets/` because Material writes its own
+# theme stylesheets to site/assets/, and excluding `assets/` takes those with it
+# — every page then links a stylesheet the build no longer ships.
+exclude_docs: |
+  figures/
+  tools/
+  README.md
+
+extra_css:
+  - css/brand.css
+
+plugins:
+  - search
+  # installation.md became getting-started.md when the README's quick start
+  # merged into it. Anyone who bookmarked the install guide keeps their link.
+  - redirects:
+      redirect_maps:
+        installation.md: getting-started.md
+        dashboard-internals.md: design/index.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  # The workflow guide includes examples/*.yml verbatim, which CI shellchecks
+  # and the release check scans. Copying them into the page instead would mean
+  # the docs could drift from the files a reader is told to copy.
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+
+nav:
+  - Home: index.md
+  - Get started: getting-started.md
+  - Concepts: concepts.md
+  - Architecture: architecture.md
+  - Dashboard: dashboard.md
+  - Guides:
+      - Workflows: workflows.md
+      - Operations: operations.md
+      - Admission and scaling: admission-and-scaling.md
+      - Ephemeral runners: ephemeral-runners.md
+      - Federation: federation.md
+      - Troubleshooting: troubleshooting.md
+      - Upgrading: upgrading.md
+      - Uninstalling: uninstalling.md
+  - Reference:
+      - Configuration: configuration.md
+      - Scripts: reference/scripts.md
+      - HTTP API: api.md
+      - Glossary: glossary.md
+  - Security: security-hardening.md
+  - Design notes:
+      - Overview: design/index.md
+      - Zero dependencies: design/zero-dependencies.md
+      - Inferred groups: design/groups.md
+      - The control plane: design/control-plane.md
+      - Workflow lint: design/lint.md
+      - Alerts and autofix: design/alerts.md
+      - Capacity and autoscaling: design/capacity.md
+      - Honest analytics: design/analytics.md
+  - Brand: brand.md
+  - Release: release-checklist.md
