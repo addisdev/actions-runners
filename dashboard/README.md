@@ -39,9 +39,10 @@ Full documentation is in the [docs handbook](../docs/README.md):
 - **[Operations](../docs/operations.md)** — maintenance, drain/resume, health repair
 - **[Admission and scaling](../docs/admission-and-scaling.md)** — throttling concurrent jobs
 
-For deeper implementation rationale (why the grouping logic works the way it
-does, why zero dependencies, the auth model, what drift means), see
-[dashboard-internals.md](../docs/dashboard-internals.md).
+For the reasoning behind the design — why the grouping logic works the way it
+does, why there are no dependencies, what may act unattended, what the numbers
+exclude — see the [design notes](../docs/design/index.md). What drift means and
+why a job is queued are in [Concepts](../docs/concepts.md).
 
 ## Design principles
 
