@@ -49,12 +49,20 @@ verifies its checksum, configures it, and installs and starts a LaunchAgent.
 Source: [`register.sh`](https://github.com/addisdev/actions-runners/blob/main/register.sh).
 
 ```bash
-./register.sh owner/repo [extra-label]
-RUNNER_INSTANCE=2 ./register.sh owner/repo [extra-label]
+./register.sh owner/repo [extra-label...]
+RUNNER_INSTANCE=2 ./register.sh owner/repo [extra-label...]
 ```
 
-It parses no flags. Both arguments are positional: the repository as
-`owner/name`, and an optional extra label.
+Examples:
+
+```bash
+./register.sh owner/project-ios xcode-16.3
+./register.sh owner/project-web ci playwright
+```
+
+It parses no flags. The repository is the first positional argument; every
+argument after it is an extra label. Multiple labels are passed to `config.sh`
+as a single comma-separated `--labels` value (`ci,playwright`).
 
 | Variable | Effect |
 |---|---|
@@ -183,8 +191,10 @@ Source: [`cleanup.sh`](https://github.com/addisdev/actions-runners/blob/main/cle
 | `--apply` | Perform the deletions. Recognised only as the first argument. |
 
 It removes DerivedData directories older than 7 days, simulators whose runtime
-is no longer installed, and runner `_diag` logs older than 14 days. It prints
-free disk before and after.
+is no longer installed, runner `_diag` logs older than 14 days, and stale
+Playwright `__dirlock` entries older than 6 hours when no browser install is
+running. It reports Playwright cache sizes without deleting browser binaries,
+and prints free disk before and after.
 
 What it refuses to do:
 

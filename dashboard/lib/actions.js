@@ -25,6 +25,15 @@ const REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 const LABEL_RE = /^[A-Za-z0-9._-]{1,40}$/;
 const REF_RE = /^[A-Za-z0-9._\/-]{1,120}$/;
 
+const parseLabels = (input) => {
+  if (input == null || input === '') return [];
+  const raw = Array.isArray(input) ? input : [String(input)];
+  return raw
+    .flatMap((s) => String(s).split(/[,\s]+/))
+    .map((s) => s.trim())
+    .filter(Boolean);
+};
+
 class ActionError extends Error {
   constructor(message, status = 400) {
     super(message);
@@ -199,12 +208,15 @@ export function buildActions({ root, gh, getSnapshot, getLimits = () => ({}) }) 
       label: 'Register a runner',
       danger: 'high',
       confirm: 'This registers a new runner with GitHub and installs a LaunchAgent.',
-      summary: (a) =>
-        `${a.instance > 1 ? `RUNNER_INSTANCE=${a.instance} ` : ''}./register.sh ${a.repo}${a.label ? ` ${a.label}` : ''}`,
+      summary: (a) => {
+        const labels = parseLabels(a.label);
+        return `${a.instance > 1 ? `RUNNER_INSTANCE=${a.instance} ` : ''}./register.sh ${a.repo}${labels.length ? ` ${labels.join(' ')}` : ''}`;
+      },
       async exec({ repo, label, instance, force }) {
         knownRepo(repo);
-        if (label != null && label !== '' && !LABEL_RE.test(label)) {
-          throw new ActionError('malformed label');
+        const labels = parseLabels(label);
+        for (const l of labels) {
+          if (!LABEL_RE.test(l)) throw new ActionError('malformed label');
         }
         const inst = instance ? intArg(instance, 'instance') : 1;
         if (inst > 4) throw new ActionError('instance must be 1–4');
@@ -216,9 +228,8 @@ export function buildActions({ root, gh, getSnapshot, getLimits = () => ({}) }) 
         const siblings = getSnapshot().runners.filter((r) => r.repo === repo && r.registered);
         if (inst > 1 && siblings.length) {
           const expected = siblings[0].extraLabels ?? [];
-          const given = label ? [label] : [];
           const same =
-            expected.length === given.length && expected.every((l) => given.includes(l));
+            expected.length === labels.length && expected.every((l) => labels.includes(l));
           if (!same) {
             throw new ActionError(
               `label mismatch: the existing runner carries [${expected.join(', ') || 'no extra labels'}]. ` +
@@ -239,8 +250,7 @@ export function buildActions({ root, gh, getSnapshot, getLimits = () => ({}) }) 
           }
         }
 
-        const args = [repo];
-        if (label) args.push(label);
+        const args = [repo, ...labels];
         return run('./register.sh', args, {
           cwd: root,
           timeout: 300000,
@@ -261,7 +271,7 @@ export function buildActions({ root, gh, getSnapshot, getLimits = () => ({}) }) 
         'run at once. It consumes ~1.3 GB of disk and a concurrency slot.',
       summary: (a) => {
         const { repo, next, labels } = duplicatePlan(a.name);
-        return `RUNNER_INSTANCE=${next} ./register.sh ${repo}${labels.length ? ` ${labels.join(',')}` : ''}`;
+        return `RUNNER_INSTANCE=${next} ./register.sh ${repo}${labels.length ? ` ${labels.join(' ')}` : ''}`;
       },
       async exec({ name, force }) {
         const { repo, next, labels } = duplicatePlan(name);
@@ -286,8 +296,7 @@ export function buildActions({ root, gh, getSnapshot, getLimits = () => ({}) }) 
           );
         }
 
-        const args = [repo];
-        if (labels.length) args.push(labels.join(','));
+        const args = [repo, ...labels];
         return run('./register.sh', args, {
           cwd: root,
           timeout: 300000,

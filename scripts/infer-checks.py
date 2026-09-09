@@ -25,6 +25,7 @@ MARKERS = {
     'NEED_NODE': ('npm ', 'npx ', 'setup-node', 'yarn ', 'pnpm '),
     'NEED_DOCKER': ('docker ', 'docker-compose', 'compose config', 'docker/'),
     'NEED_ANDROID': ('gradle', 'gradlew', 'android'),
+    'NEED_PLAYWRIGHT': ('playwright install', 'playwright test', '@playwright/test', 'microsoft/playwright'),
 }
 
 

@@ -409,7 +409,49 @@ export function render() {
       )
     : null;
 
-  mount(root, rangeBar, kpis, causesPanel, secondRunner, slowest, zombiePanel, steps, flakyPanel, volume,
+  // ---- Playwright / E2E (from step and job names only) ---------------------
+  const pw = d.playwright;
+  const playwrightPanel = pw
+    ? panel(
+        'Playwright / E2E',
+        'Browser-install step timings and E2E job outcomes from recorded step and job names. ' +
+          'No flake rate, browser split, or artifact availability unless workflows name them.',
+        (pw.browserInstall?.count || pw.e2eJobs?.count)
+          ? h('section', { class: 'kpis kpis-compact' },
+              statTile({
+                label: 'Browser install',
+                value: pw.browserInstall.count,
+                unit: 'steps',
+                sub: pw.browserInstall.p50 != null
+                  ? `p50 ${fmtMs(pw.browserInstall.p50)} · p95 ${fmtMs(pw.browserInstall.p95)}`
+                  : 'no install step timings yet',
+              }),
+              statTile({
+                label: 'E2E jobs',
+                value: pw.e2eJobs.count,
+                sub: pw.e2eJobs.count
+                  ? `${pw.e2eJobs.successes} ok · ${pw.e2eJobs.failures} failed`
+                  : 'no matching jobs in window',
+                tone: pw.e2eJobs.successRate == null ? undefined
+                  : pw.e2eJobs.successRate > 0.9 ? 'good'
+                    : pw.e2eJobs.successRate > 0.75 ? 'warning' : 'critical',
+              }),
+              statTile({
+                label: 'E2E job time',
+                value: pw.e2eJobs.p50Duration != null ? fmtMs(pw.e2eJobs.p50Duration) : '–',
+                sub: pw.e2eJobs.p95Duration != null ? `p95 ${fmtMs(pw.e2eJobs.p95Duration)}` : '',
+              }),
+              statTile({
+                label: 'E2E queue',
+                value: pw.e2eJobs.p50Queue != null ? fmtMs(pw.e2eJobs.p50Queue) : '–',
+                sub: pw.e2eJobs.p95Queue != null ? `p95 ${fmtMs(pw.e2eJobs.p95Queue)}` : '',
+              })
+            )
+          : h('div', { class: 'empty', text: 'No Playwright or E2E jobs in this window — or step detail has not backfilled yet.' })
+      )
+    : null;
+
+  mount(root, rangeBar, kpis, causesPanel, playwrightPanel, secondRunner, slowest, zombiePanel, steps, flakyPanel, volume,
     runnerUtilPanel, eventBreakdownPanel, hostPressurePanel, alertStatsPanel, backfillCoveragePanel);
 }
 

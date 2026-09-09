@@ -46,6 +46,8 @@ static group collisions.
 ### `GET /api/analytics?days=30`
 
 Aggregate job history by repo: count, duration percentiles, failure rate.
+Includes a `playwright` object with browser-install step timings and E2E job
+queue/duration metrics derived from recorded step and job names only.
 `days` defaults to 30, max 365.
 
 ### `GET /api/billing`

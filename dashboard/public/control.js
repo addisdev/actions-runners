@@ -142,7 +142,7 @@ function registerPanel() {
 
   const repoSel = h('select', { class: 'input', id: 'reg-repo' },
     repos.map((r) => h('option', { value: r, text: r })));
-  const labelIn = h('input', { class: 'input', id: 'reg-label', placeholder: 'extra label (optional)' });
+  const labelIn = h('input', { class: 'input', id: 'reg-label', placeholder: 'extra labels (optional, space-separated)' });
   const instSel = h('select', { class: 'input', id: 'reg-instance' },
     [1, 2, 3].map((n) => h('option', { value: String(n), text: n === 1 ? 'first runner' : `instance ${n}` })));
 

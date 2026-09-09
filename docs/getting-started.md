@@ -83,6 +83,10 @@ actually need:
 before continuing — most of what it catches otherwise surfaces as a red build
 whose diagnostic points somewhere other than the real cause.
 
+When your workflows use Playwright, preflight also reports browser cache sizes
+and warns about shared `~/Library/Caches/ms-playwright` paths or stale
+`__dirlock` files that can hang concurrent installs.
+
 ## 4. Register your first runner
 
 ```bash
@@ -125,10 +129,11 @@ RUNNER_INSTANCE=2 ./register.sh owner/project-ios
 ```
 
 !!! warning "A second runner must carry the first one's labels"
-    Pass the same extra label (e.g. `xcode-16.3`) as the first runner, or the
-    second one will not match the same `runs-on:` and will sit idle while the
-    first one queues — which looks exactly like the problem you were trying to
-    fix. The dashboard's **Duplicate** button does this automatically.
+    Pass the same extra labels (e.g. `xcode-16.3`, or `ci playwright`) as the
+    first runner, or the second one will not match the same `runs-on:` and will
+    sit idle while the first one queues — which looks exactly like the problem
+    you were trying to fix. The dashboard's **Duplicate** button does this
+    automatically.
 
 ## 5. Install the dashboard
 

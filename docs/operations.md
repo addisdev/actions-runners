@@ -86,10 +86,19 @@ What it cleans:
   never candidates)
 - Unavailable simulators (`xcrun simctl delete unavailable`)
 - Runner `_diag` logs older than 14 days
+- Playwright browser cache sizes (reported every run)
+- Stale Playwright `__dirlock` files older than 6 hours (skipped while an
+  install is in flight)
 
 **Refuses to run while any job is in flight.** Deleting DerivedData under a
 live xcodebuild produces a failure that looks like a code problem — the worst
-kind of CI flake to chase.
+kind of CI flake to chase. Stale Playwright locks are only removed when no
+`playwright install` is running.
+
+Playwright caches can be several gigabytes per runner. If disk alerts fire
+repeatedly, check cache sizes in the cleanup dry-run output and confirm
+workflows export `PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TOOL_CACHE/ms-playwright`
+so each runner keeps its own copy.
 
 ## Backup
 

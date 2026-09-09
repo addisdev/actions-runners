@@ -80,6 +80,70 @@ per run after this change.
 If you want a clean build (e.g. a release job), use an [ephemeral runner](ephemeral-runners.md) instead of disabling caching on the persistent runner —
 the cache is the point of running on persistent hardware.
 
+## Playwright UI tests
+
+Web repos on this fleet typically run Playwright through npm. Three conventions
+keep multi-runner Mac hosts reliable:
+
+**Per-runner browser cache.** Without `PLAYWRIGHT_BROWSERS_PATH`, every runner
+shares `~/Library/Caches/ms-playwright`. Concurrent `playwright install` steps
+contend on `__dirlock` and jobs hang with no useful error. Point each runner at
+its own tool cache. The `runner` context is available to steps, so export it
+through `GITHUB_ENV` before installing browsers:
+
+```yaml
+- name: Isolate Playwright browser cache
+  run: echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TOOL_CACHE/ms-playwright" >> "$GITHUB_ENV"
+```
+
+**Install step timeout.** Browser downloads can stall. Give the install step its
+own `timeout-minutes` (15 is a reasonable start) rather than relying on the job
+timeout alone.
+
+**Failure artifacts.** Upload `playwright-report/`, `test-results/`, or traces
+with `actions/upload-artifact` on `failure()`. Logs alone rarely show what broke
+in a UI test.
+
+See `examples/workflow-playwright.yml` for a complete template. The dashboard
+**Lint** tab flags shared caches, install steps without timeouts, and missing
+failure uploads on self-hosted Playwright jobs.
+
+`./preflight.sh` reports browser cache sizes and stale `__dirlock` files when
+workflows use Playwright. `./cleanup.sh` removes stale locks (dry-run by default)
+when the fleet is idle.
+
+### Routing Playwright jobs with labels
+
+A `playwright` extra label is **routing only** — it tells GitHub which runner
+may take the job. It does **not** isolate browser caches, disk, or memory. Runners
+on the same Mac still share the same user home unless every workflow sets
+`PLAYWRIGHT_BROWSERS_PATH`.
+
+For isolation, register a **dedicated runner instance** (or a separate host)
+and route Playwright jobs to it:
+
+```bash
+./register.sh owner/project-web playwright
+# multiple labels are comma-separated on the runner, space-separated on the CLI:
+./register.sh owner/project-web ci playwright
+```
+
+```yaml
+jobs:
+  smoke:
+    runs-on: [self-hosted, macos, arm64, playwright]
+```
+
+A Playwright job on a runner that also serves Xcode builds still competes for
+disk and RAM with those builds. The label picks the runner; it does not reserve
+capacity. Use a second instance, admission control, or a separate machine when
+E2E and native builds must not contend.
+
+Admission control and disk alerts for Playwright are **not enabled by default**.
+See [Admission control and autoscaling](admission-and-scaling.md#playwright-rollout)
+for why `observe` → `enforce` is an operator rollout, not something this repo
+turns on for you.
+
 ## Concurrency groups
 
 Without a concurrency group, one push and one PR merge can run simultaneously,

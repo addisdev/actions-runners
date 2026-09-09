@@ -15,6 +15,9 @@ const RULES = {
   unserved: 'No runner for the repo',
   'no-cancel-in-progress': 'PR runs are not superseded',
   'hosted-macos': 'GitHub-hosted macOS (10x)',
+  'playwright-shared-cache': 'Shared Playwright browser cache',
+  'playwright-install-timeout': 'Playwright install has no timeout',
+  'playwright-no-failure-artifacts': 'No Playwright failure artifacts',
   unparsed: 'Not fully readable',
   'lint-error': 'Linter bug',
 };
@@ -159,6 +162,9 @@ export function render() {
           ['unserved', 'The repo has self-hosted jobs and no runner registered anywhere.'],
           ['no-timeout', "A hung job holds its runner forever. GitHub's 6-hour default never applied to self-hosted."],
           ['hosted-macos', 'Bills at 10x against the included allowance — exhausting it once blocked Actions account-wide.'],
+          ['playwright-shared-cache', 'Concurrent browser installs on one Mac hang on __dirlock when runners share the default cache.'],
+          ['playwright-install-timeout', 'A stuck browser download holds the runner until the job timeout — often hours on self-hosted.'],
+          ['playwright-no-failure-artifacts', 'Failed UI tests need traces or HTML reports — logs alone rarely show what broke.'],
           ['no-cancel-in-progress', 'Every push to a PR starts another run while the last one is still going, and they queue.'],
           ['unparsed', 'The parser would not guess. Nothing was checked for that file or job.'],
         ].map(([rule, why]) =>
