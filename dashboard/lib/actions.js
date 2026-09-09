@@ -20,6 +20,7 @@
 
 import { execFile } from 'node:child_process';
 import { headroom } from './capacity.js';
+import { roleLabel } from './state.js';
 
 const REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 const LABEL_RE = /^[A-Za-z0-9._-]{1,40}$/;
@@ -109,7 +110,15 @@ export function buildActions({ root, gh, getSnapshot, getLimits = () => ({}) }) 
     // reusing a number whose directory was left behind by a failed removal would
     // collide rather than recover.
     const next = Math.max(...siblings.map((r) => r.instance ?? 1)) + 1;
-    const base = [...siblings].sort((a, b) => (a.instance ?? 1) - (b.instance ?? 1))[0] ?? target;
+    // Copy labels from the lowest-numbered sibling with the SAME role. A ci
+    // runner and a ui-web runner are intentional siblings, not copies of each
+    // other: registering a second ui-web runner should use the first ui-web
+    // runner as its template, not the ci runner.
+    const targetRole = roleLabel(target.extraLabels);
+    const roleMatch = [...siblings]
+      .filter((r) => roleLabel(r.extraLabels) === targetRole)
+      .sort((a, b) => (a.instance ?? 1) - (b.instance ?? 1));
+    const base = roleMatch[0] ?? target;
     const labels = base.extraLabels ?? [];
     for (const l of labels) {
       if (!LABEL_RE.test(l)) throw new ActionError(`sibling carries an unusable label: ${l}`);
@@ -227,14 +236,22 @@ export function buildActions({ root, gh, getSnapshot, getLimits = () => ({}) }) 
         // first one queues. This is the mistake the fleet has already made.
         const siblings = getSnapshot().runners.filter((r) => r.repo === repo && r.registered);
         if (inst > 1 && siblings.length) {
-          const expected = siblings[0].extraLabels ?? [];
-          const same =
-            expected.length === labels.length && expected.every((l) => labels.includes(l));
-          if (!same) {
-            throw new ActionError(
-              `label mismatch: the existing runner carries [${expected.join(', ') || 'no extra labels'}]. ` +
-                `A second runner must carry the same, or it will never match the same runs-on:.`
-            );
+          // Only enforce same-label within the same role. A repo may have both
+          // a `ci` runner and a `ui-web` runner — those are intentional roles,
+          // not mislabelled siblings. A second `ui-web` runner must match the
+          // first `ui-web`, not the `ci` runner.
+          const newRole = roleLabel(labels);
+          const sameRole = siblings.filter((r) => roleLabel(r.extraLabels) === newRole);
+          if (sameRole.length) {
+            const expected = sameRole[0].extraLabels ?? [];
+            const same =
+              expected.length === labels.length && expected.every((l) => labels.includes(l));
+            if (!same) {
+              throw new ActionError(
+                `label mismatch: the existing ${newRole ?? 'unroled'} runner carries [${expected.join(', ') || 'no extra labels'}]. ` +
+                  `A second runner of the same role must carry the same labels, or it will never match the same runs-on:.`
+              );
+            }
           }
         }
 

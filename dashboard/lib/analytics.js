@@ -7,6 +7,7 @@
 // build drags an average somewhere no individual run has ever been.
 
 import { FAILURE_CLASSES } from './failures.js';
+import { flakyTestSummary } from './test-results.js';
 
 const pct = (sorted, p) => {
   if (!sorted.length) return null;
@@ -540,6 +541,7 @@ export function analytics(db, { days = 30, runnersByRepo = new Map() } = {}) {
           p50Queue: pct(e2eQueues, 50),
           p95Queue: pct(e2eQueues, 95),
         },
+        flakyTests: flakyTestSummary(db, { days }),
       };
     })(),
   };

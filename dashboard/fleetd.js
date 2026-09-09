@@ -46,6 +46,7 @@ import {
   buildBaseline, forecastDemand, extractSchedules, evaluatePrediction, evaluateGate,
 } from './lib/forecast.js';
 import { createAdmission } from './lib/admission.js';
+import { ingestTestOutcomes } from './lib/test-results.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(HERE, 'public');
@@ -82,6 +83,7 @@ const CONFIG = {
   // a second daemon run for testing must not ingest into the real database from
   // the real log.
   admissionLog: process.env.FLEET_ADMISSION_LOG ?? join(HERE, 'logs', 'admission.ndjson'),
+  testOutcomesSpool: process.env.FLEET_TEST_OUTCOMES_SPOOL ?? join(HERE, '..', '.playwright-outcomes.ndjson'),
 };
 
 // Grouping, capacity and autoscaling settings do NOT live in CONFIG. They are
@@ -952,6 +954,13 @@ async function fastTick() {
     admission.ingest();
   } catch (err) {
     warn('admission ingest:', err.message);
+  }
+
+  // Playwright per-test outcomes — non-blocking, appended by job-completed.sh.
+  try {
+    await ingestTestOutcomes(db, CONFIG.testOutcomesSpool);
+  } catch (err) {
+    warn('test outcomes ingest:', err.message);
   }
 
   snapshot = {

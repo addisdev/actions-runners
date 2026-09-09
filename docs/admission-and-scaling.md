@@ -153,6 +153,47 @@ FLEET_ADMIT_MIN_FREE_DISK_GB=40
 
 See [Configuration](configuration.md) for all admission variables.
 
+### Browser matrix burn-in: observe → enforce
+
+The browser matrix (Playwright `web-e2e` with `matrix_cells`) runs multiple
+concurrent jobs per repo — one per browser/shard cell. On a fleet with `ui-web`
+runners dedicated to E2E, each cell lands on its own runner. On a shared host,
+all cells from the same repo land on the same pool.
+
+**Recommended burn-in sequence:**
+
+1. Keep `FLEET_ADMIT_MODE=observe` for the first two weeks of matrix runs.
+2. Watch the Capacity tab's E2E queue p95 and host pressure charts. Matrix runs
+   for Greenfolio (6 cells) and Dozehound (4 cells) are the stress drivers.
+3. Compare `.playwright-outcomes.ndjson` growth to the `test_outcomes` DB table
+   (ingested each tick by the daemon).
+4. When host pressure stays below "warning" on three consecutive matrix days,
+   consider moving to `enforce` with `FLEET_ADMIT_MAX_CONCURRENT` set to one
+   below the observed peak concurrent E2E jobs.
+5. Promote advisory Firefox/WebKit legs to blocking only after each engine has
+   a 14-day, 30-run history at ≥ 98% success rate with no runner-specific
+   failures.
+
+**Example matrix cell counts:**
+
+A small suite (1–30 tests) typically runs 1 Chromium shard + 1 advisory Firefox
++ 1 advisory WebKit = 3 cells. A larger suite benefits from 2–4 Chromium shards
+to keep wall time under 10 minutes; Firefox and WebKit stay at 1 cell each until
+their reliability justifies sharding.
+
+**Canary checklist** (run once after deploying the matrix workflow):
+
+- [ ] Trigger `web-e2e` on each product repo and verify all cells start.
+- [ ] Confirm `blob-*` artifacts appear for each cell; `merge-reports` produces
+      a single merged HTML; `gate` passes when only advisory cells fail.
+- [ ] Force a test failure in one Chromium cell and verify `gate` blocks the PR.
+- [ ] Force a failure in Firefox only and verify `gate` stays green.
+- [ ] Introduce a deliberate retry-pass (one failing attempt, one passing) and
+      verify the test appears as flaky in the Analytics tab.
+- [ ] Run `./preflight.sh` and check Playwright cache sizes are per-runner.
+- [ ] Run `./cleanup.sh` (dry run) and confirm stale `__dirlock` removal is
+      mentioned without errors.
+
 ## Failure behaviour
 
 Every failure path in admission exits 0. A hook that cannot read its config,

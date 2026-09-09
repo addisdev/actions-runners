@@ -110,6 +110,11 @@ describe('playwright analytics', () => {
     assert.equal(data.playwright.e2eJobs.count, 0);
     assert.equal(data.playwright.e2eJobs.successRate, null);
   });
+
+  test('playwright.flakyTests is an array', () => {
+    const result = analytics(db);
+    assert.ok(Array.isArray(result.playwright.flakyTests));
+  });
 });
 
 describe('analytics UI contract', () => {
