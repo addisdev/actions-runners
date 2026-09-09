@@ -28,6 +28,12 @@ const unk = (key) => JSON.parse(key);
 
 const isFail = (c) => c === 'failure' || c === 'timed_out';
 
+// Playwright/E2E heuristics from step and job names only — the DB has no browser
+// split, flake rate, or artifact availability unless workflows name them.
+const PW_INSTALL_STEP_RE =
+  /playwright\s+install|install\s+(?:the\s+)?(?:chromium|firefox|webkit|browsers?)|install\s+playwright/i;
+const PW_CONTEXT_RE = /playwright|\be2e\b/i;
+
 // A cancelled run's duration measures how long until something killed it, not
 // how long the work takes. Including them puts a 24-hour outlier in the same
 // percentile as a 90-second test suite. Timed-out runs stay: hitting the
@@ -452,6 +458,89 @@ export function analytics(db, { days = 30, runnersByRepo = new Map() } = {}) {
           GROUP BY day ORDER BY day`).all((Date.now() - days * 86400000) * 1);
       } catch { /* ignore */ }
       return rows.slice(-90);
+    })(),
+    playwright: (() => {
+      const stepRows = db.prepare(`
+        SELECT j.id AS job_id, j.repo, j.name AS job_name, j.conclusion, j.queued_ms, j.duration_ms,
+               j.runner_name, r.workflow_name, s.name AS step_name, s.duration_ms AS step_duration_ms
+        FROM steps s
+        JOIN jobs j ON j.id = s.job_id
+        LEFT JOIN runs r ON r.id = j.run_id
+        WHERE j.started_at >= ? AND j.id > 0
+          AND j.runner_name IS NOT NULL AND j.runner_name != ''`).all(since);
+
+      const jobs = new Map();
+      const installMs = [];
+
+      for (const row of stepRows) {
+        const step = row.step_name ?? '';
+        const ctx = `${row.workflow_name ?? ''} ${row.job_name ?? ''} ${step}`.toLowerCase();
+
+        const namedE2e = PW_CONTEXT_RE.test(ctx);
+        if (namedE2e && typeof row.step_duration_ms === 'number' && PW_INSTALL_STEP_RE.test(step)) {
+          installMs.push(row.step_duration_ms);
+        }
+
+        let job = jobs.get(row.job_id);
+        if (!job) {
+          job = {
+            conclusion: row.conclusion,
+            queued_ms: row.queued_ms,
+            duration_ms: row.duration_ms,
+            runner_name: row.runner_name,
+            playwright: false,
+          };
+          jobs.set(row.job_id, job);
+        }
+        if (namedE2e) job.playwright = true;
+      }
+
+      // Jobs whose step detail has not backfilled yet — workflow/job names only.
+      const jobOnly = db.prepare(`
+        SELECT j.id, j.name AS job_name, j.conclusion, j.queued_ms, j.duration_ms,
+               j.runner_name, r.workflow_name
+        FROM jobs j
+        LEFT JOIN runs r ON r.id = j.run_id
+        WHERE j.started_at >= ? AND j.id > 0
+          AND j.runner_name IS NOT NULL AND j.runner_name != ''
+          AND NOT EXISTS (SELECT 1 FROM steps s WHERE s.job_id = j.id)`).all(since);
+
+      for (const row of jobOnly) {
+        const ctx = `${row.workflow_name ?? ''} ${row.job_name ?? ''}`.toLowerCase();
+        if (!PW_CONTEXT_RE.test(ctx)) continue;
+        jobs.set(row.id, {
+          conclusion: row.conclusion,
+          queued_ms: row.queued_ms,
+          duration_ms: row.duration_ms,
+          runner_name: row.runner_name,
+          playwright: true,
+        });
+      }
+
+      const installSorted = installMs.filter(Number.isFinite).sort((a, b) => a - b);
+      const e2eExecuted = [...jobs.values()].filter((j) => j.playwright && ran(j));
+      const e2eQueues = nums(e2eExecuted, 'queued_ms');
+      const e2eDurs = nums(e2eExecuted, 'duration_ms');
+      const e2eSuccess = e2eExecuted.filter((j) => j.conclusion === 'success').length;
+      const e2eFail = e2eExecuted.filter((j) => isFail(j.conclusion)).length;
+
+      return {
+        browserInstall: {
+          count: installSorted.length,
+          p50: pct(installSorted, 50),
+          p95: pct(installSorted, 95),
+        },
+        e2eJobs: {
+          count: e2eExecuted.length,
+          successes: e2eSuccess,
+          failures: e2eFail,
+          successRate: e2eExecuted.length ? e2eSuccess / e2eExecuted.length : null,
+          p50Duration: pct(e2eDurs, 50),
+          p95Duration: pct(e2eDurs, 95),
+          p50Queue: pct(e2eQueues, 50),
+          p95Queue: pct(e2eQueues, 95),
+        },
+      };
     })(),
   };
 }

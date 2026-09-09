@@ -116,6 +116,29 @@ Run `observe` for a week first. The Capacity tab shows every decision with
 timestamps and hold durations. That is the only honest way to calibrate the
 limit — setting it too low builds a queue, not a safeguard.
 
+### Playwright rollout
+
+Playwright jobs are disk-heavy: each runner may download several gigabytes of
+browsers on first run. **Nothing in this repository enables admission or deploys
+alert thresholds for you** — both stay off until an operator opts in on a live
+fleet. That is deliberate:
+
+- **`observe` first.** Hooks record what `enforce` would have done without
+  delaying jobs. Playwright install steps can run 10–15 minutes; a concurrency
+  limit set from guesswork will queue real work while the Capacity tab still
+  shows green.
+- **`enforce` only after review.** Compare held-job counts against E2E queue
+  times in the Analytics tab's Playwright section and against `./cleanup.sh`
+  dry-run output. Raise `FLEET_ADMIT_MIN_FREE_DISK_GB` if installs are refused
+  with "disk low" while Xcode builds still start.
+- **Alerts stay local.** Disk warnings mention Playwright caches in their text,
+  but firing thresholds live in your daemon config — not in a commit that assumes
+  your disk budget.
+
+If admission refuses jobs with "disk low" while Xcode builds still start, raise
+`FLEET_ADMIT_MIN_FREE_DISK_GB` or run `./cleanup.sh --apply` during idle windows
+— see [Operations](operations.md#disk-cleanup).
+
 ### Admission configuration
 
 Set in `fleet.env`. These variables cannot live in the dashboard because the

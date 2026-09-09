@@ -30,6 +30,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 [ -f "$HERE/fleet.env" ] && . "$HERE/fleet.env"
+ROOT="${FLEET_ROOT:-$HERE}"
 
 MODE=infer
 for a in "$@"; do
@@ -52,7 +53,7 @@ skip() { printf "  \033[90m-\033[0m     %s\n" "$*"; }
 DB="${FLEET_DB:-$HERE/dashboard/fleet.db}"
 
 NEED_XCODE=1 NEED_XCODEGEN=1 NEED_WATCHOS=1 NEED_SIM=1
-NEED_NODE=1 NEED_DOCKER=1 NEED_ANDROID=1 NEED_POSTGRES=1
+NEED_NODE=1 NEED_DOCKER=1 NEED_ANDROID=1 NEED_POSTGRES=1 NEED_PLAYWRIGHT=1
 PG_VERSIONS=""
 INFERRED_FROM=""
 
@@ -64,7 +65,7 @@ if [ "$MODE" != all ] && [ -f "$DB" ]; then
   python3 "$HERE/scripts/infer-checks.py" "$DB" 2>/dev/null > "$_INFER_TMP" || true
   # Strip anything that is not a known key assignment with a simple value.
   _INFER_SAFE=$(mktemp /tmp/preflight-safe.XXXXXX)
-  grep -E '^(NEED_XCODE|NEED_XCODEGEN|NEED_WATCHOS|NEED_SIM|NEED_NODE|NEED_DOCKER|NEED_ANDROID|NEED_POSTGRES|PG_VERSIONS|INFERRED_FROM)=[^;&|$()`]*$' \
+  grep -E '^(NEED_XCODE|NEED_XCODEGEN|NEED_WATCHOS|NEED_SIM|NEED_NODE|NEED_DOCKER|NEED_ANDROID|NEED_POSTGRES|NEED_PLAYWRIGHT|PG_VERSIONS|INFERRED_FROM)=[^;&|$()`]*$' \
     "$_INFER_TMP" > "$_INFER_SAFE" || true
   # shellcheck source=/dev/null
   . "$_INFER_SAFE"
@@ -87,8 +88,13 @@ if [ "$MODE" = explain ]; then
   echo "  docker           $NEED_DOCKER"
   echo "  android sdk      $NEED_ANDROID"
   echo "  postgres         $NEED_POSTGRES  versions: ${PG_VERSIONS:-<none named>}"
+  echo "  playwright       $NEED_PLAYWRIGHT"
   exit 0
 fi
+
+# Browser installs run through npm/npx; a Playwright workflow without Node would
+# fail for a reason this script would not have checked.
+[ "$NEED_PLAYWRIGHT" = 1 ] && NEED_NODE=1
 
 echo "== host =="
 echo "  $(sw_vers -productName) $(sw_vers -productVersion)  $(uname -m)"
@@ -242,6 +248,56 @@ if v=$(npm -v 2>/dev/null) && [ -n "$v" ]; then
   ok "npm $v"
 else
   miss "npm is missing or will not execute — web workflows run npm install and npx playwright install"
+fi
+fi
+
+if [ "$NEED_PLAYWRIGHT" = 1 ]; then
+echo "== playwright =="
+# Playwright browser caches live either in the default location or in each
+# runner's tool cache when workflows set PLAYWRIGHT_BROWSERS_PATH. Multiple
+# runners sharing the default path contend on __dirlock during install — the
+# hang looks like a stuck job, not a missing dependency.
+_pw_caches=()
+[ -d "$HOME/Library/Caches/ms-playwright" ] && _pw_caches+=("$HOME/Library/Caches/ms-playwright")
+for d in "$ROOT"/*/; do
+  tc="$d/_work/_tool/ms-playwright"
+  [ -d "$tc" ] && _pw_caches+=("$tc")
+done
+
+if [ ${#_pw_caches[@]} -eq 0 ]; then
+  skip "browser cache — none on disk yet (first run installs browsers)"
+else
+  for c in "${_pw_caches[@]}"; do
+    sz=$(du -sh "$c" 2>/dev/null | cut -f1)
+    ok "cache $(basename "$c") at $c ($sz)"
+  done
+fi
+
+_runner_count=0
+for d in "$ROOT"/*/; do
+  [ -f "$d/.runner" ] && _runner_count=$((_runner_count + 1))
+done
+if [ "$_runner_count" -gt 1 ] && [ -d "$HOME/Library/Caches/ms-playwright" ]; then
+  warn "default cache shared by $_runner_count runners — concurrent installs can hang on __dirlock. Fix: append PLAYWRIGHT_BROWSERS_PATH=\$RUNNER_TOOL_CACHE/ms-playwright to \$GITHUB_ENV in a step"
+fi
+
+_pw_stale=0 _pw_locks=0
+for c in "${_pw_caches[@]}"; do
+  [ -d "$c" ] || continue
+  while IFS= read -r lock; do
+    [ -n "$lock" ] || continue
+    _pw_locks=$((_pw_locks + 1))
+    age_h=$(( ($(date +%s) - $(stat -f %m "$lock" 2>/dev/null || echo 0)) / 3600 ))
+    if [ "$age_h" -ge 6 ]; then
+      warn "stale __dirlock (${age_h}h): $lock — ./cleanup.sh removes these when the fleet is idle"
+      _pw_stale=$((_pw_stale + 1))
+    fi
+  done < <(find "$c" -name __dirlock \( -type f -o -type d \) 2>/dev/null)
+done
+if [ "$_pw_locks" = 0 ]; then
+  ok "no __dirlock entries (nothing contending on install)"
+elif [ "$_pw_stale" = 0 ]; then
+  ok "no stale __dirlock entries (younger than 6h)"
 fi
 fi
 

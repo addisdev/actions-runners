@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Register a self-hosted GitHub Actions runner for one repo on this Mac.
 #
-#   ./register.sh owner/repo [extra-label]
+#   ./register.sh owner/repo [extra-label...]
+#
+# Extra labels are passed to config.sh as a comma-separated --labels value.
+# One label or several work the same way:
+#
+#   ./register.sh owner/repo xcode-16.3
+#   ./register.sh owner/repo ci playwright
 #
 # A SECOND runner for a repo that already has one — one runner serves exactly
 # one job at a time, so a repo with two jobs runs them back to back:
@@ -27,8 +33,28 @@
 # before adding many more.
 set -euo pipefail
 
-REPO="${1:?usage: register.sh owner/repo [extra-label]   (RUNNER_INSTANCE=2 for a second runner)}"
-LABEL="${2:-}"
+REPO="${1:?usage: register.sh owner/repo [extra-label...]   (RUNNER_INSTANCE=2 for a second runner)}"
+shift
+EXTRA_LABELS=()
+append_label() {
+  local label="$1"
+  label="${label#"${label%%[![:space:]]*}"}"
+  label="${label%"${label##*[![:space:]]}"}"
+  [ -n "$label" ] && EXTRA_LABELS+=("$label")
+}
+while [ $# -gt 0 ]; do
+  # The dashboard Duplicate action passes comma-separated labels in one arg;
+  # the shell path passes each label separately. Both end up as --labels a,b,c.
+  if [[ "$1" == *","* ]]; then
+    IFS=',' read -ra PARTS <<< "$1"
+    for p in "${PARTS[@]}"; do
+      append_label "$p"
+    done
+  else
+    append_label "$1"
+  fi
+  shift
+done
 INSTANCE="${RUNNER_INSTANCE:-1}"
 VERSION="2.336.0"
 SHA="8e8839c49b7060b6b2154f4931f815df330c27f167d53ef2239ee3dfce28b079"
@@ -48,7 +74,7 @@ RUNNER_NAME="$(scutil --get LocalHostName)-$NAME$SUFFIX"
 if [ -f "$DIR/.runner" ]; then
   echo "$REPO already has runner instance $INSTANCE at $DIR — remove it first with:"
   echo "  cd $DIR && ./svc.sh stop && ./svc.sh uninstall && ./config.sh remove --token \$(gh api -X POST repos/$REPO/actions/runners/remove-token --jq .token)"
-  echo "(or add another with RUNNER_INSTANCE=$((INSTANCE + 1)) $0 $REPO ${LABEL:-})"
+  echo "(or add another with RUNNER_INSTANCE=$((INSTANCE + 1)) $0 $REPO ${EXTRA_LABELS[*]:-})"
   exit 1
 fi
 
@@ -106,7 +132,11 @@ echo "==> registering with $REPO"
 # runner. Prefer piping one in over putting it in argv, where `ps` can see it.
 TOKEN="${RUNNER_TOKEN:-$(gh api -X POST "repos/$REPO/actions/runners/registration-token" --jq .token)}"
 [ -n "$TOKEN" ] || { echo "no registration token — gh is not authenticated here, and RUNNER_TOKEN was not set" >&2; exit 1; }
-LABELS="${LABEL:+--labels $LABEL}"
+LABEL_CSV=""
+if [ ${#EXTRA_LABELS[@]} -gt 0 ]; then
+  LABEL_CSV=$(IFS=,; echo "${EXTRA_LABELS[*]}")
+fi
+LABELS="${LABEL_CSV:+--labels $LABEL_CSV}"
 # shellcheck disable=SC2086
 ./config.sh --url "https://github.com/$REPO" --token "$TOKEN" \
   --name "$RUNNER_NAME" $LABELS \

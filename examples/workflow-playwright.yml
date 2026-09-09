@@ -1,0 +1,68 @@
+# Playwright UI tests on the self-hosted fleet.
+#
+# Key conventions for multi-runner Mac hosts:
+#   - Per-runner browser cache (avoids __dirlock hangs during install)
+#   - Explicit job and install-step timeouts
+#   - Failure artifacts for debugging red runs
+#
+# Replace owner/project-web with your repository.
+#
+# Optional: register a dedicated runner so Playwright jobs do not share a listener
+# with other work on the same repo:
+#   ./register.sh owner/project-web playwright
+# Then add "playwright" to runs-on below. The label routes the job only — it does
+# not isolate disk or browser caches unless PLAYWRIGHT_BROWSERS_PATH is set.
+
+name: Web E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.ref }}-web-e2e
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, macos, arm64]
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # runner context is available to steps, not workflow/job-level env.
+      - name: Isolate Playwright browser cache
+        run: echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TOOL_CACHE/ms-playwright" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        timeout-minutes: 15
+        run: npx playwright install chromium
+
+      - name: Run smoke tests
+        run: npx playwright test --project=chromium
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results/
+          retention-days: 7

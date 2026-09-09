@@ -87,6 +87,17 @@ test('GET /api/actions returns 200 without auth', async () => {
   assert.equal(r.status, 200);
 });
 
+test('GET /api/analytics includes playwright section', async () => {
+  const r = await fetch(url('/api/analytics?days=30'));
+  assert.equal(r.status, 200);
+  const body = await r.json();
+  assert.ok(body.playwright, 'missing playwright key');
+  assert.ok(body.playwright.browserInstall);
+  assert.equal(typeof body.playwright.browserInstall.count, 'number');
+  assert.ok(body.playwright.e2eJobs);
+  assert.equal(typeof body.playwright.e2eJobs.count, 'number');
+});
+
 test('GET / returns 200 (static index.html)', async () => {
   const r = await fetch(url('/'));
   assert.equal(r.status, 200);

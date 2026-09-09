@@ -28,6 +28,7 @@ APPLY=0
 DERIVED="$HOME/Library/Developer/Xcode/DerivedData"
 DERIVED_AGE_DAYS=7
 DIAG_AGE_DAYS=14
+PW_LOCK_AGE_HOURS=6
 
 say() { printf '%s\n' "$*"; }
 run() {
@@ -101,6 +102,43 @@ while IFS= read -r f; do
   n=$((n + 1))
 done < <(find "$ROOT"/*/_diag -type f -mtime +${DIAG_AGE_DAYS} 2>/dev/null)
 say "    ${n} files"
+
+# ---------------------------------------------------------------------------
+# Playwright browser caches and stale install locks. Browsers are large and the
+# default cache is shared unless workflows set PLAYWRIGHT_BROWSERS_PATH to each
+# runner's tool cache. A crashed install leaves __dirlock behind; the next job
+# hangs waiting on it. Only remove locks older than PW_LOCK_AGE_HOURS, and skip
+# entirely while an install is in flight.
+# ---------------------------------------------------------------------------
+say "==> playwright browser caches"
+_pw_paths=()
+[ -d "$HOME/Library/Caches/ms-playwright" ] && _pw_paths+=("$HOME/Library/Caches/ms-playwright")
+for d in "$ROOT"/*/; do
+  tc="$d/_work/_tool/ms-playwright"
+  [ -d "$tc" ] && _pw_paths+=("$tc")
+done
+if [ ${#_pw_paths[@]} -eq 0 ]; then
+  say "    (none found)"
+else
+  for p in "${_pw_paths[@]}"; do
+    say "    $(du -sh "$p" 2>/dev/null | cut -f1)  $p"
+  done
+fi
+
+say "==> stale playwright __dirlock (older than ${PW_LOCK_AGE_HOURS}h)"
+if pgrep -f '[p]laywright.*install' >/dev/null 2>&1; then
+  say "    playwright install in progress — skipping lock cleanup"
+else
+  n=0
+  while IFS= read -r lock; do
+    [ -n "$lock" ] || continue
+    say "    $(basename "$(dirname "$lock")")/ __dirlock"
+    run rm -rf "$lock"
+    n=$((n + 1))
+  done < <(find "$HOME/Library/Caches/ms-playwright" "$ROOT"/*/_work/_tool/ms-playwright \
+    -name __dirlock \( -type f -o -type d \) -mmin +$((PW_LOCK_AGE_HOURS * 60)) 2>/dev/null)
+  say "    ${n} lock files"
+fi
 
 after=$(df -g / | awk 'NR==2{print $4}')
 say "==> free after:  ${after} GB  (reclaimed $((after - before)) GB)"

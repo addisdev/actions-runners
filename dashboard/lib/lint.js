@@ -10,6 +10,80 @@ const HOSTED_RE = /^(ubuntu|macos|windows)-/i;
 
 const norm = (s) => String(s).trim().toLowerCase();
 
+const PW_INSTALL_RE = /\bplaywright\s+install\b|\bnpx\s+playwright\s+install\b|\byarn\s+playwright\s+install\b|\bpnpm\s+(exec\s+)?playwright\s+install\b/;
+const PW_TEST_RE = /\bplaywright\s+test\b|\bnpx\s+playwright\s+test\b|\byarn\s+playwright\s+test\b|\bpnpm\s+(exec\s+)?playwright\s+test\b|@playwright\/test/;
+
+function stepText(step) {
+  if (!step || typeof step !== 'object') return '';
+  const parts = [];
+  if (step.run) parts.push(String(step.run));
+  if (step.uses) parts.push(String(step.uses));
+  if (step.with && typeof step.with === 'object') parts.push(JSON.stringify(step.with));
+  return parts.join('\n');
+}
+
+function envSetsPlaywrightPath(job) {
+  const check = (block) => {
+    if (!block || typeof block !== 'object') return false;
+    for (const [k, v] of Object.entries(block)) {
+      if (norm(k) !== 'playwright_browsers_path') continue;
+      const s = String(v).toLowerCase();
+      if (s.includes('runner.tool_cache') || s.includes('runner_temp')) return true;
+    }
+    return false;
+  };
+  for (const step of job.steps ?? []) {
+    if (check(step?.env)) return true;
+    const run = String(step?.run ?? '').toLowerCase();
+    if (
+      run.includes('playwright_browsers_path') &&
+      run.includes('runner_tool_cache') &&
+      run.includes('github_env')
+    ) return true;
+  }
+  return false;
+}
+
+function jobUsesPlaywright(job) {
+  for (const step of job.steps ?? []) {
+    const t = stepText(step).toLowerCase();
+    if (PW_INSTALL_RE.test(t) || PW_TEST_RE.test(t)) return true;
+    if (step.uses && /playwright/.test(String(step.uses).toLowerCase())) return true;
+  }
+  return false;
+}
+
+function jobRunsPlaywrightTests(job) {
+  for (const step of job.steps ?? []) {
+    const t = stepText(step).toLowerCase();
+    if (PW_TEST_RE.test(t)) return true;
+    if (step.uses && /playwright.*test|test.*playwright/.test(String(step.uses).toLowerCase())) return true;
+  }
+  return false;
+}
+
+function hasPlaywrightInstallWithoutTimeout(job) {
+  for (const step of job.steps ?? []) {
+    const t = stepText(step);
+    if (!PW_INSTALL_RE.test(t)) continue;
+    if (step['timeout-minutes'] != null) continue;
+    if (step.uses && /playwright/.test(String(step.uses).toLowerCase())) continue;
+    return true;
+  }
+  return false;
+}
+
+function hasFailureArtifacts(job) {
+  for (const step of job.steps ?? []) {
+    if (!step?.uses || !String(step.uses).includes('upload-artifact')) continue;
+    const cond = String(step.if ?? '').toLowerCase();
+    if (cond && !cond.includes('failure') && !cond.includes('always')) continue;
+    const blob = stepText(step).toLowerCase();
+    if (/test-results|playwright-report|trace|blob-report|screenshot|\.zip/.test(blob)) return true;
+  }
+  return false;
+}
+
 function runsOnLabels(value) {
   if (value == null) return null;
   if (Array.isArray(value)) return value.map(String);
@@ -142,6 +216,28 @@ export function lintWorkflow({ repo, path, name, content, runnerLabelSets, fleet
                 '`ollama` label produced runs that sat for 24 hours and were killed.'
               : 'Every label exists on some runner, but no single runner carries all of them at once.');
         }
+      }
+    }
+
+    if (selfHosted && !dynamic && jobUsesPlaywright(job)) {
+      if (!envSetsPlaywrightPath(job)) {
+        add('playwright-shared-cache', 'warning', jobName,
+          'Playwright job without per-runner PLAYWRIGHT_BROWSERS_PATH',
+          'Multiple runners on one Mac sharing ~/Library/Caches/ms-playwright contend on __dirlock ' +
+            'during browser install. In a step, append PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TOOL_CACHE/ms-playwright ' +
+            'to $GITHUB_ENV before installing browsers.');
+      }
+      if (hasPlaywrightInstallWithoutTimeout(job)) {
+        add('playwright-install-timeout', 'serious', jobName,
+          'playwright install step has no timeout-minutes',
+          'A hung browser download holds the runner until the job timeout. Give the install step ' +
+            'timeout-minutes: 15 (or use an action that sets one).');
+      }
+      if (jobRunsPlaywrightTests(job) && !hasFailureArtifacts(job)) {
+        add('playwright-no-failure-artifacts', 'warning', jobName,
+          'Playwright tests with no failure artifact upload',
+          'Failed UI tests are hard to debug from logs alone. Upload playwright-report/, test-results/, ' +
+            'or traces with actions/upload-artifact on failure().');
       }
     }
   }
