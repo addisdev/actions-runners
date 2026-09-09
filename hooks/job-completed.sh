@@ -70,3 +70,95 @@ fi
 # HELD is reported as ran_s, not as a wait: this job did not wait, it occupied a
 # slot for that long.
 admit_log released '' 0 "$BUSY" "$HELD"
+
+# ---- Playwright per-test results ingest ------------------------------------
+# Parse the Playwright JSON report and append normalized outcome records to an
+# NDJSON spool. The dashboard daemon reads the spool asynchronously; this hook
+# only appends and never fails.
+PW_JSON=""
+if [ -n "${RUNNER_WORKSPACE:-}" ]; then
+  # Walk up from _work/<repo>/<repo> to the runner dir to find the workspace.
+  WS_DIR="${RUNNER_WORKSPACE%%/_work/*}"
+  PW_WORK="${RUNNER_WORKSPACE}/$(basename "${RUNNER_WORKSPACE}")"
+  # Common output locations — check both app/test-results and root test-results.
+  for candidate in \
+    "$PW_WORK/app/test-results/results.json" \
+    "$PW_WORK/test-results/results.json" \
+    "$PW_WORK/app/playwright-report/results.json" \
+    "$PW_WORK/playwright-report/results.json"; do
+    if [ -f "$candidate" ]; then
+      PW_JSON="$candidate"
+      break
+    fi
+  done
+fi
+
+if [ -n "$PW_JSON" ] && [ -x "$(command -v python3)" ]; then
+  SPOOL="$ROOT/.playwright-outcomes.ndjson"
+  REPO="${GITHUB_REPOSITORY:-}"
+  SHA="${GITHUB_SHA:-}"
+  RUN_ID="${GITHUB_RUN_ID:-}"
+  JOB="${GITHUB_JOB:-}"
+  python3 - "$PW_JSON" "$SPOOL" "$REPO" "$SHA" "$RUN_ID" "$JOB" <<'PYEOF'
+import json, sys, os, time
+
+pw_json, spool_path, repo, sha, run_id, job_id = sys.argv[1:7]
+
+try:
+    with open(pw_json) as f:
+        report = json.load(f)
+except Exception:
+    sys.exit(0)
+
+records = []
+for suite in report.get('suites', []):
+    # Playwright JSON has nested suites: file > describe > test
+    def walk(suite, file_path=None):
+        fp = suite.get('file') or file_path or suite.get('title', '')
+        for spec in suite.get('specs', []):
+            title = spec.get('title', '')
+            for test in spec.get('tests', []):
+                results = test.get('results', [])
+                attempts = len(results)
+                last = results[-1] if results else {}
+                status = last.get('status', 'unknown')
+                # A test is flaky if it failed earlier and passed on a retry.
+                flaky = attempts > 1 and status == 'passed'
+                duration_ms = last.get('duration')
+                project = test.get('projectName') or test.get('projectId') or ''
+                browser = ''
+                proj_lower = project.lower()
+                for b in ('chromium', 'firefox', 'webkit'):
+                    if b in proj_lower:
+                        browser = b
+                        break
+                records.append({
+                    'ts': int(time.time() * 1000),
+                    'repo': repo,
+                    'head_sha': sha,
+                    'run_id': run_id,
+                    'job_id': job_id,
+                    'browser': browser or None,
+                    'project': project or None,
+                    'file': fp,
+                    'title': title,
+                    'attempts': attempts,
+                    'status': status,
+                    'flaky': flaky,
+                    'duration_ms': duration_ms,
+                })
+        for child in suite.get('suites', []):
+            walk(child, fp)
+    walk(suite)
+
+if not records:
+    sys.exit(0)
+
+try:
+    with open(spool_path, 'a') as out:
+        for r in records:
+            out.write(json.dumps(r, separators=(',', ':')) + '\n')
+except Exception:
+    pass  # never fail the hook
+PYEOF
+fi

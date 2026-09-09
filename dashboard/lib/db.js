@@ -65,6 +65,28 @@ CREATE INDEX IF NOT EXISTS idx_admission_ts ON admission_events(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_admission_event ON admission_events(event, ts DESC);
 `;
 
+const TEST_OUTCOMES_DDL = `
+CREATE TABLE IF NOT EXISTS test_outcomes (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts          INTEGER NOT NULL,
+  repo        TEXT NOT NULL,
+  head_sha    TEXT,
+  run_id      TEXT,
+  job_id      TEXT,
+  browser     TEXT,
+  project     TEXT,
+  file        TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  attempts    INTEGER NOT NULL DEFAULT 1,
+  status      TEXT NOT NULL,
+  flaky       INTEGER NOT NULL DEFAULT 0,
+  duration_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_test_outcomes_ts   ON test_outcomes(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_test_outcomes_repo ON test_outcomes(repo, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_test_outcomes_flaky ON test_outcomes(flaky, ts DESC);
+`;
+
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
@@ -273,6 +295,8 @@ CREATE TABLE IF NOT EXISTS settings (
   value      TEXT,
   updated_at INTEGER
 );
+
+${TEST_OUTCOMES_DDL}
 `;
 
 // CREATE TABLE IF NOT EXISTS does nothing to a table that already exists, so
@@ -287,6 +311,11 @@ export function openDb(path) {
   mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec(SCHEMA);
+  // Prune test outcomes older than 90 days. Row counts grow linearly with test
+  // suite size and run frequency; 90 days is enough for trend analysis.
+  try {
+    db.exec(`DELETE FROM test_outcomes WHERE ts < ${Date.now() - 90 * 86400000}`);
+  } catch { /* ignore on old schema — table may not exist yet */ }
   // Swap level turned out to be an accumulator rather than a pressure signal,
   // so these are what the host tiles and alerts read now.
   addColumn(db, 'host_samples', 'mem_free_pct', 'INTEGER');

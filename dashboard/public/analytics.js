@@ -447,7 +447,30 @@ export function render() {
                 sub: pw.e2eJobs.p95Queue != null ? `p95 ${fmtMs(pw.e2eJobs.p95Queue)}` : '',
               })
             )
-          : h('div', { class: 'empty', text: 'No Playwright or E2E jobs in this window — or step detail has not backfilled yet.' })
+          : h('div', { class: 'empty', text: 'No Playwright or E2E jobs in this window — or step detail has not backfilled yet.' }),
+        pw.flakyTests?.length
+          ? h('div', { class: 'panel-section' },
+              h('h4', { text: `Top flaky tests (${pw.flakyTests.length})` }),
+              h('table', { class: 'mini-table' },
+                h('thead', {}, h('tr', {},
+                  h('th', { text: 'Test' }),
+                  h('th', { text: 'Browser' }),
+                  h('th', { class: 'num', text: 'Flakes' }),
+                  h('th', { class: 'num', text: 'Rate' }),
+                  h('th', { text: 'Last seen' })
+                )),
+                h('tbody', {}, pw.flakyTests.map((t) =>
+                  h('tr', {},
+                    h('td', { title: t.file, text: t.title }),
+                    h('td', { text: t.browser ?? '–' }),
+                    h('td', { class: 'num', text: String(t.flakes) }),
+                    h('td', { class: 'num', text: t.flake_rate != null ? `${Math.round(t.flake_rate * 100)}%` : '–' }),
+                    h('td', { text: t.last_seen ? new Date(t.last_seen).toLocaleDateString() : '–' })
+                  )
+                ))
+              )
+            )
+          : null
       )
     : null;
 

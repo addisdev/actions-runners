@@ -239,6 +239,19 @@ export function lintWorkflow({ repo, path, name, content, runnerLabelSets, fleet
           'Failed UI tests are hard to debug from logs alone. Upload playwright-report/, test-results/, ' +
             'or traces with actions/upload-artifact on failure().');
       }
+      // Blob reporter is needed for merge-reports to work in a matrix workflow.
+      if (jobRunsPlaywrightTests(job)) {
+        const steps = job.steps ?? [];
+        const hasBlob = steps.some((s) => {
+          const t = stepText(s).toLowerCase();
+          return t.includes('blob') && t.includes('reporter');
+        });
+        if (!hasBlob) {
+          add('playwright-no-blob-reporter', 'info', jobName,
+            'No blob reporter detected in Playwright steps',
+            'The matrix merge-reports job needs blob reports. Add reporter: [[\'blob\']] for CI in playwright.config.');
+        }
+      }
     }
   }
 

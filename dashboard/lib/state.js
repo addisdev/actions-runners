@@ -49,6 +49,10 @@ export function instanceOf(dirName = '', repo = '') {
 }
 
 const IMPLICIT_LABELS = new Set(['self-hosted', 'macos', 'x64', 'arm64', 'linux', 'windows']);
+const ROLE_LABELS = new Set(['ci', 'ui-web']);
+export function roleLabel(extraLabels = []) {
+  return extraLabels.find((l) => ROLE_LABELS.has(l)) ?? null;
+}
 export function extraLabels(labels = []) {
   return labels
     .map((l) => (typeof l === 'string' ? l : l.name))
@@ -106,6 +110,7 @@ export function buildRunners({ dirs, ghRunnersByRepo, launchd, processes, runner
       ghBusy: gh?.busy ?? false,
       labels: gh ? (gh.labels ?? []).map((l) => l.name) : [],
       extraLabels: gh ? extraLabels(gh.labels) : [],
+      role: roleLabel(gh ? extraLabels(gh.labels) : []),
     });
   }
 
@@ -123,6 +128,7 @@ export function buildRunners({ dirs, ghRunnersByRepo, launchd, processes, runner
         ghBusy: r.busy,
         labels: (r.labels ?? []).map((l) => l.name),
         extraLabels: extraLabels(r.labels),
+        role: roleLabel(extraLabels(r.labels ?? [])),
         // An ephemeral runner lands here by construction: it lives under
         // .ephemeral, which disk discovery skips, so GitHub knows about it and
         // this host appears not to. Without this tag it reads as "registered on
@@ -191,12 +197,23 @@ export function deriveDrift({ runners, elsewhere, active, repos, now = Date.now(
   }
   for (const [repo, list] of byRepo) {
     if (list.length < 2) continue;
-    const sets = new Set(list.map((r) => r.extraLabels.join(',')));
-    if (sets.size > 1) {
-      add('serious', 'label-mismatch', repo,
-        'sibling runners carry different extra labels: ' +
-          list.map((r) => `${r.name}[${r.extraLabels.join(',') || 'none'}]`).join(' vs '),
-        'they will not match the same runs-on: — the odd one out will never be scheduled');
+    // Group by role. Runners with different roles (ci vs ui-web) are intentional
+    // siblings and do not trigger drift. Mismatches WITHIN the same role do.
+    const byRole = new Map();
+    for (const r of list) {
+      const role = roleLabel(r.extraLabels) ?? '__none__';
+      if (!byRole.has(role)) byRole.set(role, []);
+      byRole.get(role).push(r);
+    }
+    for (const [, roleList] of byRole) {
+      if (roleList.length < 2) continue;
+      const sets = new Set(roleList.map((r) => r.extraLabels.join(',')));
+      if (sets.size > 1) {
+        add('serious', 'label-mismatch', repo,
+          'sibling runners of the same role carry different extra labels: ' +
+            roleList.map((r) => `${r.name}[${r.extraLabels.join(',') || 'none'}]`).join(' vs '),
+          'they will not match the same runs-on: — the odd one out will never be scheduled');
+      }
     }
   }
 

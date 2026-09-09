@@ -39,6 +39,11 @@ jobs:
         run: npx playwright install chromium
       - run: npx playwright test
       - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-blob-reporter
+          path: blob-report/
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: playwright-report
@@ -92,10 +97,10 @@ describe('playwright lint rules', () => {
 
   test('missing failure artifacts are flagged when tests run', () => {
     const noArtifacts = WORKFLOW_PW_GOOD.replace(
-      /      - uses: actions\/upload-artifact@v4[\s\S]*?path: playwright-report\/\n/,
+      /      - uses: actions\/upload-artifact@v4[\s\S]*?path: blob-report\/\n/,
       ''
     ).replace(
-      /      - uses: actions\/upload-artifact@v4[\s\S]*?path: test-results\/\n/,
+      /      - uses: actions\/upload-artifact@v4[\s\S]*?path: playwright-report\/\n/,
       ''
     );
     const found = lint(noArtifacts);
@@ -103,10 +108,15 @@ describe('playwright lint rules', () => {
   });
 
   test('an unrelated failure artifact does not satisfy Playwright diagnostics', () => {
-    const unrelated = WORKFLOW_PW_GOOD.replace(
-      '          name: playwright-report\n          path: playwright-report/',
-      '          name: build-log\n          path: build.log'
-    );
+    const unrelated = WORKFLOW_PW_GOOD
+      .replace(
+        '          name: playwright-blob-reporter\n          path: blob-report/',
+        '          name: build-log\n          path: build.log'
+      )
+      .replace(
+        '          name: playwright-report\n          path: playwright-report/',
+        '          name: deploy-log\n          path: deploy.log'
+      );
     const found = lint(unrelated);
     assert.ok(rules(found).includes('playwright-no-failure-artifacts'));
   });
@@ -128,6 +138,17 @@ jobs:
 `;
     const found = lint(installOnly);
     assert.ok(!rules(found).includes('playwright-no-failure-artifacts'));
+  });
+
+  test('missing blob reporter hint is flagged at info severity', () => {
+    const noBlob = WORKFLOW_PW_GOOD.replace(
+      /      - uses: actions\/upload-artifact@v4\n        if: always\(\)\n        with:\n          name: playwright-blob-reporter\n          path: blob-report\/\n/,
+      ''
+    );
+    const found = lint(noBlob);
+    const blob = found.find((f) => f.rule === 'playwright-no-blob-reporter');
+    assert.ok(blob, 'expected playwright-no-blob-reporter finding');
+    assert.equal(blob.severity, 'info');
   });
 
   test('hosted Playwright jobs are not checked for fleet cache conventions', () => {

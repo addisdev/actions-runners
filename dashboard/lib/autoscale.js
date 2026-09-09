@@ -26,9 +26,16 @@
 // somebody is in the middle of retiring it, and copying from it produces a new
 // runner modelled on the one being removed — which reads, correctly, as the
 // scaler and the operator working against each other.
-function cloneSource(siblings) {
-  const usable = siblings.filter((r) => !r.drainState);
-  return usable.find((r) => !r.workingLocally && !r.ghBusy) ?? usable[0] ?? null;
+function cloneSource(siblings, preferRole = null) {
+  // When a preferred role is supplied (e.g. 'ci'), use runners of that role as
+  // the clone template. Falls back to any non-draining runner if no role match
+  // exists, so the first-runner path still works.
+  const pool = preferRole != null
+    ? (siblings.filter((r) => !r.drainState && (r.extraLabels ?? []).includes(preferRole)).length
+        ? siblings.filter((r) => !r.drainState && (r.extraLabels ?? []).includes(preferRole))
+        : siblings.filter((r) => !r.drainState))
+    : siblings.filter((r) => !r.drainState);
+  return pool.find((r) => !r.workingLocally && !r.ghBusy) ?? pool[0] ?? null;
 }
 
 /**
