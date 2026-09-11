@@ -18,7 +18,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const FLEETD = join(HERE, '..', 'fleetd.js');
 
 // Spin up a fleetd instance and return { port, token, kill }
-async function startDaemon() {
+async function startDaemon(extraEnv = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'fleetd-test-'));
   const port = 17878 + Math.floor(Math.random() * 1000);
   const tokenFile = join(dir, '.fleet-token');
@@ -37,6 +37,7 @@ async function startDaemon() {
       FLEET_BACKFILL_MS: '999999999',
       FLEET_FAST_MS: '999999999',
       FLEET_SLOW_MS: '999999999',
+      ...extraEnv,
     },
     stdio: 'ignore',
   });
@@ -64,6 +65,22 @@ async function startDaemon() {
       try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
     },
   };
+}
+
+// startDaemon returns as soon as the server is listening, which is before the
+// first collection tick has finished. Anything asserting on collector freshness
+// has to wait for a tick to actually land, or it is reading the empty snapshot
+// the daemon starts with.
+async function waitForFirstTick(port, timeoutMs = 15000) {
+  const start = Date.now();
+  for (;;) {
+    try {
+      const body = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json();
+      if (body.ts > 0) return body;
+    } catch { /* not ready yet */ }
+    if (Date.now() - start > timeoutMs) throw new Error('no tick completed in time');
+    await new Promise((r) => setTimeout(r, 100));
+  }
 }
 
 let daemon;
@@ -96,6 +113,32 @@ test('GET /api/analytics includes playwright section', async () => {
   assert.equal(typeof body.playwright.browserInstall.count, 'number');
   assert.ok(body.playwright.e2eJobs);
   assert.equal(typeof body.playwright.e2eJobs.count, 'number');
+});
+
+test('GET /api/health reports ok while the collector is ticking', async () => {
+  const body = await waitForFirstTick(daemon.port);
+  assert.equal(body.ok, true);
+  assert.equal(body.stale, false);
+  assert.equal(typeof body.ageMs, 'number');
+});
+
+// The outage this signal exists for: the fast loop stopped re-arming itself
+// while the HTTP server kept serving the frozen snapshot, and `ok` was derived
+// from `starting` alone, so it stayed true for 65 minutes. watch/fleet-watch.mjs
+// raises collector-not-ok off exactly this field, and reported nothing.
+test('GET /api/health reports not-ok once the snapshot goes stale', async () => {
+  // Its own daemon: FLEET_FAST_MS is effectively infinite in this harness, so
+  // the tick taken at startup is the only one, and a 1ms staleness budget makes
+  // it overdue immediately.
+  const stalled = await startDaemon({ FLEET_COLLECTOR_STALE_MS: '1' });
+  try {
+    const body = await waitForFirstTick(stalled.port);
+    assert.equal(body.ok, false, 'a frozen collector must not report ok');
+    assert.equal(body.stale, true);
+    assert.match(body.lastError ?? '', /collector stalled/);
+  } finally {
+    stalled.kill();
+  }
 });
 
 test('GET / returns 200 (static index.html)', async () => {

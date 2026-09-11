@@ -21,7 +21,10 @@ export async function ingestTestOutcomes(db, spoolPath) {
   if (size === 0) return 0;
 
   const cursorRow = db.prepare(`SELECT value FROM meta WHERE key = ?`).get(SPOOL_CURSOR_KEY);
-  const cursor = cursorRow ? Number(cursorRow.value) : 0;
+  let cursor = cursorRow ? Number(cursorRow.value) : 0;
+  // Past the end means the spool was rotated or truncated. Reading from the old
+  // offset would land mid-line and stay wrong forever.
+  if (!Number.isFinite(cursor) || cursor < 0 || cursor > size) cursor = 0;
   if (cursor >= size) return 0;
 
   const insert = db.prepare(`
@@ -34,13 +37,32 @@ export async function ingestTestOutcomes(db, spoolPath) {
     `INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`
   );
 
-  let ingested = 0;
-  let lastOffset = cursor;
-  const stream = createReadStream(spoolPath, { start: cursor, encoding: 'utf8' });
+  // Read only as far as the size measured above, so a hook appending while this
+  // runs cannot move the end out from under the cursor arithmetic below.
+  const stream = createReadStream(spoolPath, { start: cursor, end: size - 1, encoding: 'utf8' });
   const rl = createInterface({ input: stream, crlfDelay: Infinity });
 
-  const ingestAll = db.transaction((lines) => {
-    for (const { line, offset } of lines) {
+  // A hook may be mid-append, so a line is only consumed once its terminating
+  // newline has been seen. Without that check half a record would be parsed,
+  // dropped, and never seen again because the cursor had already moved past it.
+  const pending = [];
+  let offset = cursor;
+  let consumed = cursor;
+  for await (const line of rl) {
+    offset += Buffer.byteLength(line, 'utf8') + 1; // +1 for the newline
+    if (offset > size) break;                      // no newline yet — still being written
+    consumed = offset;
+    if (line.trim()) pending.push(line);
+  }
+  if (consumed === cursor) return 0;
+
+  // node:sqlite's DatabaseSync has no transaction() helper, so the batch is
+  // bracketed explicitly. Grouping the inserts matters: this runs on the fast
+  // loop, and one commit per record would fsync thousands of times per pass.
+  let ingested = 0;
+  db.exec('BEGIN');
+  try {
+    for (const line of pending) {
       try {
         const rec = JSON.parse(line);
         if (!rec.repo || !rec.file || !rec.title) continue;
@@ -60,20 +82,18 @@ export async function ingestTestOutcomes(db, spoolPath) {
           duration_ms: rec.duration_ms ?? null,
         });
         ingested++;
-        lastOffset = offset;
       } catch { /* skip malformed lines */ }
     }
-    upsertCursor.run(SPOOL_CURSOR_KEY, String(lastOffset));
-  });
-
-  // Collect lines with their byte offsets before transacting.
-  const pending = [];
-  let byteOffset = cursor;
-  for await (const line of rl) {
-    byteOffset += Buffer.byteLength(line, 'utf8') + 1; // +1 for \n
-    if (line.trim()) pending.push({ line, offset: byteOffset });
+    // Advances past every complete line read, not just the ones that inserted.
+    // A line that cannot be parsed now will not parse on the next pass either,
+    // and holding the cursor behind it would re-read the rest of the spool on
+    // every tick for the life of the process.
+    upsertCursor.run(SPOOL_CURSOR_KEY, String(consumed));
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
   }
-  if (pending.length) ingestAll(pending);
 
   return ingested;
 }

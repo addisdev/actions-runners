@@ -60,6 +60,19 @@ const CONFIG = {
   root: process.env.FLEET_ROOT ?? join(os.homedir(), 'actions-runners'),
   db: process.env.FLEET_DB ?? join(HERE, 'fleet.db'),
   fastMs: Number(process.env.FLEET_FAST_MS ?? 15000),
+  // Ceiling on a single fast tick. The loop re-arms itself only after the tick
+  // resolves, so one await that never settles silently ends collection for the
+  // life of the process. Generous enough that a slow-but-working tick is never
+  // cut short — the last healthy pass here took 8s — and short enough that a
+  // wedged one costs a cycle rather than the afternoon.
+  fastDeadlineMs: Number(process.env.FLEET_FAST_DEADLINE_MS ?? 120000),
+  // How old the newest completed tick may be before this daemon calls itself
+  // unhealthy. watch/fleet-watch.mjs already raises `collector-not-ok` the
+  // moment /api/health stops saying ok, so reporting staleness here is the
+  // whole watchdog — and its absence is why a 65-minute collection outage was
+  // never reported by anything. Comfortably above one deadlined tick, so a slow
+  // pass on a loaded host is not mistaken for a stopped one.
+  collectorStaleMs: Number(process.env.FLEET_COLLECTOR_STALE_MS ?? 240000),
   idleMs: Number(process.env.FLEET_IDLE_MS ?? 45000),
   slowMs: Number(process.env.FLEET_SLOW_MS ?? 15 * 60 * 1000),
   backfillMs: Number(process.env.FLEET_BACKFILL_MS ?? 10 * 60 * 1000),
@@ -1995,13 +2008,28 @@ const server = http.createServer(async (req, res) => {
     return json(res, alerts.snapshot());
   }
 
+  // `ok` answers "is this daemon still collecting", not "is it still serving".
+  // Those came apart once: the fast loop stopped for 65 minutes while the HTTP
+  // server went on handing out the frozen snapshot, and because ok was derived
+  // from `starting` alone it read true the entire time — so the fleet view was
+  // an hour stale, every alert in it was fiction, and nothing said so.
+  //
+  // The status stays 200 on purpose. fleetctl.sh and the screenshot tools use
+  // `curl -fsS` and `res.ok` to mean "the daemon answered", which is still true
+  // and still worth distinguishing from a daemon that is down.
   if (url.pathname === '/api/health') {
+    const ageMs = snapshot.ts ? Date.now() - snapshot.ts : null;
+    const stale = ageMs !== null && ageMs > CONFIG.collectorStaleMs;
     return json(res, {
-      ok: !snapshot.starting,
+      ok: !snapshot.starting && !stale,
       ts: snapshot.ts,
+      ageMs,
+      stale,
       runners: snapshot.runners.length,
       drift: snapshot.drift.filter((d) => d.severity !== 'info').length,
-      lastError: snapshot.collector?.lastError ?? null,
+      lastError: stale
+        ? `collector stalled — no completed tick for ${Math.round(ageMs / 1000)}s`
+        : snapshot.collector?.lastError ?? null,
     });
   }
 
@@ -2080,12 +2108,32 @@ async function main() {
   await fastTick().catch((e) => warn('first fast tick failed:', e.message));
   slowTick().catch((e) => warn('first slow tick failed:', e.message));
 
+  // Abandons the wait, not the work — there is no way to cancel a promise, so a
+  // tick that blows its deadline may still be running when the next one starts.
+  // Every write it makes is an upsert keyed by id, so a late finisher costs a
+  // duplicated effort rather than a corrupted row, and that is a much better
+  // trade than the alternative: the loop stopping altogether.
+  const withDeadline = (promise, ms, what) => {
+    let timer;
+    return Promise.race([
+      promise.finally(() => clearTimeout(timer)),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${what} exceeded ${ms}ms`)), ms);
+        timer.unref?.();
+      }),
+    ]);
+  };
+
   // Chained timeouts, not setInterval: the cadence changes with fleet activity,
   // and a slow tick must never overlap itself.
   const scheduleFast = () => {
     const delay = snapshot.collector?.fastMs ?? CONFIG.fastMs;
     setTimeout(async () => {
-      try { await fastTick(); } catch (e) { warn('fast tick:', e.message); }
+      try {
+        await withDeadline(fastTick(), CONFIG.fastDeadlineMs, 'fast tick');
+      } catch (e) {
+        warn('fast tick:', e.message);
+      }
       scheduleFast();
     }, delay).unref?.();
   };

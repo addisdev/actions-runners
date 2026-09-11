@@ -17,6 +17,16 @@
 import { shapeRun, shapeJob } from './state.js';
 import { classifyAnnotations } from './failures.js';
 
+// Stands in for a run GitHub will never return job detail for, so the pending
+// query stops offering it. The negative id keeps it out of the cause phase,
+// which only ever asks about real job ids.
+const detailUnavailable = ({ id, repo }) => ({
+  id: -id, runId: id, repo, name: '(detail unavailable)',
+  status: 'completed', conclusion: 'skipped', createdAt: null, startedAt: null,
+  completedAt: null, runnerName: null, runnerId: null, labels: [],
+  queuedMs: null, durationMs: null, url: null,
+});
+
 export class Backfill {
   constructor({ db, gh, log, warn }) {
     this.db = db;
@@ -171,18 +181,19 @@ export class Backfill {
           try {
             const n = await this.jobsFor(row.repo, row.id, persistJob);
             this.progress.jobs += n;
+            // A run cancelled before dispatch, or one that failed at startup,
+            // never created a job, so this list is empty now and always will
+            // be. Marking it is what stops the batch below from being handed
+            // back unchanged on the next iteration — which spent the entire
+            // pass re-fetching the same runs and left phase 3 no budget at all.
+            if (n === 0) persistJob(detailUnavailable(row));
             advanced = true;
           } catch (err) {
             // A run whose jobs 404 (deleted, or expired detail) would otherwise
             // be retried forever, blocking every pass behind it. Record an empty
             // marker job so the pending query stops returning it.
             this.warn(`backfill jobs ${row.repo}#${row.id}: ${err.message}`);
-            persistJob({
-              id: -row.id, runId: row.id, repo: row.repo, name: '(detail unavailable)',
-              status: 'completed', conclusion: 'skipped', createdAt: null, startedAt: null,
-              completedAt: null, runnerName: null, runnerId: null, labels: [],
-              queuedMs: null, durationMs: null, url: null,
-            });
+            persistJob(detailUnavailable(row));
             advanced = true;
           }
         }

@@ -436,15 +436,40 @@ export class Alerts {
   // The title and body are passed as ARGUMENTS to the script, never interpolated
   // into it. AppleScript string concatenation with a repo name in it is a script
   // injection waiting for a branch called `" & (do shell script "…") & "`.
+  //
+  // execFile's own `timeout` only signals the child; its callback still waits
+  // for stdio to reach EOF, which any surviving descendant can hold open
+  // indefinitely. Notification Center on a loaded host does exactly that, and
+  // because notify() is awaited from inside the fast tick, a promise that never
+  // settles here stops the whole collection loop — observed on this fleet as
+  // the fleet view freezing for 65 minutes with the process completely idle.
+  // A notification is the least important thing this daemon does; it is never
+  // allowed to outlive its own deadline.
   notifyMacos({ title, body }) {
     const script =
       'on run argv\n' +
       '  display notification (item 1 of argv) with title "Fleet" subtitle (item 2 of argv)\n' +
       'end run';
     return new Promise((resolve, reject) => {
-      execFile('osascript', ['-e', script, (body || ' ').slice(0, 400), title.slice(0, 200)],
-        { timeout: 15000 },
-        (err) => (err ? reject(err) : resolve()));
+      let guard;
+      let settled = false;
+      const settle = (fn, arg) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(guard);
+        fn(arg);
+      };
+      const child = execFile(
+        'osascript', ['-e', script, (body || ' ').slice(0, 400), title.slice(0, 200)],
+        { timeout: 15000, killSignal: 'SIGKILL' },
+        (err) => (err ? settle(reject, err) : settle(resolve)),
+      );
+      // Backstop for the case the callback never arrives at all.
+      guard = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch { /* already gone */ }
+        settle(reject, new Error('osascript did not exit within 20s'));
+      }, 20000);
+      guard.unref?.();
     });
   }
 

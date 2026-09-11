@@ -13,12 +13,46 @@ import os from 'node:os';
 
 const execFileAsync = promisify(execFile);
 
-async function sh(cmd, args, timeout = 15000) {
+// execFile's own `timeout` only signals the child; the promise it returns still
+// waits for that child's stdio to reach EOF. Two things defeat it, and this host
+// produces both when it is thrashing: a process wedged in an uninterruptible
+// wait never sees the signal, and a backgrounded grandchild keeps the inherited
+// pipe open long after the child itself is gone.
+//
+// These calls are the first thing the fast tick awaits, before any network work.
+// One of them failing to return is enough to end collection for the life of the
+// process, because the loop only re-arms after the tick resolves — measured here
+// as the fleet view freezing for 65 minutes while the daemon sat at 0% CPU.
+//
+// So the signal is SIGKILL rather than SIGTERM, and a deadline guarantees this
+// settles even when the pipe never closes. Every caller already reads '' as
+// "could not measure this", so the cost of giving up is one missing sample.
+const SH_GRACE_MS = 2000;
+
+export async function sh(cmd, args, timeout = 15000) {
+  const pending = execFileAsync(cmd, args, {
+    timeout, killSignal: 'SIGKILL', maxBuffer: 8 * 1024 * 1024,
+  });
+  // A rejection arriving after the race has settled would otherwise be an
+  // unhandled rejection, which crashes the process under --unhandled-rejections.
+  pending.catch(() => {});
+
+  let guard;
   try {
-    const { stdout } = await execFileAsync(cmd, args, { timeout, maxBuffer: 8 * 1024 * 1024 });
-    return stdout;
+    return await Promise.race([
+      pending.then(({ stdout }) => stdout),
+      new Promise((resolve) => {
+        guard = setTimeout(() => {
+          try { pending.child?.kill('SIGKILL'); } catch { /* already gone */ }
+          resolve('');
+        }, timeout + SH_GRACE_MS);
+        guard.unref?.();
+      }),
+    ]);
   } catch {
     return '';
+  } finally {
+    clearTimeout(guard);
   }
 }
 
