@@ -4,7 +4,7 @@
 // verify that the right status codes come back for the endpoints we care about.
 // They exercise the HTTP layer, not the business logic — the business logic has
 // its own unit tests. Each test makes one or two real HTTP requests.
-import { test, after } from 'node:test';
+import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -237,4 +237,103 @@ test('POST /api/action with malformed JSON returns 4xx', async () => {
     body: 'not json {{{',
   });
   assert.ok(r.status >= 400 && r.status < 500, `expected 4xx, got ${r.status}`);
+});
+
+// ---------------------------------------------------------------------------
+// Federation: heartbeat → host registration → /api/hosts response
+// ---------------------------------------------------------------------------
+describe('federation: heartbeat and host registration', () => {
+  let d;
+  const at = (path) => `http://127.0.0.1:${d.port}${path}`;
+
+  const beat = (body, token = d.token) => fetch(at('/api/host/heartbeat'), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  before(async () => { d = await startDaemon(); });
+  after(() => d?.kill());
+
+  test('a valid heartbeat returns 200 and an empty commands list', async () => {
+    const r = await beat({
+      name: 'mac-studio',
+      id: 'test-host-id',
+      version: 1,
+      reportedAt: Date.now(),
+      runners: [],
+      repos: [],
+      host: { cores: 12, load1: 0.5, memFreePct: 80, diskFreeGb: 200, diskTotalGb: 500, memTotalMb: 32768, memUsedMb: 8192 },
+      capacity: { ok: true, reasons: [], busy: 0, ceiling: 3, maxTotalRunners: 8 },
+      labels: ['xcode-16', 'macos-15'],
+    });
+    assert.equal(r.status, 200);
+    const body = await r.json();
+    assert.ok(Array.isArray(body.commands));
+  });
+
+  test('/api/hosts shows the registered agent after a heartbeat', async () => {
+    // Send a heartbeat to register the agent
+    await beat({
+      name: 'visible-host',
+      id: 'visible-host-id',
+      version: 1,
+      reportedAt: Date.now(),
+      runners: [],
+      repos: [],
+      host: {},
+      capacity: { ok: true, reasons: [], busy: 0, ceiling: 3, maxTotalRunners: 8 },
+      labels: ['xcode-15'],
+    });
+
+    const r = await fetch(at('/api/hosts'));
+    assert.equal(r.status, 200);
+    const body = await r.json();
+    assert.ok(body.federated, 'federated should be true after an agent heartbeat');
+    // mergeHostSnapshots returns { hosts: [...] } — all hosts including coordinator
+    assert.ok(Array.isArray(body.hosts), '/api/hosts should return a hosts array');
+    assert.ok(
+      body.hosts.some((h) => h.name === 'visible-host' || h.id === 'visible-host-id'),
+      'the heartbeating host should appear in /api/hosts'
+    );
+  });
+
+  test('/api/hosts includes recentPlacements and pendingCommands arrays', async () => {
+    const r = await fetch(at('/api/hosts'));
+    assert.equal(r.status, 200);
+    const body = await r.json();
+    assert.ok(Array.isArray(body.recentPlacements), 'recentPlacements should be an array');
+    assert.ok(Array.isArray(body.pendingCommands), 'pendingCommands should be an array');
+  });
+
+  test('heartbeat with wrong token returns 401 or 403', async () => {
+    // A short token that does not match returns 401 (no auth) or 403 (wrong auth).
+    // The exact code depends on whether the server recognizes it as a token at all.
+    const r = await beat({ name: 'x', id: 'x', version: 1, reportedAt: Date.now() }, 'bad-token');
+    assert.ok(r.status === 401 || r.status === 403, `expected 401 or 403, got ${r.status}`);
+  });
+
+  test('posting results without auth returns 401', async () => {
+    const r = await fetch(at('/api/host/results'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ host: 'x', results: [] }),
+    });
+    assert.equal(r.status, 401);
+  });
+
+  test('posting results with a valid token returns 200', async () => {
+    const r = await fetch(at('/api/host/results'), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${d.token}`,
+      },
+      body: JSON.stringify({ host: 'x', results: [] }),
+    });
+    assert.equal(r.status, 200);
+  });
 });

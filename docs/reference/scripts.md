@@ -37,6 +37,8 @@ without `--repair` — have no `--apply` because there is nothing to guard.
 | `scripts/test-ephemeral.sh` | Shell tests for the ephemeral reaper | runs against a temporary fleet |
 | `scripts/infer-checks.py` | Work out which preflight checks this fleet needs | read-only |
 | `dashboard/fleetctl.sh` | Install, run and inspect the dashboard daemon | n/a — subcommands |
+| `dashboard/agentctl.sh` | Install, run and inspect the fleet agent on an agent Mac | n/a — subcommands |
+| `install.sh` | One-command setup for coordinator or agent role | n/a — runs preflight then fleetctl/agentctl |
 | `dashboard/watch/watchctl.sh` | Install, run and inspect the watchdog | n/a — subcommands |
 | `dashboard/autofix/autofixctl.sh` | Install, run and inspect the auto-remediation bridge | `dryrun` subcommand |
 
@@ -753,6 +755,7 @@ Source: [`dashboard/fleetctl.sh`](https://github.com/addisdev/actions-runners/bl
 | `logs [n]` | Tail the daemon log. Default 60 lines. |
 | `run` | Run `fleetd.js` in the foreground, for debugging. |
 | `token` | Print the control token. Exits 1 if the daemon has not generated one yet. |
+| `agent-token` | Print (and create if missing) the agent heartbeat token. Used to set `FLEET_AGENT_TOKEN` on agent Macs. |
 
 Anything else prints the usage header and exits 1.
 
@@ -766,6 +769,42 @@ The control token is deliberately not served to the page: read access and the
 right to restart runners are different things. Paste it into the Control tab
 once and the browser keeps it. Note that `run` over SSH will fail to get a GitHub
 token — see the SSH note in [Get started](../getting-started.md).
+
+### `dashboard/agentctl.sh`
+
+Installs, runs and inspects the fleet agent daemon (`agent.js`) on an agent Mac.
+Source: [`dashboard/agentctl.sh`](https://github.com/addisdev/actions-runners/blob/main/dashboard/agentctl.sh).
+
+| Subcommand | What it does |
+|---|---|
+| `install` | Write the LaunchAgent plist, load it, and report status. |
+| `uninstall` | Unload and delete the plist. |
+| `start` / `stop` | Load or unload the plist. |
+| `restart` | Unload, reload, show status. |
+| `status` | launchd state plus whether the coordinator is reachable. |
+| `logs [n]` | Tail the agent log. Default 60 lines. |
+| `run` | Run `agent.js` in the foreground, for debugging. |
+
+Requires `FLEET_COORDINATOR`, `FLEET_AGENT_TOKEN`, and `FLEET_HOST_NAME` in `fleet.env`
+before running `install`. The agent token is written to a mode-0600 file and
+referenced from the plist rather than embedded in `EnvironmentVariables` where
+it would be readable by any local user via `defaults read`.
+
+See [Federation](../federation.md) for the full multi-host setup guide.
+
+### `install.sh`
+
+One-command setup for a coordinator or agent host. Runs preflight checks, installs
+npm dependencies, then delegates to `fleetctl.sh install` or `agentctl.sh install`.
+Source: [`install.sh`](https://github.com/addisdev/actions-runners/blob/main/install.sh).
+
+```bash
+./install.sh coordinator   # install the dashboard daemon on this machine
+./install.sh agent         # install the fleet agent on this machine
+```
+
+Preflight checks: macOS 13+, arm64 (warns if not), Node.js 20+, git clone present,
+`gh` authenticated (coordinator only), and required fleet.env variables set.
 
 ### `dashboard/watch/watchctl.sh`
 

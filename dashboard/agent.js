@@ -52,6 +52,10 @@ const CONFIG = {
   // is the right default: joining a fleet should not silently grant remote
   // execution.
   allowCommands: process.env.FLEET_AGENT_ALLOW_COMMANDS === '1',
+  // runner.register is a separate opt-in. It downloads a runner tarball,
+  // installs a LaunchAgent, and calls the GitHub runner registration API —
+  // higher blast radius than drain or health. Set both flags to enable it.
+  allowRegister: process.env.FLEET_AGENT_ALLOW_REGISTER === '1',
   // Spelled exactly as headroom() reads them, because it merges this object over
   // CAPACITY_DEFAULTS and silently ignores anything it does not recognise. The
   // earlier names — maxRunners, maxLoadPerCore — were therefore dropped on the
@@ -86,16 +90,24 @@ const CONFIG = {
 // GitHub agent name and the directory is where the runner lives. Passing the
 // former where the latter was expected made every remote drain a no-op.
 //
-// Deliberately absent, beyond deregistration: restart and duplicate. Neither is
-// a fleet script — restart is svc.sh inside the runner's own directory, and
-// duplicate is register.sh plus the per-repo cap check that lives on the
-// coordinator. Entries pointing at scripts that do not exist are worse than no
-// entries, since they read as supported until someone tries them.
+// runner.register is in a separate opt-in category (FLEET_AGENT_ALLOW_REGISTER)
+// because it is higher blast radius than drain or health: it downloads a
+// 121 MB tarball, installs a LaunchAgent, and contacts GitHub's runner API.
+// An operator who wants reporting + drain/resume but not remote provisioning
+// gets that by default.
 const ALLOWED_COMMANDS = {
   'runner.drain': { script: 'scripts/drain-runner.sh', args: (a, resolve) => [resolve(a.name), '--drain'] },
   'runner.resume': { script: 'scripts/drain-runner.sh', args: (a, resolve) => [resolve(a.name), '--resume'] },
   'health.check': { script: 'health.sh', args: () => [] },
 };
+
+// runner.register is separate from ALLOWED_COMMANDS because it does not fit
+// the generic spec.args shape: it passes a registration token via env rather
+// than a positional argument (tokens are long, opaque, and must not appear in
+// argv where `ps` can see them), and it requires its own idempotency and
+// headroom checks before invoking register.sh.
+const REPO_RE = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
+const LABEL_RE = /^[a-zA-Z0-9_.-]{1,50}$/;
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const warn = (...a) => console.warn(new Date().toISOString(), 'warn:', ...a);
@@ -211,7 +223,98 @@ async function collect() {
   };
 }
 
+// Handle runner.register separately from the generic command runner: it uses
+// environment variables for sensitive values (token must not appear in argv
+// where `ps` can see it), and it performs its own idempotency and headroom
+// checks before invoking register.sh.
+async function runRegister(cmd) {
+  if (!CONFIG.allowCommands) {
+    return { id: cmd.id, ok: false, error: 'remote commands disabled (set FLEET_AGENT_ALLOW_COMMANDS=1)' };
+  }
+  if (!CONFIG.allowRegister) {
+    return { id: cmd.id, ok: false, error: 'remote registration disabled (set FLEET_AGENT_ALLOW_REGISTER=1)' };
+  }
+
+  const a = cmd.args ?? {};
+  const repo = String(a.repo ?? '');
+  const labels = Array.isArray(a.labels) ? a.labels : [];
+  const instance = Number(a.instance ?? 1);
+  const token = String(a.token ?? '');
+
+  if (!REPO_RE.test(repo)) return { id: cmd.id, ok: false, error: 'malformed repo' };
+  if (!Number.isInteger(instance) || instance < 1 || instance > 8) {
+    return { id: cmd.id, ok: false, error: 'invalid instance number' };
+  }
+  if (labels.some((l) => !LABEL_RE.test(String(l)))) {
+    return { id: cmd.id, ok: false, error: 'malformed label' };
+  }
+  if (!token) return { id: cmd.id, ok: false, error: 'registration token is required' };
+
+  const registerScript = join(CONFIG.root, 'register.sh');
+  if (!existsSync(registerScript)) {
+    return { id: cmd.id, ok: false, error: 'register.sh not found on this host' };
+  }
+
+  // Idempotency: if a runner for this repo and instance already exists, treat
+  // the command as a success. A command that was sent, executed, and whose
+  // result POST was lost will be retried by the coordinator — this prevents the
+  // retry from registering a second runner.
+  const name = String(repo).split('/').pop();
+  const suffix = instance > 1 ? `-${instance}` : '';
+  const runnerDir = join(CONFIG.root, `${name}${suffix}`);
+  if (existsSync(join(runnerDir, '.runner'))) {
+    return { id: cmd.id, ok: true, output: `runner already exists at ${runnerDir} — nothing to do` };
+  }
+
+  // Check local headroom immediately before invoking register.sh. The
+  // coordinator checked capacity at placement time, but load can change in
+  // the seconds between queuing and execution.
+  const dirs = discoverRunnerDirs(CONFIG.root);
+  const [jobs, procs, vitals] = await Promise.all([launchdJobs(), runnerProcesses(), hostVitals()]);
+  const runners = dirs.map((d) => ({
+    name: d.name, repo: d.repo, workingLocally: procs.workers.has(d.dir),
+  }));
+  const host = { ...vitals, runnerCount: runners.length };
+  const hr = headroom({ host, runners, limits: CONFIG.limits });
+  if (!hr.ok) {
+    return { id: cmd.id, ok: false, error: `no headroom: ${hr.reasons.join('; ')}` };
+  }
+
+  // Per-repo cap, matching the coordinator's constraint.
+  const MAX_INSTANCES = 4;
+  const existing = dirs.filter((d) => d.repo === repo);
+  if (existing.length >= MAX_INSTANCES) {
+    return { id: cmd.id, ok: false, error: `at per-repo cap of ${MAX_INSTANCES} runners` };
+  }
+
+  const positionalArgs = [repo, ...labels];
+  const env = {
+    ...process.env,
+    RUNNER_TOKEN: token,
+    ...(instance > 1 ? { RUNNER_INSTANCE: String(instance) } : {}),
+  };
+
+  log(`runner.register: ${repo} instance ${instance}${labels.length ? ` [${labels.join(',')}]` : ''}`);
+
+  return new Promise((res) => {
+    execFile(registerScript, positionalArgs, {
+      cwd: CONFIG.root, timeout: 300_000, maxBuffer: 4 * 1024 * 1024, env,
+    }, (err, stdout, stderr) => {
+      res({
+        id: cmd.id,
+        ok: !err,
+        error: err ? (err.killed ? 'timed out' : err.message) : null,
+        output: String(stdout ?? '').slice(-4000) + String(stderr ?? '').slice(-2000),
+      });
+    });
+  });
+}
+
 async function runCommand(cmd) {
+  // runner.register has its own handler because it needs custom validation,
+  // idempotency, and env-var-based secret passing.
+  if (cmd.action === 'runner.register') return runRegister(cmd);
+
   const spec = ALLOWED_COMMANDS[cmd.action];
   if (!spec) {
     // Refused by name, and reported back. A coordinator asking for something
@@ -335,9 +438,16 @@ async function heartbeat() {
 
 log(`fleet-agent starting — host=${CONFIG.hostName} root=${CONFIG.root}`);
 log(`reporting to ${CONFIG.coordinator} every ${CONFIG.heartbeatMs / 1000}s`);
-log(CONFIG.allowCommands
-  ? `remote commands ENABLED: ${Object.keys(ALLOWED_COMMANDS).join(', ')}`
-  : 'remote commands disabled (report-only) — set FLEET_AGENT_ALLOW_COMMANDS=1 to enable');
+if (CONFIG.allowCommands) {
+  const cmds = [...Object.keys(ALLOWED_COMMANDS)];
+  if (CONFIG.allowRegister) cmds.push('runner.register');
+  log(`remote commands ENABLED: ${cmds.join(', ')}`);
+} else {
+  log('remote commands disabled (report-only) — set FLEET_AGENT_ALLOW_COMMANDS=1 to enable');
+}
+if (CONFIG.allowCommands && !CONFIG.allowRegister) {
+  log('runner.register disabled — set FLEET_AGENT_ALLOW_REGISTER=1 to allow remote provisioning');
+}
 
 await heartbeat();
 setInterval(heartbeat, CONFIG.heartbeatMs);

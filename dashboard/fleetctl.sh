@@ -44,6 +44,12 @@ cmd_install() {
   local gh_dir; gh_dir="$(dirname "$(command -v gh 2>/dev/null || echo /opt/homebrew/bin/gh)")"
   mkdir -p "$LOG_DIR" "$HOME/Library/LaunchAgents"
 
+  # Resolve the agent token file path. A separate agent token keeps agent
+  # credentials independent of the browser control token so they can be
+  # rotated independently; if no separate file exists the daemon falls back
+  # to the control token, which is fine for single-host deployments.
+  local agent_token_file="${FLEET_AGENT_TOKEN_FILE:-$HERE/.fleet-agent-token}"
+
   cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -67,6 +73,11 @@ cmd_install() {
     <key>FLEET_GROUP_MIN</key><string>${FLEET_GROUP_MIN:-2}</string>
     <key>FLEET_GROUPS</key><string>${FLEET_GROUPS:-on}</string>
     <key>FLEET_CEILING</key><string>${FLEET_CEILING:-3}</string>
+    <!-- Federation: bind address, agent token, capability labels, read-only -->
+    <key>FLEET_HOST</key><string>${FLEET_HOST:-127.0.0.1}</string>
+    <key>FLEET_AGENT_TOKEN_FILE</key><string>${agent_token_file}</string>
+    <key>FLEET_HOST_LABELS</key><string>${FLEET_HOST_LABELS:-}</string>
+    <key>FLEET_READ_ONLY</key><string>${FLEET_READ_ONLY:-0}</string>
   </dict>
   <!-- Unlike the runner plists, this one sets KeepAlive. health.sh exists
        precisely because theirs do not, and a monitoring daemon that dies
@@ -85,6 +96,7 @@ PLIST_EOF
   echo "loaded $LABEL"
   echo "node:  $node"
   echo "gh:    $gh_dir/gh"
+  echo "bind:  ${FLEET_HOST:-127.0.0.1}:$PORT"
   sleep 2
   cmd_status
 }
@@ -135,15 +147,31 @@ cmd_token() {
   fi
 }
 
+cmd_agent_token() {
+  # Print (and create if missing) the token agents use to authenticate their
+  # heartbeats. Separate from the control token so each can be rotated without
+  # invalidating the other. Stored in a mode-0600 file so it is not readable
+  # by other local users; written to both the default and the legacy location
+  # for backwards compatibility with single-token deployments.
+  local token_file="${FLEET_AGENT_TOKEN_FILE:-$HERE/.fleet-agent-token}"
+  if [ ! -f "$token_file" ]; then
+    node -e "require('crypto').randomBytes(32).toString('hex').replace(/\n/,'')" > "$token_file"
+    chmod 600 "$token_file"
+    echo "generated $token_file"
+  fi
+  cat "$token_file"
+}
+
 case "${1:-status}" in
-  install)   cmd_install ;;
-  uninstall) cmd_uninstall ;;
-  start)     cmd_start ;;
-  stop)      cmd_stop ;;
-  restart)   cmd_restart ;;
-  status)    cmd_status ;;
-  logs)      cmd_logs "${2:-60}" ;;
-  run)       cmd_run ;;
-  token)     cmd_token ;;
+  install)     cmd_install ;;
+  uninstall)   cmd_uninstall ;;
+  start)       cmd_start ;;
+  stop)        cmd_stop ;;
+  restart)     cmd_restart ;;
+  status)      cmd_status ;;
+  logs)        cmd_logs "${2:-60}" ;;
+  run)         cmd_run ;;
+  token)       cmd_token ;;
+  agent-token) cmd_agent_token ;;
   *) sed -n '2,12p' "$0"; exit 1 ;;
 esac

@@ -100,6 +100,44 @@ Separating them lets you rotate agent credentials without invalidating
 browser sessions, and prevents an agent host compromise from granting
 control-plane access.
 
+To generate a separate agent token with one command:
+
+```bash
+cd dashboard && ./fleetctl.sh agent-token   # creates and prints
+cd dashboard && ./fleetctl.sh restart
+```
+
+### Token file permissions
+
+Both token files (`dashboard/.fleet-token` and `dashboard/.fleet-agent-token`)
+are created with mode 0600. `agentctl.sh install` also writes the token to a
+local file with 0600 before embedding its **path** in the plist — never the
+token value. The plist `EnvironmentVariables` dict is readable by any local
+user via `defaults read`, so embedding a token there is equivalent to writing
+it world-readable.
+
+### Federation network exposure
+
+- **Default:** coordinator binds to `127.0.0.1`. Agents must use an SSH
+  tunnel. This is the safest default and requires no additional firewall rules.
+- **LAN deployment:** set `FLEET_HOST=0.0.0.0` and restrict the port at the
+  network perimeter. Do not expose port 7878 to the internet.
+- **No TLS by default.** On a trusted LAN this is acceptable; on an untrusted
+  network, put a TLS-terminating reverse proxy (nginx, Caddy) in front.
+
+### Remote provisioning scope
+
+`runner.register` on an agent:
+
+- Requires two separate opt-in flags (`FLEET_AGENT_ALLOW_COMMANDS=1` and
+  `FLEET_AGENT_ALLOW_REGISTER=1`), so an agent that only needs drain/resume
+  cannot accidentally be used for provisioning.
+- Passes the registration token via environment variable, not argv, so it does
+  not appear in `ps` output.
+- Re-checks local headroom and the per-repo cap immediately before invoking
+  `register.sh`, regardless of what the coordinator's snapshot said.
+- Treats an already-present runner directory as success (idempotent on retry).
+
 ## Runner credentials
 
 Each runner directory contains:
