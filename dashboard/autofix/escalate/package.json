@@ -5,5 +5,8 @@
   "description": "Agent escalation for alerts autofix will not repair. Isolated here so the dashboard core and the bridge stay dependency-free.",
   "dependencies": {
     "@cursor/sdk": "^1.0.28"
+  },
+  "overrides": {
+    "undici": "^6.28.1"
   }
 }
