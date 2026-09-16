@@ -86,6 +86,12 @@ jobs:
       - name: Ephemeral reaper tests
         run: bash scripts/test-ephemeral.sh
 
+      - name: Job audio tests
+        run: bash hooks/tests/audio.sh
+
+      - name: Simulator cleanup tests
+        run: bash hooks/tests/simulator.sh
+
   # ---------------------------------------------------------------------------
   # Offline release check (no network, checks tracked files for private data)
   # ---------------------------------------------------------------------------

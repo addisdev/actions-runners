@@ -197,6 +197,16 @@ export class GitHub {
     return data?.runners ?? [];
   }
 
+  // Short-lived registration token for one repo. Tokens expire in about an
+  // hour, so this is always fetched fresh when needed rather than cached. The
+  // coordinator calls this immediately before queuing a runner.register command
+  // so the token is as new as possible when the agent consumes it.
+  async registrationToken(repo) {
+    const data = await this.post(`repos/${repo}/actions/runners/registration-token`);
+    if (!data?.token) throw new Error(`registrationToken: no token in response for ${repo}`);
+    return data.token;
+  }
+
   async ownedRepos() {
     const out = [];
     for (let page = 1; page <= 4; page++) {

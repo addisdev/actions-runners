@@ -287,3 +287,96 @@ describe('mergeHostSnapshots', () => {
     assert.equal(out.hosts[0].runnerCount, 0);
   });
 });
+
+// ---- Capability-label matching in a federated fleet -------------------------
+
+describe('choosePlacement — capability labels in a federated fleet', () => {
+  function capHost(name, labels, overrides = {}) {
+    return {
+      id: `id-${name}`,
+      name,
+      lastHeartbeat: NOW - 2_000,
+      runnerCount: 2,
+      repos: [],
+      labels,
+      capacity: { ok: true, reasons: [], busy: 0, ceiling: 3, maxTotalRunners: 8 },
+      host: { cores: 12, load1: 3.0 },
+      runners: [],
+      ...overrides,
+    };
+  }
+
+  test('places on the host with the matching capability label', () => {
+    const out = choosePlacement({
+      hosts: [
+        capHost('mac-xcode-15', ['xcode-15', 'macos-14']),
+        capHost('mac-xcode-16', ['xcode-16', 'macos-15']),
+      ],
+      repo: REPO,
+      requiredLabels: ['xcode-16'],
+      now: NOW,
+    });
+    // choosePlacement returns host.name as the chosen value
+    assert.equal(out.chosen, 'mac-xcode-16');
+  });
+
+  test('refuses all hosts when no host carries the required label', () => {
+    const out = choosePlacement({
+      hosts: [capHost('mac-1', ['xcode-15']), capHost('mac-2', ['xcode-15'])],
+      repo: REPO,
+      requiredLabels: ['xcode-16'],
+      now: NOW,
+    });
+    assert.equal(out.chosen, null);
+    assert.match(out.reason, /xcode-16/);
+  });
+
+  test('preferred host has multiple required labels', () => {
+    const out = choosePlacement({
+      hosts: [
+        capHost('mac-partial', ['xcode-16']),
+        capHost('mac-full', ['xcode-16', 'ios-device']),
+      ],
+      repo: REPO,
+      requiredLabels: ['xcode-16', 'ios-device'],
+      now: NOW,
+    });
+    assert.equal(out.chosen, 'mac-full');
+  });
+
+  test('no required labels accepts any eligible host', () => {
+    const out = choosePlacement({
+      hosts: [capHost('mac-1', []), capHost('mac-2', ['xcode-16'])],
+      repo: REPO,
+      requiredLabels: [],
+      now: NOW,
+    });
+    // Either is acceptable; the test confirms one was chosen
+    assert.ok(out.chosen, 'should choose a host when no labels are required');
+  });
+
+  // choosePlacement returns host.name (not host.id) as the chosen value.
+  // The coordinator compares placement.chosen against its own hostname to
+  // decide whether to execute locally or queue a remote command.
+  test('returned chosen value is the host name', () => {
+    const out = choosePlacement({
+      hosts: [capHost('my-mac-studio', ['xcode-16'])],
+      repo: REPO,
+      requiredLabels: ['xcode-16'],
+      now: NOW,
+    });
+    assert.equal(out.chosen, 'my-mac-studio');
+  });
+
+  test('considered list carries the name for each host', () => {
+    const out = choosePlacement({
+      hosts: [capHost('mac-1', []), capHost('mac-2', ['xcode-16'])],
+      repo: REPO,
+      requiredLabels: ['xcode-16'],
+      now: NOW,
+    });
+    const names = out.considered.map((c) => c.host);
+    assert.ok(names.includes('mac-1'), 'mac-1 should appear in considered');
+    assert.ok(names.includes('mac-2'), 'mac-2 should appear in considered');
+  });
+});

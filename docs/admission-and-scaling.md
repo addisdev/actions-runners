@@ -80,15 +80,21 @@ both starting at once.
 When a job starts on any runner, `hooks/job-started.sh` runs first. In
 `enforce` mode:
 
-1. It acquires a named POSIX lock (`flock`) on a shared file.
-2. Counts the `Runner.Worker` PIDs currently running.
-3. If count ≥ `FLEET_ADMIT_MAX_CONCURRENT`: release the lock, sleep 5 s, retry.
-4. If count < limit: claim a slot by writing the PID, release the lock, exit 0.
-5. If the wait exceeds `FLEET_ADMIT_MAX_WAIT_S`: admit the job anyway (exit 0).
+1. It joins a host-wide FIFO waiter queue under an atomic directory mutex.
+2. It reaps waiter files whose hook process has exited and slot files whose
+   owning `Runner.Worker` has exited.
+3. The oldest waiter checks live admitted slots and free disk.
+4. If there is room, it claims a slot owned by its `Runner.Worker`, leaves the
+   waiter queue, and starts the workflow.
+5. While blocked, it polls GitHub for run cancellation and returns immediately
+   when the run has ended.
+6. At `FLEET_ADMIT_MAX_WAIT_S`, `FLEET_ADMIT_TIMEOUT_ACTION` either admits the
+   job (`admit`, the compatibility default) or keeps the limit strict (`hold`).
 
 A held job is **in progress as far as GitHub is concerned** — the wait counts
-against `timeout-minutes`. Keep `FLEET_ADMIT_MAX_WAIT_S` well under the
-tightest timeout in the fleet.
+against `timeout-minutes`. In fail-open mode, keep `FLEET_ADMIT_MAX_WAIT_S`
+well under the tightest timeout in the fleet. In strict mode, cancellation
+polling releases the runner when that timeout ends the run.
 
 ### Installing the hooks
 
@@ -110,7 +116,7 @@ are already installed in any runner directory.
 |---|---|
 | `off` (default) | Hook exits immediately. Nothing changes. |
 | `observe` | Records what enforcing would have done. Never delays a job. |
-| `enforce` | Holds the job until a slot frees or the timeout elapses. |
+| `enforce` | Queues the job FIFO until a slot frees; timeout behavior is configurable. |
 
 Run `observe` for a week first. The Capacity tab shows every decision with
 timestamps and hold durations. That is the only honest way to calibrate the
@@ -148,6 +154,8 @@ hooks run inside CI jobs and cannot reach the daemon's database.
 FLEET_ADMIT_MODE=observe
 FLEET_ADMIT_MAX_CONCURRENT=3
 FLEET_ADMIT_MAX_WAIT_S=600
+FLEET_ADMIT_TIMEOUT_ACTION=admit
+FLEET_ADMIT_CANCEL_POLL_S=30
 FLEET_ADMIT_MIN_FREE_DISK_GB=40
 ```
 

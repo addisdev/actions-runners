@@ -34,6 +34,17 @@ trap 'exit 0' EXIT
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${FLEET_ROOT:-$(cd "$HERE/.." && pwd)}"
+
+# Apple simulators have no supported per-device mute. For runners selected in
+# fleet.env, mute the host for the job and let a detached guardian restore it
+# even if cancellation prevents the completed hook from running.
+[ -f "$HERE/audio-control.sh" ] && FLEET_ROOT="$ROOT" bash "$HERE/audio-control.sh" start
+
+# Selected simulator jobs take a cancellation-safe lease before their first
+# step. The final overlapping job to finish shuts down only devices that were
+# not already booted before CI began.
+[ -f "$HERE/simulator-control.sh" ] && FLEET_ROOT="$ROOT" bash "$HERE/simulator-control.sh" start
+
 # shellcheck source=hooks/common.sh
 . "$HERE/common.sh" 2>/dev/null || exit 0
 
@@ -82,14 +93,22 @@ fi
 # enforce
 WAITED=0
 ANNOUNCED=0
+TIMEOUT_ANNOUNCED=0
+LAST_CANCEL_CHECK=-1
 while :; do
   BUSY=0
   BLOCKER=""
   if admit_lock; then
+    admit_join_waiters "$KEY" || true
     BUSY="$(admit_live_slots)"
-    BLOCKER="$(admit_blocker "$BUSY")"
+    if admit_waiter_is_first; then
+      BLOCKER="$(admit_blocker "$BUSY")"
+    else
+      BLOCKER="an older job is waiting for the next host slot"
+    fi
     if [ -z "$BLOCKER" ]; then
       admit_claim_slot "$KEY"
+      admit_leave_waiters
       admit_unlock
       admit_log admitted '' "$WAITED" "$BUSY"
       exit 0
@@ -98,17 +117,41 @@ while :; do
   else
     # Lock contention is not a reason to stop CI. The count may be off by one
     # for a moment; a build blocked by a mutex would be off by a lot more.
+    admit_leave_waiters
     admit_claim_slot "$KEY"
     admit_log admitted 'mutex unavailable, admitted without counting' "$WAITED" 0
     exit 0
   fi
 
-  if [ "$WAITED" -ge "$ADMIT_MAX_WAIT" ]; then
-    # Bounded wait reached. Admit rather than hold: the job's own timeout is
-    # ticking, and a slow build beats a build that failed while being protected.
+  # Runner.Worker does not reliably interrupt a hook that is sleeping when its
+  # run is cancelled. Polling lets the hook return so the worker can observe the
+  # cancellation and become available for another job.
+  if [ "$LAST_CANCEL_CHECK" -lt 0 ] \
+    || [ $((WAITED - LAST_CANCEL_CHECK)) -ge "$ADMIT_CANCEL_POLL" ]; then
+    LAST_CANCEL_CHECK="$WAITED"
+    if admit_run_completed; then
+      admit_leave_waiters
+      admit_log cancelled 'GitHub run completed while waiting' "$WAITED" "$BUSY"
+      echo "fleet: run ended while waiting — releasing this runner"
+      exit 0
+    fi
+  fi
+
+  if [ "$WAITED" -ge "$ADMIT_MAX_WAIT" ] \
+    && [ "$ADMIT_TIMEOUT_ACTION" = "admit" ]; then
+    # Compatibility mode: bounded wait reached, so admit despite the limit.
+    admit_leave_waiters
     admit_claim_slot "$KEY"
     admit_log timeout "$BLOCKER" "$WAITED" "$BUSY"
     exit 0
+  fi
+
+  if [ "$WAITED" -ge "$ADMIT_MAX_WAIT" ] \
+    && [ "$ADMIT_TIMEOUT_ACTION" = "hold" ] \
+    && [ "$TIMEOUT_ANNOUNCED" -eq 0 ]; then
+    admit_log continued-hold "$BLOCKER" "$WAITED" "$BUSY"
+    echo "fleet: admission wait reached ${ADMIT_MAX_WAIT}s; keeping the host limit strict"
+    TIMEOUT_ANNOUNCED=1
   fi
 
   # Logged once per hold rather than once per poll, so a ten-minute wait is one
@@ -116,7 +159,11 @@ while :; do
   if [ "$ANNOUNCED" -eq 0 ]; then
     admit_log held "$BLOCKER" 0 "$BUSY"
     ANNOUNCED=1
-    echo "fleet: holding this job — $BLOCKER (waiting up to ${ADMIT_MAX_WAIT}s)"
+    if [ "$ADMIT_TIMEOUT_ACTION" = "hold" ]; then
+      echo "fleet: holding this job — $BLOCKER (strict host limit)"
+    else
+      echo "fleet: holding this job — $BLOCKER (waiting up to ${ADMIT_MAX_WAIT}s)"
+    fi
   fi
 
   sleep "$ADMIT_POLL"

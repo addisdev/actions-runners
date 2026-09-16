@@ -6,12 +6,14 @@ set -uo pipefail
 HOOKS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT="${TMPDIR:-/tmp}/admit-test/root"
 LOG="$ROOT/dashboard/logs/admission.ndjson"
+BIN="$ROOT/bin"
+RUN_STATUS="$ROOT/run-status"
 PASS=0
 FAIL=0
 
 setup() {
   rm -rf "$ROOT"
-  mkdir -p "$ROOT/dashboard/logs"
+  mkdir -p "$ROOT/dashboard/logs" "$BIN"
   {
     echo "FLEET_ADMIT_MODE=$1"
     echo "FLEET_ADMIT_MAX_CONCURRENT=${2:-2}"
@@ -19,12 +21,19 @@ setup() {
     echo "FLEET_ADMIT_POLL_S=${4:-1}"
     echo "FLEET_ADMIT_MIN_FREE_DISK_GB=${5:-1}"
   } > "$ROOT/fleet.env"
+  echo in_progress > "$RUN_STATUS"
+  cat > "$BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+cat "$FAKE_RUN_STATUS"
+EOF
+  chmod +x "$BIN/gh"
 }
 
 # Runs the started hook as if a job on $1 were beginning.
 start() {
   FLEET_ROOT="$ROOT" RUNNER_NAME="$1" GITHUB_REPOSITORY="acme/$1" \
-    GITHUB_RUN_ID="${2:-100}" GITHUB_JOB="build" \
+    GITHUB_RUN_ID="${2:-100}" GITHUB_JOB="build" FAKE_RUN_STATUS="$RUN_STATUS" \
+    PATH="$BIN:$PATH" \
     bash "$HOOKS/job-started.sh"
 }
 
@@ -39,6 +48,7 @@ start_bg() {
   (
     FLEET_ROOT="$ROOT" RUNNER_NAME="$1" GITHUB_REPOSITORY="acme/$1" \
       GITHUB_RUN_ID="${2:-100}" GITHUB_JOB="build" \
+      FAKE_RUN_STATUS="$RUN_STATUS" PATH="$BIN:$PATH" \
       bash "$HOOKS/job-started.sh"
     sleep 120
   ) >/dev/null 2>&1 &
@@ -55,7 +65,8 @@ end_jobs() {
 
 complete() {
   FLEET_ROOT="$ROOT" RUNNER_NAME="$1" GITHUB_REPOSITORY="acme/$1" \
-    GITHUB_RUN_ID="${2:-100}" GITHUB_JOB="build" \
+    GITHUB_RUN_ID="${2:-100}" GITHUB_JOB="build" FAKE_RUN_STATUS="$RUN_STATUS" \
+    PATH="$BIN:$PATH" \
     bash "$HOOKS/job-completed.sh"
 }
 
@@ -120,6 +131,61 @@ AFTER=$(date +%s)
 ok "held before admitting" "$(events held)" "1"
 ok "admitted on timeout" "$(events timeout)" "1"
 ok "waited the bounded time" "$([ $((AFTER - BEFORE)) -ge 4 ] && echo waited || echo instant)" "waited"
+
+echo "== strict timeout keeps holding until capacity returns =="
+setup enforce 1 2 1
+echo "FLEET_ADMIT_TIMEOUT_ACTION=hold" >> "$ROOT/fleet.env"
+LIVE=$(fake_slot occupied)
+( sleep 4; kill "$LIVE" 2>/dev/null ) &
+RELEASER=$!
+BEFORE=$(date +%s)
+start alpha
+AFTER=$(date +%s)
+wait "$RELEASER" 2>/dev/null
+ok "strict mode did not fail open" "$(events timeout)" "0"
+ok "continued hold was logged" "$(events continued-hold)" "1"
+ok "admitted only after capacity returned" "$([ $((AFTER - BEFORE)) -ge 4 ] && echo waited || echo early)" "waited"
+
+echo "== a cancelled run releases its waiting runner =="
+setup enforce 1 30 1
+echo "FLEET_ADMIT_CANCEL_POLL_S=5" >> "$ROOT/fleet.env"
+LIVE=$(fake_slot occupied)
+( sleep 2; echo completed > "$RUN_STATUS" ) &
+STATUS_WRITER=$!
+BEFORE=$(date +%s)
+start cancelled
+AFTER=$(date +%s)
+wait "$STATUS_WRITER"
+kill "$LIVE" 2>/dev/null
+ok "cancellation event logged" "$(events cancelled)" "1"
+ok "cancelled job claimed no slot" \
+  "$([ -f "$ROOT/.admission/slots/cancelled" ] && echo yes || echo no)" "no"
+ok "returned before admission timeout" "$([ $((AFTER - BEFORE)) -lt 10 ] && echo prompt || echo slow)" "prompt"
+
+echo "== waiters are admitted in arrival order =="
+setup enforce 1 30 1
+LIVE=$(fake_slot occupied)
+start_bg beta
+sleep 1
+start_bg gamma
+sleep 1
+ok "both jobs joined the waiter queue" \
+  "$(ls -1 "$ROOT/.admission/waiters" 2>/dev/null | wc -l | tr -d ' ')" "2"
+kill "$LIVE" 2>/dev/null
+for _ in 1 2 3 4 5; do
+  [ "$(events admitted)" = "1" ] && break
+  sleep 1
+done
+FIRST="$(grep '"event":"admitted"' "$LOG" | sed -n 's/.*"runner":"\([^"]*\)".*/\1/p' | head -1)"
+ok "oldest waiter admitted first" "$FIRST" "beta"
+complete beta
+for _ in 1 2 3 4 5; do
+  [ "$(events admitted)" = "2" ] && break
+  sleep 1
+done
+SECOND="$(grep '"event":"admitted"' "$LOG" | sed -n 's/.*"runner":"\([^"]*\)".*/\1/p' | tail -1)"
+ok "second waiter admitted next" "$SECOND" "gamma"
+end_jobs
 
 echo "== completing a job frees the slot for a waiter =="
 setup enforce 2 20 1

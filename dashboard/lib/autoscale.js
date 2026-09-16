@@ -132,6 +132,10 @@ export function planScaleUp({
       reason:
         `queued ${Math.round(waited / 60000)}m with ${row.have} runner(s); ` +
         `${row.reason}`,
+      // Labels the new runner must carry — copied from the clone source so the
+      // coordinator can include them in a runner.register command for a remote host
+      // without having to re-derive them from a snapshot that may not be current.
+      extraLabels: source.extraLabels ?? [],
     };
   }
 

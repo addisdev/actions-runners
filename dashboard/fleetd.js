@@ -43,6 +43,9 @@ import { planScaleUp, planScaleDown } from './lib/autoscale.js';
 import { compareScenarios } from './lib/simulator.js';
 import { choosePlacement, mergeHostSnapshots, STALE_HEARTBEAT_MS } from './lib/placement.js';
 import {
+  buildFleetRunners, buildHostList, anyHostHasCapacity, LOCAL_HOST_ID as FLEET_LOCAL_ID,
+} from './lib/fleet.js';
+import {
   buildBaseline, forecastDemand, extractSchedules, evaluatePrediction, evaluateGate,
 } from './lib/forecast.js';
 import { createAdmission } from './lib/admission.js';
@@ -88,6 +91,10 @@ const CONFIG = {
   // Read-only mode disables the control plane entirely, for a deployment that
   // should only ever look.
   readOnly: process.env.FLEET_READ_ONLY === '1',
+  // Capability labels for the coordinator host itself. Placement uses these to
+  // determine which jobs this host can serve — Xcode version, OS release, etc.
+  // Set FLEET_HOST_LABELS=xcode-16,macos-15 in fleet.env on the coordinator.
+  hostLabels: (process.env.FLEET_HOST_LABELS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
   alertConfig: process.env.FLEET_ALERT_CONFIG ?? join(HERE, 'alerts.config.json'),
   alertsEnabled: process.env.FLEET_ALERTS !== '0',
   // Where hooks/job-started.sh appends its decisions. Configurable for the same
@@ -667,9 +674,50 @@ async function autoscaleTick() {
     return;
   }
 
+  // Commands marked `sent` but never acknowledged (agent crashed before posting
+  // results) are reset to `pending` so they can be retried. The agent's own
+  // idempotency check (runner directory already exists) prevents duplicates.
+  const COMMAND_LEASE_MS = 5 * 60 * 1000;
+  try {
+    db.prepare(
+      "UPDATE host_commands SET status = 'pending' WHERE status = 'sent' AND started_at < ?"
+    ).run(Date.now() - COMMAND_LEASE_MS);
+  } catch (err) {
+    warn('command retry cleanup:', err.message);
+  }
+
   const dryRun = settings.get('autoscaleDryRun');
   const limits = autoscaleLimits();
   const snap = snapshot;
+
+  // Fleet-wide runner list for sizing and scale decisions.
+  const fleetRunners = buildFleetRunners(snap.runners ?? [], snap.elsewhere ?? [], hostState);
+
+  // Build the host list for placement: coordinator as first-class member, then
+  // all connected agents. Stale hosts are included so choosePlacement can name
+  // them explicitly as the reason they were skipped.
+  const coordinatorDrained = Boolean(hostDrainState(CONFIG.root));
+  // choosePlacement returns host.name (not .id) as the chosen value. Store the
+  // coordinator's name separately so the local vs. remote branch below can
+  // compare against it without re-deriving it.
+  const coordinatorName = os.hostname().replace(/\.local$/, '');
+  const allHosts = buildHostList(
+    { ts: snap.ts ?? Date.now(), runners: snap.runners ?? [], host: snap.host ?? {}, capacity: snap.capacity ?? null },
+    hostState,
+    {
+      coordinatorLabels: CONFIG.hostLabels,
+      coordinatorDrained,
+      coordinatorName,
+    }
+  );
+
+  // Fleet-wide capacity gate: if any non-stale host has headroom, scale-up can
+  // proceed — on whichever host placement chooses. This prevents a saturated
+  // coordinator from blocking a remote scale-up.
+  const fleetCapacity = anyHostHasCapacity(allHosts)
+    ? { ok: true, reasons: [] }
+    : { ok: false, reasons: ['no eligible host has capacity for a new runner'] };
+
   // JSON by hand: setMeta stores String(value), so an object handed to it
   // becomes the literal "[object Object]" and every cooldown silently vanishes.
   let lastUpByRepo = {};
@@ -689,8 +737,11 @@ async function autoscaleTick() {
 
   const up = planScaleUp({
     sizing: snap.sizing ?? [],
-    capacity: snap.capacity ?? { ok: false, reasons: ['no snapshot yet'] },
-    runners: snap.runners ?? [],
+    // Fleet-wide capacity so planScaleUp does not refuse when the coordinator is
+    // saturated but a remote host has room.
+    capacity: fleetCapacity,
+    // Fleet-wide runners so sizing sees runners on all hosts.
+    runners: fleetRunners,
     active: snap.active ?? [],
     lastUpByRepo,
     limits,
@@ -702,6 +753,7 @@ async function autoscaleTick() {
   let plan = up;
   let kind = 'up';
   if (!up.act && settings.get('scaleDown')) {
+    // Scale-down only considers local runners: deregister.sh only works here.
     const down = planScaleDown({
       runners: snap.runners ?? [],
       active: snap.active ?? [],
@@ -719,40 +771,157 @@ async function autoscaleTick() {
     return;
   }
 
-  const action = kind === 'up' ? 'runner.duplicate' : 'runner.deregister';
-  const label = `autoscale.${kind}`;
-  const detail = `${plan.name} (${plan.repo}): ${plan.reason}`;
+  if (kind === 'down') {
+    // Scale-down always runs locally.
+    const action = 'runner.deregister';
+    const label = 'autoscale.down';
+    const detail = `${plan.name} (${plan.repo}): ${plan.reason}`;
 
-  if (dryRun) {
-    log(`${label} DRY RUN: would ${action} ${detail}`);
-    logAction.run(Date.now(), `${label} (dry run)`, JSON.stringify({ name: plan.name }),
-      `${action} ${plan.name}`, 0, 1, `DRY RUN — no change made.\n${detail}`);
-    lastAutoscale = { at: Date.now(), action, acted: false, reason: `dry run: ${detail}` };
+    if (dryRun) {
+      log(`${label} DRY RUN: would ${action} ${detail}`);
+      logAction.run(Date.now(), `${label} (dry run)`, JSON.stringify({ name: plan.name }),
+        `${action} ${plan.name}`, 0, 1, `DRY RUN — no change made.\n${detail}`);
+      lastAutoscale = { at: Date.now(), action, acted: false, reason: `dry run: ${detail}` };
+      return;
+    }
+
+    log(`${label}: ${action} ${detail}`);
+    const started = Date.now();
+    try {
+      const result = await ACTIONS[action].exec({ name: plan.name });
+      const ok = result.ok ?? result.code === 0;
+      logAction.run(started, label, JSON.stringify({ name: plan.name }), result.command ?? null,
+        result.code ?? null, ok ? 1 : 0, `${detail}\n\n${(result.output ?? '').slice(0, 18000)}`);
+      lastAutoscale = { at: started, action, acted: ok, reason: detail };
+      if (!ok) warn(`${label} failed:`, (result.output ?? '').slice(0, 300));
+      await fastTick().catch(() => {});
+    } catch (err) {
+      logAction.run(Date.now(), label, JSON.stringify({ name: plan.name }), action, null, 0,
+        `${detail}\n\nrefused: ${err.message}`);
+      lastAutoscale = { at: Date.now(), action, acted: false, reason: `refused: ${err.message}` };
+    }
     return;
   }
 
-  log(`${label}: ${action} ${detail}`);
-  const started = Date.now();
+  // Scale-up: choose the best host for the new runner.
+  // Labels are copied from the source runner (returned by planScaleUp) so the
+  // new runner matches the same `runs-on:` as its siblings.
+  const sourceRunner = fleetRunners.find((r) => r.name === plan.name);
+  const requiredLabels = plan.extraLabels ?? sourceRunner?.extraLabels ?? [];
+
+  const placement = choosePlacement({
+    hosts: allHosts,
+    repo: plan.repo,
+    requiredLabels,
+  });
+
+  const now = Date.now();
+  const detail = `${plan.repo}: ${plan.reason}`;
+
+  // Record every placement decision, including refused ones. The operator needs
+  // to see why a host was skipped — "stale heartbeat" and "missing xcode-16"
+  // are different problems with different remedies.
   try {
-    // Through the same registry the buttons use, so a scaled runner is created
-    // by exactly the code path a human would have used — and lands in
-    // action_log looking the same.
-    const result = await ACTIONS[action].exec({ name: plan.name });
-    const ok = result.ok ?? result.code === 0;
-    logAction.run(started, label, JSON.stringify({ name: plan.name }), result.command ?? null,
-      result.code ?? null, ok ? 1 : 0, `${detail}\n\n${(result.output ?? '').slice(0, 18000)}`);
-    if (ok && kind === 'up') {
-      setMeta(db, 'autoscale_last_up', JSON.stringify({ ...lastUpByRepo, [plan.repo]: Date.now() }));
-    }
-    lastAutoscale = { at: started, action, acted: ok, reason: detail };
-    if (!ok) warn(`${label} failed:`, (result.output ?? '').slice(0, 300));
-    await fastTick().catch(() => {});
+    stmt.insertPlacement.run(
+      now, plan.repo, placement.chosen ?? null,
+      'runner.register', placement.reason, dryRun ? 1 : 0,
+    );
   } catch (err) {
-    // A refusal from the action layer is the expected failure, not an anomaly:
-    // headroom can close between the snapshot and the call.
-    logAction.run(started, label, JSON.stringify({ name: plan.name }), action, null, 0,
-      `${detail}\n\nrefused: ${err.message}`);
-    lastAutoscale = { at: started, action, acted: false, reason: `refused: ${err.message}` };
+    warn('placement record:', err.message);
+  }
+
+  if (!placement.chosen) {
+    log(`autoscale.up: no eligible host for ${plan.repo}: ${placement.reason}`);
+    logAction.run(now, 'autoscale.up', JSON.stringify({ repo: plan.repo }),
+      null, null, 0, `no eligible host\n${placement.reason}`);
+    lastAutoscale = { at: now, action: 'runner.register', acted: false, reason: placement.reason };
+    return;
+  }
+
+  if (dryRun) {
+    log(`autoscale.up DRY RUN: would runner.register on ${placement.chosen} for ${detail}`);
+    logAction.run(now, 'autoscale.up (dry run)',
+      JSON.stringify({ host: placement.chosen, repo: plan.repo }),
+      'runner.register', 0, 1,
+      `DRY RUN — no change made.\n${detail}\nwould place on ${placement.chosen}`);
+    lastAutoscale = {
+      at: now, action: 'runner.register', acted: false,
+      reason: `dry run: ${placement.chosen} — ${detail}`,
+    };
+    return;
+  }
+
+  const isLocal = placement.chosen === coordinatorName;
+
+  if (isLocal) {
+    // Coordinator path: use the same runner.duplicate action the UI uses, so
+    // autoscale actions appear identically in the action_log.
+    const label = 'autoscale.up';
+    log(`${label}: runner.duplicate ${plan.name} (${plan.repo}): ${plan.reason}`);
+    const started = now;
+    try {
+      const result = await ACTIONS['runner.duplicate'].exec({ name: plan.name });
+      const ok = result.ok ?? result.code === 0;
+      logAction.run(started, label, JSON.stringify({ name: plan.name }), result.command ?? null,
+        result.code ?? null, ok ? 1 : 0, `${detail}\n\n${(result.output ?? '').slice(0, 18000)}`);
+      if (ok) setMeta(db, 'autoscale_last_up', JSON.stringify({ ...lastUpByRepo, [plan.repo]: now }));
+      lastAutoscale = { at: started, action: 'runner.duplicate', acted: ok, reason: detail, host: 'local' };
+      if (!ok) warn(`${label} failed:`, (result.output ?? '').slice(0, 300));
+      await fastTick().catch(() => {});
+    } catch (err) {
+      // A refusal from the action layer is the expected failure, not an anomaly:
+      // headroom can close between the snapshot and the call.
+      logAction.run(now, label, JSON.stringify({ name: plan.name }), 'runner.duplicate', null, 0,
+        `${detail}\n\nrefused: ${err.message}`);
+      lastAutoscale = { at: now, action: 'runner.duplicate', acted: false, reason: `refused: ${err.message}` };
+    }
+  } else {
+    // Remote path: fetch a short-lived GitHub registration token and queue a
+    // runner.register command for the chosen agent host.
+    const siblings = fleetRunners.filter((r) => r.repo === plan.repo);
+    const next = Math.max(...siblings.map((r) => r.instance ?? 1), 0) + 1;
+
+    let regToken;
+    try {
+      regToken = await gh.registrationToken(plan.repo);
+    } catch (err) {
+      warn('autoscale.up: could not get registration token:', err.message);
+      logAction.run(now, 'autoscale.up',
+        JSON.stringify({ host: placement.chosen, repo: plan.repo }),
+        'runner.register', null, 0, `registration token failed: ${err.message}`);
+      lastAutoscale = { at: now, action: 'runner.register', acted: false, reason: `token failed: ${err.message}` };
+      return;
+    }
+
+    // Idempotency key scoped to repo + instance + minute. The minute window
+    // prevents two rapid autoscaleTick calls from queuing the same command
+    // twice; the agent's runner-directory check handles the restart case.
+    const idempotencyKey = `register.${plan.repo}.${next}.${Math.floor(now / 60000)}`;
+    const cmdArgs = JSON.stringify({
+      repo: plan.repo,
+      labels: requiredLabels,
+      instance: next,
+      token: regToken,
+    });
+
+    try {
+      stmt.queueCommand.run(placement.chosen, now, 'runner.register', cmdArgs, idempotencyKey);
+      const cmdDetail = `${plan.repo} instance ${next} on ${placement.chosen}: ${plan.reason}`;
+      logAction.run(now, 'autoscale.up',
+        JSON.stringify({ host: placement.chosen, repo: plan.repo, instance: next }),
+        'runner.register', null, 1, `queued ${cmdDetail}`);
+      setMeta(db, 'autoscale_last_up', JSON.stringify({ ...lastUpByRepo, [plan.repo]: now }));
+      lastAutoscale = {
+        at: now, action: 'runner.register', acted: true,
+        reason: plan.reason, host: placement.chosen,
+      };
+    } catch (err) {
+      warn('autoscale.up: could not queue command:', err.message);
+      lastAutoscale = {
+        at: now, action: 'runner.register', acted: false,
+        reason: `queue failed: ${err.message}`,
+      };
+    }
   }
 }
 
@@ -841,6 +1010,12 @@ async function fastTick() {
 
   const { runners, elsewhere } = buildRunners({ dirs: dirsCache, ghRunnersByRepo, launchd, processes, runnersKnownFor, groups });
 
+  // Fleet-wide runner list: local runners plus runners on agent hosts, enriched
+  // with agent heartbeat data (workingLocally, drainState, launchdState).
+  // Used for sizing, queue classification, and placement decisions.
+  // Control actions (drain, duplicate, deregister) keep using local `runners`.
+  const fleetRunners = buildFleetRunners(runners, elsewhere, hostState);
+
   const active = allRuns
     .filter((r) => r.status === 'queued' || r.status === 'in_progress')
     .sort((a, b2) => new Date(a.startedAt) - new Date(b2.startedAt));
@@ -894,6 +1069,21 @@ async function fastTick() {
 
   const capacity = headroom({ host, runners, limits: settings.limits() });
 
+  // Fleet-wide capacity: if any connected, non-stale, non-drained agent has
+  // headroom, the queue classifier should not report HOST_SATURATION for a
+  // coordinator that is at its own ceiling. The correct diagnosis is
+  // REPO_CAPACITY — adding a runner on an agent would help.
+  const allHosts = buildHostList(
+    { ts: started, runners, host, capacity },
+    hostState,
+    {
+      coordinatorLabels: CONFIG.hostLabels,
+      coordinatorDrained: Boolean(hostDrainState(CONFIG.root)),
+      coordinatorName: os.hostname().replace(/\.local$/, ''),
+    },
+  );
+  const fleetCapacity = anyHostHasCapacity(allHosts) ? { ok: true, reasons: [] } : capacity;
+
   // Ordered before deriveDrift because the classifier needs capacity: "every
   // runner is busy" and "the host is saturated" are indistinguishable without
   // it, and only the first is fixed by adding a runner.
@@ -902,17 +1092,17 @@ async function fastTick() {
   // unmatched-label — because those are a structural proof that a job's
   // `runs-on:` can never be satisfied. Recomputed per tick from the cached
   // workflow files, which costs no API calls.
+  //
+  // Uses fleetRunners so that runners on agent hosts are included in the label
+  // map — a remote runner carrying xcode-16 should clear an xcode-16 label
+  // check rather than having the classifier report LABEL_MISMATCH.
   const criticalLintRepos = (() => {
     try {
       const byRepo = new Map();
-      for (const r of runners) {
+      for (const r of fleetRunners) {
         if (!r.registered) continue;
         if (!byRepo.has(r.repo)) byRepo.set(r.repo, []);
         byRepo.get(r.repo).push({ labels: (r.labels ?? []).map((l) => String(l).toLowerCase()) });
-      }
-      for (const e of elsewhere) {
-        if (!byRepo.has(e.repo)) byRepo.set(e.repo, []);
-        byRepo.get(e.repo).push({ labels: (e.labels ?? []).map((l) => String(l).toLowerCase()) });
       }
       return new Set(
         lintAll({ files: stmt.workflowFiles.all(), runnersByRepo: byRepo })
@@ -930,8 +1120,11 @@ async function fastTick() {
   const classifyRun = (run) =>
     classifyQueueCause({
       run,
-      runners,
-      capacity,
+      // Fleet-wide runner list so remote runners count toward busy/idle state.
+      runners: fleetRunners,
+      // Fleet-wide capacity so a saturated coordinator does not block a
+      // repo-capacity diagnosis when an agent has room.
+      capacity: fleetCapacity,
       api: gh.rate,
       collector: { lastError: ghError },
       runLabels: run.jobs?.flatMap((j) => j.labels ?? []) ?? null,
@@ -991,7 +1184,11 @@ async function fastTick() {
     // can grey out and explain a scale-up that will be refused instead of
     // offering it and reporting a 409.
     capacity,
-    sizing: sizeFleet({ runners, active, concurrency: concurrencyCache, limits: settings.limits() }),
+    // Fleet-wide capacity for UI display (Capacity tab headroom indicator).
+    fleetCapacity,
+    // Sizing uses fleet runners so remote runners count toward "have" — a repo
+    // already served by an agent runner is not recommended for another one here.
+    sizing: sizeFleet({ runners: fleetRunners, active, concurrency: concurrencyCache, limits: settings.limits() }),
     autoscale: { ...lastAutoscale, enabled: settings.get('autoscale'), dryRun: settings.get('autoscaleDryRun') },
     scaleEffect: effectCache,
     // Job admission, from hooks/job-started.sh. Published on every tick because
@@ -1891,12 +2088,27 @@ const server = http.createServer(async (req, res) => {
       drained: Boolean(hostDrainState(CONFIG.root)),
     };
     const merged = mergeHostSnapshots({ hosts: [local, ...hostState.values()] });
+
+    // Recent placement decisions for the Hosts tab. Operators need to see why
+    // a host was chosen or refused, and which commands are in-flight.
+    let recentPlacements = [];
+    let pendingCommands = [];
+    try {
+      recentPlacements = stmt.recentPlacements.all();
+      pendingCommands = db.prepare(
+        "SELECT host_id, action, status, ts, started_at FROM host_commands "
+        + "WHERE status IN ('pending','sent') ORDER BY ts DESC LIMIT 20"
+      ).all();
+    } catch { /* table may not exist on a very old db; degrade gracefully */ }
+
     return json(res, {
       ...merged,
       // Federation is off unless an agent has actually reported. Said explicitly
       // so a single-host fleet does not present an empty Hosts tab as a problem.
       federated: hostState.size > 0,
       staleHeartbeatMs: STALE_HEARTBEAT_MS,
+      recentPlacements,
+      pendingCommands,
     });
   }
 

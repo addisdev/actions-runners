@@ -30,8 +30,20 @@ printf "%-42s %-10s %s\n" "SERVICE" "LAUNCHD" "GITHUB"
 for d in "$ROOT"/*/; do
   [ -f "$d/.runner" ] || continue
 
-  name=$(python3 -c "import json;print(json.load(open('$d/.runner',encoding='utf-8-sig'))['agentName'])" 2>/dev/null) || continue
-  repo=$(python3 -c "import json;print(json.load(open('$d/.runner',encoding='utf-8-sig'))['gitHubUrl'].split('github.com/')[-1])" 2>/dev/null) || continue
+  # plutil is built into macOS and reads the runner's BOM-prefixed JSON without
+  # depending on /usr/bin/python3, which Xcode can block behind a license prompt.
+  if ! name=$(plutil -extract agentName raw -o - "$d/.runner" 2>/dev/null); then
+    printf "%-42s %-10s %s\n" "$(basename "$d")" "UNKNOWN" "invalid .runner"
+    rc=1
+    continue
+  fi
+  if url=$(plutil -extract gitHubUrl raw -o - "$d/.runner" 2>/dev/null); then
+    repo="${url#https://github.com/}"
+  else
+    printf "%-42s %-10s %s\n" "$name" "UNKNOWN" "invalid .runner"
+    rc=1
+    continue
+  fi
 
   # A drained runner is stopped because somebody stopped it. Reporting that as a
   # fault would be wrong twice over: it sets a non-zero exit that reads as "the
