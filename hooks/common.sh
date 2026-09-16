@@ -23,6 +23,7 @@
 
 ADMIT_STATE="$ROOT/.admission"
 ADMIT_SLOTS="$ADMIT_STATE/slots"
+ADMIT_WAITERS="$ADMIT_STATE/waiters"
 ADMIT_MUTEX="$ADMIT_STATE/mutex"
 ADMIT_LOG="$ROOT/dashboard/logs/admission.ndjson"
 
@@ -68,6 +69,21 @@ ADMIT_MAX="$(admit_int "${FLEET_ADMIT_MAX_CONCURRENT:-}" 3)"
 # than a red one.
 # shellcheck disable=SC2034  # used by the files that source this
 ADMIT_MAX_WAIT="$(admit_int "${FLEET_ADMIT_MAX_WAIT_S:-}" 600)"
+
+# admit preserves the historical fail-open behaviour. hold keeps the host limit
+# strict after max-wait and relies on cancellation polling to release a job when
+# GitHub ends it. Anything unrecognised stays fail-open for compatibility.
+# shellcheck disable=SC2034  # used by job-started.sh after this file is sourced
+case "${FLEET_ADMIT_TIMEOUT_ACTION:-admit}" in
+  hold) ADMIT_TIMEOUT_ACTION=hold ;;
+  *) ADMIT_TIMEOUT_ACTION=admit ;;
+esac
+
+# A waiting hook does not reliably receive GitHub's cancellation signal. Poll
+# the run periodically so a cancelled run returns from "Set up runner" instead
+# of occupying its runner until the admission timeout.
+ADMIT_CANCEL_POLL="$(admit_int "${FLEET_ADMIT_CANCEL_POLL_S:-}" 30)"
+[ "$ADMIT_CANCEL_POLL" -lt 5 ] && ADMIT_CANCEL_POLL=5
 
 # Matches minFreeDiskGb in lib/capacity.js. Unlike the concurrency limit this
 # one cannot be satisfied by waiting unless cleanup runs, so it relies on the
@@ -261,6 +277,63 @@ admit_claim_slot() {
 
 admit_free_slot() {
   rm -f "$ADMIT_SLOTS/$1" 2>/dev/null || true
+}
+
+# Waiting jobs use a separate FIFO from admitted slots. The timestamp and PID
+# prefix gives every waiter a stable order even when several arrive in the same
+# second; the hook PID makes abandoned entries safely reapable.
+ADMIT_WAITER=""
+
+admit_join_waiters() {
+  local key="$1" stamp
+  [ -n "$ADMIT_WAITER" ] && [ -f "$ADMIT_WAITER" ] && return 0
+  mkdir -p "$ADMIT_WAITERS" 2>/dev/null || return 1
+  stamp="$(printf '%020d-%010d' "$(admit_now)" "$$")"
+  ADMIT_WAITER="$ADMIT_WAITERS/$stamp-$key"
+  printf 'pid=%s\nts=%s\nrunner=%s\nrepo=%s\nrun=%s\njob=%s\n' \
+    "$$" "$(admit_now)" "${RUNNER_NAME:-}" "${GITHUB_REPOSITORY:-}" \
+    "${GITHUB_RUN_ID:-}" "${GITHUB_JOB:-}" \
+    > "$ADMIT_WAITER" 2>/dev/null || { ADMIT_WAITER=""; return 1; }
+}
+
+admit_leave_waiters() {
+  [ -n "$ADMIT_WAITER" ] && rm -f "$ADMIT_WAITER" 2>/dev/null
+  ADMIT_WAITER=""
+}
+
+admit_reap_waiters() {
+  local f pid
+  mkdir -p "$ADMIT_WAITERS" 2>/dev/null || return 0
+  for f in "$ADMIT_WAITERS"/*; do
+    [ -f "$f" ] || continue
+    pid="$(sed -n 's/^pid=//p' "$f" 2>/dev/null | head -1)"
+    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+      rm -f "$f" 2>/dev/null
+    fi
+  done
+}
+
+admit_waiter_is_first() {
+  local f first=""
+  [ -n "$ADMIT_WAITER" ] || return 1
+  admit_reap_waiters
+  for f in "$ADMIT_WAITERS"/*; do
+    [ -f "$f" ] || continue
+    if [ -z "$first" ] || [ "$(basename "$f")" \< "$(basename "$first")" ]; then
+      first="$f"
+    fi
+  done
+  [ "$first" = "$ADMIT_WAITER" ]
+}
+
+admit_run_completed() {
+  local status
+  [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ] || return 1
+  command -v gh >/dev/null 2>&1 || return 1
+  status="$(gh api \
+    "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+    --jq .status 2>/dev/null)"
+  [ "$status" = "completed" ]
 }
 
 admit_free_disk_gb() {

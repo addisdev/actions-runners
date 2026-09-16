@@ -111,10 +111,34 @@ reach the daemon's database.
 |---|---|---|
 | `FLEET_ADMIT_MODE` | `off` | `off` / `observe` / `enforce`. |
 | `FLEET_ADMIT_MAX_CONCURRENT` | `3` | Max concurrent jobs across the host. |
-| `FLEET_ADMIT_MAX_WAIT_S` | `600` | Max wait before a held job is admitted anyway. |
+| `FLEET_ADMIT_MAX_WAIT_S` | `600` | Max wait before `FLEET_ADMIT_TIMEOUT_ACTION` takes effect. |
+| `FLEET_ADMIT_TIMEOUT_ACTION` | `admit` | `admit` fails open after max-wait; `hold` keeps the host limit strict until the run ends. |
+| `FLEET_ADMIT_CANCEL_POLL_S` | `30` | How often a held hook checks whether GitHub has completed or cancelled its run. |
 | `FLEET_ADMIT_MIN_FREE_DISK_GB` | `40` | Refuse job (then admit after max wait) below this disk level. |
 | `FLEET_ADMIT_POLL_S` | `5` | How often a held job re-checks. |
 | `FLEET_ADMIT_SLOT_TTL_S` | `21600` | Slot lease TTL in seconds. |
+
+Enforced waiters are FIFO. A waiter is removed when its hook exits, and stale
+entries are reaped by hook-process liveness.
+
+## Job audio variable
+
+Used by both job hooks. Apple simulators route app audio through the host and
+do not expose a supported per-simulator mute.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `FLEET_MUTE_RUNNERS` | empty | Space- or comma-separated exact runner names whose jobs mute host output. The original mute state is restored after the last selected job, including when a worker exits without running its completed hook. |
+
+## Simulator cleanup variables
+
+Used by both job hooks. Cleanup is opt-in because simulators are shared with
+interactive Xcode sessions on hosts that are also developer workstations.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `FLEET_SIMULATOR_CLEANUP` | `0` | Set to `1` to enable job-scoped simulator shutdown. |
+| `FLEET_SIMULATOR_RUNNERS` | empty | Space- or comma-separated runner-name shell patterns whose jobs use Apple simulators. After the final overlapping selected job ends, devices created since the first job began are shut down; devices already booted beforehand are preserved. A guardian also cleans up if the worker exits without its completed hook. |
 
 ## Agent variables
 

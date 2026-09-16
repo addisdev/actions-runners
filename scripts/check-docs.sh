@@ -63,7 +63,9 @@ SCRIPT_DOC="docs/reference/scripts.md"
 # a diff rather than a pattern quietly widening.
 not_entry_points=(
   hooks/common.sh
+  hooks/tests/audio.sh
   hooks/tests/install.sh
+  hooks/tests/simulator.sh
   dashboard/autofix/escalate/run.mjs
 )
 

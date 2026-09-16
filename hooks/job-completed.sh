@@ -18,6 +18,15 @@ trap 'exit 0' EXIT
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${FLEET_ROOT:-$(cd "$HERE/.." && pwd)}"
 
+# Restore host audio for selected runners before any unrelated early exit below.
+# The lease count keeps output muted if another selected job is still active.
+[ -f "$HERE/audio-control.sh" ] && FLEET_ROOT="$ROOT" bash "$HERE/audio-control.sh" complete
+
+# Release this simulator job's lease. The final overlapping job shuts down only
+# the devices CI introduced; a guardian does the same if cancellation skips
+# this completion hook.
+[ -f "$HERE/simulator-control.sh" ] && FLEET_ROOT="$ROOT" bash "$HERE/simulator-control.sh" complete
+
 # Drain, handled BEFORE the admission-mode check below, because a drain has
 # nothing to do with admission and must work on a fleet that never turned
 # admission on.
@@ -78,7 +87,6 @@ admit_log released '' 0 "$BUSY" "$HELD"
 PW_JSON=""
 if [ -n "${RUNNER_WORKSPACE:-}" ]; then
   # Walk up from _work/<repo>/<repo> to the runner dir to find the workspace.
-  WS_DIR="${RUNNER_WORKSPACE%%/_work/*}"
   PW_WORK="${RUNNER_WORKSPACE}/$(basename "${RUNNER_WORKSPACE}")"
   # Common output locations — check both app/test-results and root test-results.
   for candidate in \

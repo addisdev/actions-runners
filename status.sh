@@ -13,13 +13,17 @@ printf "%-26s %-10s %s\n" "REPO" "STATUS" "RUNNER"
 # directories (<repo> and <repo>-2) that name the same repo, and the API returns
 # every runner belonging to it — so looping over directories printed each of
 # that repo's runners twice.
-# utf-8-sig, not utf-8: the runner writes .runner with a UTF-8 BOM, and
-# json.load on a plain utf-8 handle raises "Unexpected UTF-8 BOM" on the first
-# character. That is what actually emptied this table — the loop died on the
-# first runner and 2>/dev/null turned a hard parse error into a blank report.
+# plutil is part of macOS and accepts both the runner's JSON format and its
+# UTF-8 BOM. Do not use /usr/bin/python3 here: after an Xcode update that binary
+# can be blocked by the license prompt, which used to turn this into an empty
+# report even while runners were busy.
 repos=$(for d in "$ROOT"/*/; do
   [ -f "$d/.runner" ] || continue
-  python3 -c "import json;print(json.load(open('$d/.runner',encoding='utf-8-sig'))['gitHubUrl'].split('github.com/')[-1])" 2>/dev/null
+  if url=$(plutil -extract gitHubUrl raw -o - "$d/.runner" 2>/dev/null); then
+    printf '%s\n' "${url#https://github.com/}"
+  else
+    echo "warning: cannot parse $d/.runner" >&2
+  fi
 done | sort -u)
 
 for repo in $repos; do

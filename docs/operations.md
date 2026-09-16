@@ -100,6 +100,21 @@ repeatedly, check cache sizes in the cleanup dry-run output and confirm
 workflows export `PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TOOL_CACHE/ms-playwright`
 so each runner keeps its own copy.
 
+## Simulator lifecycle cleanup
+
+Enable cancellation-safe cleanup for simulator-capable runners in `fleet.env`:
+
+```bash
+FLEET_SIMULATOR_CLEANUP=1
+FLEET_SIMULATOR_RUNNERS="*-ios *-ios-* *-tvos *-tvos-*"
+```
+
+The job hooks record devices already booted before CI, then shut down only the
+devices CI introduced after the final overlapping selected job finishes. A
+detached guardian follows each `Runner.Worker`, so cancellation, a crash, or a
+missing completion hook still releases the lease and triggers cleanup. Existing
+interactive Xcode simulators are preserved.
+
 ## Backup
 
 ```bash

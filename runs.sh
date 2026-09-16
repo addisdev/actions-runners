@@ -34,7 +34,13 @@ done
 
 REPOS=$(for d in "${FLEET_ROOT:-$HERE}"/*/; do
   [ -f "$d/.runner" ] || continue
-  python3 -c "import json;print(json.load(open('$d/.runner',encoding='utf-8-sig'))['gitHubUrl'].split('github.com/')[-1])" 2>/dev/null
+  # plutil is built into macOS and keeps this inventory usable when
+  # /usr/bin/python3 is blocked by a newly updated Xcode license.
+  if url=$(plutil -extract gitHubUrl raw -o - "$d/.runner" 2>/dev/null); then
+    printf '%s\n' "${url#https://github.com/}"
+  else
+    echo "warning: cannot parse $d/.runner" >&2
+  fi
 done | sort -u)
 
 # Everything below only runs on a machine with no runners of its own — a laptop
@@ -134,75 +140,125 @@ snapshot() {
   done
   wait
 
-  python3 - "$tmp" "$BYHOST" "$(scutil --get LocalHostName 2>/dev/null || hostname -s)" <<'PY'
-import sys, os, glob, subprocess, datetime, json
+  # The dashboard already requires Node, while Apple's /usr/bin/python3 can be
+  # blocked after an Xcode update until a human accepts the new license.
+  node - "$tmp" "$BYHOST" "$(scutil --get LocalHostName 2>/dev/null || hostname -s)" \
+    "${FLEET_ROOT:-$HERE}" <<'JS'
+const fs = require('fs');
+const path = require('path');
+const { spawnSync } = require('child_process');
 
-tmpdir, byhost, localhost = sys.argv[1], sys.argv[2] == "1", sys.argv[3]
-now = datetime.datetime.now(datetime.timezone.utc)
+const [tmpdir, , localhost, fleetRoot] = process.argv.slice(2);
+const now = Date.now();
 
-def ago(ts):
-    try:
-        d = now - datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except Exception:
-        return "?"
-    s = int(d.total_seconds())
-    if s < 60:  return f"{s}s"
-    if s < 3600: return f"{s//60}m"
-    if s < 86400: return f"{s//3600}h"
-    return f"{s//86400}d"
+function admissionEntries(kind) {
+  const entries = new Map();
+  const dir = path.join(fleetRoot, '.admission', kind);
+  if (!fs.existsSync(dir)) return entries;
+  for (const file of fs.readdirSync(dir)) {
+    const values = {};
+    for (const line of fs.readFileSync(path.join(dir, file), 'utf8').split('\n')) {
+      const split = line.indexOf('=');
+      if (split > 0) values[line.slice(0, split)] = line.slice(split + 1);
+    }
+    if (values.run) entries.set(values.run, values);
+  }
+  return entries;
+}
 
-active, recent = [], []
-for f in glob.glob(os.path.join(tmpdir, "*")):
-    for line in open(f):
-        parts = line.rstrip("\n").split("\t")
-        if len(parts) < 7:
-            continue
-        repo, status, concl, name, branch, started, rid = parts
-        row = dict(repo=repo.split("/")[-1], full=repo, status=status, concl=concl,
-                   name=name, branch=branch, started=started, rid=rid)
-        (active if status in ("queued", "in_progress") else recent).append(row)
+const waiters = admissionEntries('waiters');
+const slots = admissionEntries('slots');
 
-# The runner is only known per-JOB, so it costs an extra call. Spend it on the
-# active runs, which is where "on which machine" is a live question.
-for r in active:
-    try:
-        out = subprocess.run(["gh", "api", f"repos/{r['full']}/actions/runs/{r['rid']}/jobs"],
-                             capture_output=True, text=True, timeout=20).stdout
-        names = [j.get("runner_name") or "-" for j in json.loads(out).get("jobs", [])
-                 if j.get("status") in ("in_progress", "queued", "completed")]
-        r["runner"] = next((n for n in names if n and n != "-"), "unassigned")
-    except Exception:
-        r["runner"] = "?"
+function ago(ts) {
+  const then = Date.parse(ts);
+  if (!Number.isFinite(then)) return '?';
+  const seconds = Math.max(0, Math.floor((now - then) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+}
 
-# register.sh names every runner "<LocalHostName>-<repo>", so the host a job
-# landed on is readable straight off the runner name — no list of known machines
-# to keep up to date, and a runner registered from a host this script has never
-# heard of still resolves to "other" rather than to a wrong answer.
-def host_of(runner):
-    if not runner or runner in ("unassigned", "?", "-"):
-        return "-"
-    return "this" if runner.startswith(localhost) else "other"
+const active = [];
+const recent = [];
+for (const file of fs.readdirSync(tmpdir)) {
+  const contents = fs.readFileSync(path.join(tmpdir, file), 'utf8');
+  for (const line of contents.split('\n')) {
+    const parts = line.split('\t');
+    if (parts.length < 7) continue;
+    const [full, status, concl, name, branch, started, rid] = parts;
+    const row = {
+      repo: full.split('/').at(-1), full, status, concl, name, branch, started, rid,
+    };
+    (status === 'queued' || status === 'in_progress' ? active : recent).push(row);
+  }
+}
 
-C = {"success": "\033[32m", "failure": "\033[31m", "cancelled": "\033[33m",
-     "in_progress": "\033[36m", "queued": "\033[35m"}
-R = "\033[0m"
+// The runner is only known per job, so spend the extra API call on active runs.
+for (const run of active) {
+  try {
+    const result = spawnSync(
+      'gh',
+      ['api', `repos/${run.full}/actions/runs/${run.rid}/jobs`],
+      { encoding: 'utf8', timeout: 20_000 },
+    );
+    const jobs = JSON.parse(result.stdout || '{}').jobs ?? [];
+    const relevant = jobs.filter((job) => ['in_progress', 'queued', 'completed'].includes(job.status));
+    const names = relevant
+      .sort((a, b) => Number(b.status === 'in_progress') - Number(a.status === 'in_progress'))
+      .map((job) => job.runner_name || '-');
+    run.runner = names.find((name) => name !== '-') ?? 'unassigned';
+    const activeJobs = relevant.filter((job) => job.status === 'in_progress');
+    const allAtSetup = activeJobs.length > 0 && activeJobs.every((job) =>
+      (job.steps ?? []).some((step) => step.status === 'in_progress' && step.name === 'Set up runner'));
+    if (!slots.has(run.rid) && (waiters.has(run.rid) || allAtSetup)) {
+      run.displayStatus = 'waiting_host';
+    }
+  } catch {
+    run.runner = '?';
+  }
+}
 
-print(f"\033[1mACTIVE\033[0m ({len(active)})")
-if not active:
-    print("  nothing running")
-for r in sorted(active, key=lambda x: x["started"]):
-    c = C.get(r["status"], "")
-    print(f"  {c}{r['status']:<12}{R} {r['repo']:<20} {r['name'][:22]:<24} "
-          f"{r['branch'][:26]:<28} {ago(r['started']):>4} ago  "
-          f"[{host_of(r.get('runner'))}] {r.get('runner','')}")
+// register.sh names every runner "<LocalHostName>-<repo>", so the host is
+// readable from the runner name without maintaining a separate host list.
+function hostOf(runner) {
+  if (!runner || ['unassigned', '?', '-'].includes(runner)) return '-';
+  return runner.startsWith(localhost) ? 'this' : 'other';
+}
 
-print()
-print(f"\033[1mRECENT\033[0m")
-for r in sorted(recent, key=lambda x: x["started"], reverse=True)[:14]:
-    c = C.get(r["concl"], "")
-    print(f"  {c}{r['concl']:<12}{R} {r['repo']:<20} {r['name'][:22]:<24} "
-          f"{r['branch'][:26]:<28} {ago(r['started']):>4} ago")
-PY
+const colors = {
+  success: '\x1b[32m',
+  failure: '\x1b[31m',
+  cancelled: '\x1b[33m',
+  in_progress: '\x1b[36m',
+  queued: '\x1b[35m',
+  waiting_host: '\x1b[33m',
+};
+const reset = '\x1b[0m';
+
+console.log(`\x1b[1mACTIVE\x1b[0m (${active.length})`);
+if (!active.length) console.log('  nothing running');
+for (const run of active.sort((a, b) => a.started.localeCompare(b.started))) {
+  const status = run.displayStatus ?? run.status;
+  const color = colors[status] ?? '';
+  console.log(
+    `  ${color}${status.padEnd(12)}${reset} ${run.repo.padEnd(20)} `
+    + `${run.name.slice(0, 22).padEnd(24)} ${run.branch.slice(0, 26).padEnd(28)} `
+    + `${ago(run.started).padStart(4)} ago  [${hostOf(run.runner)}] ${run.runner ?? ''}`,
+  );
+}
+
+console.log();
+console.log('\x1b[1mRECENT\x1b[0m');
+for (const run of recent.sort((a, b) => b.started.localeCompare(a.started)).slice(0, 14)) {
+  const color = colors[run.concl] ?? '';
+  console.log(
+    `  ${color}${run.concl.padEnd(12)}${reset} ${run.repo.padEnd(20)} `
+    + `${run.name.slice(0, 22).padEnd(24)} ${run.branch.slice(0, 26).padEnd(28)} `
+    + `${ago(run.started).padStart(4)} ago`,
+  );
+}
+JS
   rm -rf "$tmp"
 }
 

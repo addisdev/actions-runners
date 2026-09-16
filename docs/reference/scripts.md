@@ -163,6 +163,9 @@ Unrecognised arguments are ignored rather than rejected.
 Runs are attributed to a *host*, not just to a runner, because after a migration
 the same repo has runners on two machines. The host is read straight off the
 runner name, since `register.sh` names every runner `<LocalHostName>-<repo>`.
+Runs assigned to a runner but still parked in the admission hook are shown as
+`waiting_host`, not `in_progress`; GitHub's API calls both states in-progress
+even though the workflow has not reached its first step.
 
 On a machine with no runner directories of its own — a laptop watching a fleet
 hosted elsewhere — it falls back to discovery:
@@ -517,6 +520,18 @@ runs *before* a job is allowed to begin, which is what makes admission control
 possible at all.
 Source: [`hooks/job-started.sh`](https://github.com/addisdev/actions-runners/blob/main/hooks/job-started.sh).
 
+Before admission, runners named in `FLEET_MUTE_RUNNERS` acquire a host-audio
+lease. The first lease remembers the Mac's current output-mute state and mutes
+it; a detached guardian follows the job's `Runner.Worker` so cancellation or a
+crash cannot leave the host muted indefinitely.
+
+When `FLEET_SIMULATOR_CLEANUP=1`, runners named in
+`FLEET_SIMULATOR_RUNNERS` also acquire a simulator lease. The first overlapping
+job records every already-booted device as a baseline. After the final job ends,
+only devices absent from that baseline are shut down. A detached guardian
+releases the lease and performs the same cleanup if `Runner.Worker` exits
+without reaching the completion hook.
+
 Nothing in the fleet throttles execution — there is no scheduler, every
 registered runner listens independently, and if 27 of them are offered work in
 the same second, 27 jobs start. The dashboard's `ceiling` only refuses to *add* a
@@ -528,14 +543,18 @@ Behaviour by `FLEET_ADMIT_MODE`:
 |---|---|
 | `off` (default) | Exits immediately. Anything unrecognised also means `off`, because a misspelled mode reading as `enforce` would be the most expensive interpretation of a typo. |
 | `observe` | Takes a slot so the count stays honest, never delays anything, and logs whether enforcing *would* have held this job. |
-| `enforce` | Holds the job until there is room, bounded by `FLEET_ADMIT_MAX_WAIT_S`, then admits it anyway and logs the wait. |
+| `enforce` | Queues waiters FIFO until there is room. At `FLEET_ADMIT_MAX_WAIT_S`, either admits or continues holding according to `FLEET_ADMIT_TIMEOUT_ACTION`. |
 
-A job is held when the live slot count has reached `FLEET_ADMIT_MAX_CONCURRENT`
-or free disk is below `FLEET_ADMIT_MIN_FREE_DISK_GB`. Every decision is appended
-as one NDJSON line to `dashboard/logs/admission.ndjson`, which `fleetd` ingests
-on its slow tick — a log file rather than a direct SQLite write, because the
-daemon holds that database open and a second writer appearing from inside a CI
-job is a race nobody wants to debug. Defaults are listed in
+A job is held when an older FIFO waiter has priority, the live slot count has
+reached `FLEET_ADMIT_MAX_CONCURRENT`, or free disk is below
+`FLEET_ADMIT_MIN_FREE_DISK_GB`. While held, the hook polls GitHub every
+`FLEET_ADMIT_CANCEL_POLL_S`; a completed or cancelled run returns immediately
+so its assigned runner does not remain trapped in `Set up runner`. Every
+decision is appended as one NDJSON line to
+`dashboard/logs/admission.ndjson`, which `fleetd` ingests on its slow tick — a
+log file rather than a direct SQLite write, because the daemon holds that
+database open and a second writer appearing from inside a CI job is a race
+nobody wants to debug. Defaults are listed in
 [Configuration](../configuration.md#job-admission-variables).
 
 What it refuses to do:
@@ -546,9 +565,13 @@ What it refuses to do:
   `trap 'exit 0' EXIT`: every unexpected condition means "let the job run".
 - **It will not let a contended mutex stop CI.** If the lock cannot be taken the
   job is admitted without counting, and the log line says so.
-- **It will not hold a job indefinitely.** A held job is `in_progress` as far as
-  GitHub is concerned, so the hold burns the job's own `timeout-minutes`. On
-  reaching the bound the job is admitted regardless.
+- **It will not ignore cancellation.** A sleeping hook may not receive the
+  runner's cancellation signal, so it polls the run and returns when GitHub
+  reports it complete.
+- **Strict timeout is explicit.** The default remains fail-open for
+  compatibility. Hosts where overload is worse than queueing can set
+  `FLEET_ADMIT_TIMEOUT_ACTION=hold`; the job's own timeout still ends the run,
+  and cancellation polling releases the runner afterwards.
 
 Slots are files rather than a `pgrep` count, because the hook is itself a child
 of the `Runner.Worker` about to run the job — five held jobs counting worker
@@ -557,11 +580,36 @@ is full, and all wait out the timeout together. Each slot records the PID of the
 worker that owns it, so a job killed with `SIGKILL` has its slot reaped by the
 next admission instead of leaking concurrency permanently.
 
+### `hooks/audio-control.sh`
+
+Internal helper used by both job hooks. Selected runners acquire one lease per
+job; the first lease remembers and mutes host output, and the final release
+restores the original state. A detached guardian releases the lease if its
+`Runner.Worker` exits before the completion hook.
+Source: [`hooks/audio-control.sh`](https://github.com/addisdev/actions-runners/blob/main/hooks/audio-control.sh).
+
+### `hooks/simulator-control.sh`
+
+Internal helper used by both job hooks when simulator cleanup is enabled. It
+records the devices booted before the first overlapping selected job, then
+shuts down only newly booted devices after the final selected job ends. Each
+lease has a detached `Runner.Worker` guardian, so cancellation and abrupt worker
+failure follow the same cleanup path.
+Source: [`hooks/simulator-control.sh`](https://github.com/addisdev/actions-runners/blob/main/hooks/simulator-control.sh).
+
 ### `hooks/job-completed.sh`
 
 Runs after a job's last step. Its main job is to give back the slot
 `job-started.sh` took, so the next queued job can start.
 Source: [`hooks/job-completed.sh`](https://github.com/addisdev/actions-runners/blob/main/hooks/job-completed.sh).
+
+It first releases any host-audio lease for this runner. Output returns to the
+mute state that existed before the first selected job only after the last
+selected job finishes.
+
+It then releases the runner's simulator lease. The final selected job shuts
+down the simulators CI introduced while preserving devices that were already
+booted before the selected jobs began.
 
 It also handles drain, and does so **before** the admission-mode check, because
 a drain has nothing to do with admission and must work on a fleet that never
