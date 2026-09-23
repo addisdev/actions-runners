@@ -145,6 +145,11 @@ admit_is_simulator_job() {
     && admit_runner_matches "${RUNNER_NAME:-}"
 }
 
+admit_simulator_blocked() {
+  admit_is_simulator_job \
+    && [ "${1:-0}" -ge "$ADMIT_SIMULATOR_MAX" ]
+}
+
 # Minimal JSON string escaping: backslash, double quote, and control characters,
 # which is the whole set that can appear in a workflow or job name and break a
 # line of NDJSON.
