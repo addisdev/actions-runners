@@ -17,6 +17,19 @@ The dashboard exists because GitHub has no cross-repo Actions view, and half of
 the question — *is that runner even alive* — is not answerable from GitHub at
 all.
 
+## At a glance
+
+| | |
+|---|---|
+| **Problem** | GitHub shows workflow runs; macOS shows processes. Neither can tell you when the two disagree, why a job is queued, or whether the host can safely take more work. |
+| **System** | One dependency-free Node daemon reconciles GitHub, launchd and the host, stores the history in SQLite, and streams one dashboard over SSE. |
+| **Operating shape** | One Apple Silicon Mac, one isolated runner per private repository, supervised by launchd. |
+| **Evidence** | Built from a live 27-runner fleet and 7,631 observed jobs, including failures reproduced against the real host rather than fixtures alone. |
+| **Safety boundary** | Private repositories with trusted contributors. Destructive operations are dry-run by default. |
+
+**What this demonstrates:** CI/CD infrastructure, observability, macOS systems
+work, failure modeling, operational safety, and pragmatic system design.
+
 ![The Fleet tab on a live host: every registered runner online, zero drift, memory pressure normal, and a grid of runner cards grouped by project, every one idle](docs/img/fleet-live.png)
 
 > A live fleet, with repository and host names replaced. Green means launchd,
