@@ -55,9 +55,14 @@ KEY="$(admit_key)"
 # Why the job would be held right now, or empty if there is room. Callers must
 # hold the mutex, because the count it reads is only meaningful under it.
 admit_blocker() {
-  local busy="$1" disk
+  local busy="$1" simulator_busy="$2" disk
   if [ "$busy" -ge "$ADMIT_MAX" ]; then
     printf '%s job(s) already running, at the limit of %s' "$busy" "$ADMIT_MAX"
+    return 0
+  fi
+  if admit_simulator_blocked "$simulator_busy"; then
+    printf '%s Simulator job(s) already running, at the limit of %s' \
+      "$simulator_busy" "$ADMIT_SIMULATOR_MAX"
     return 0
   fi
   disk="$(admit_free_disk_gb)"
@@ -73,10 +78,12 @@ admit_blocker() {
 # the log has to look right before the mechanism is allowed to cost a build.
 if [ "$ADMIT_MODE" = "observe" ]; then
   BUSY=0
+  SIMULATOR_BUSY=0
   BLOCKER=""
   if admit_lock; then
     BUSY="$(admit_live_slots)"
-    BLOCKER="$(admit_blocker "$BUSY")"
+    SIMULATOR_BUSY="$(admit_live_simulator_slots)"
+    BLOCKER="$(admit_blocker "$BUSY" "$SIMULATOR_BUSY")"
     admit_claim_slot "$KEY"
     admit_unlock
   else
@@ -97,13 +104,17 @@ TIMEOUT_ANNOUNCED=0
 LAST_CANCEL_CHECK=-1
 while :; do
   BUSY=0
+  SIMULATOR_BUSY=0
+  STRICT_LIMIT=0
   BLOCKER=""
   if admit_lock; then
     admit_join_waiters "$KEY" || true
     BUSY="$(admit_live_slots)"
-    if admit_waiter_is_first; then
-      BLOCKER="$(admit_blocker "$BUSY")"
-    else
+    SIMULATOR_BUSY="$(admit_live_simulator_slots)"
+    admit_simulator_blocked "$SIMULATOR_BUSY" && STRICT_LIMIT=1
+    BLOCKER="$(admit_blocker "$BUSY" "$SIMULATOR_BUSY")"
+    if [ -z "$BLOCKER" ] \
+      && ! admit_waiter_is_first_eligible "$SIMULATOR_BUSY"; then
       BLOCKER="an older job is waiting for the next host slot"
     fi
     if [ -z "$BLOCKER" ]; then
@@ -138,8 +149,11 @@ while :; do
   fi
 
   if [ "$WAITED" -ge "$ADMIT_MAX_WAIT" ] \
-    && [ "$ADMIT_TIMEOUT_ACTION" = "admit" ]; then
-    # Compatibility mode: bounded wait reached, so admit despite the limit.
+    && [ "$ADMIT_TIMEOUT_ACTION" = "admit" ] \
+    && [ "$STRICT_LIMIT" -eq 0 ]; then
+    # Compatibility mode: bounded wait reached, so admit despite the host or
+    # disk limit. The Simulator limit stays strict because exceeding it is what
+    # causes watchdog crashes and interactive crash dialogs.
     admit_leave_waiters
     admit_claim_slot "$KEY"
     admit_log timeout "$BLOCKER" "$WAITED" "$BUSY"
@@ -147,10 +161,10 @@ while :; do
   fi
 
   if [ "$WAITED" -ge "$ADMIT_MAX_WAIT" ] \
-    && [ "$ADMIT_TIMEOUT_ACTION" = "hold" ] \
+    && { [ "$ADMIT_TIMEOUT_ACTION" = "hold" ] || [ "$STRICT_LIMIT" -eq 1 ]; } \
     && [ "$TIMEOUT_ANNOUNCED" -eq 0 ]; then
     admit_log continued-hold "$BLOCKER" "$WAITED" "$BUSY"
-    echo "fleet: admission wait reached ${ADMIT_MAX_WAIT}s; keeping the host limit strict"
+    echo "fleet: admission wait reached ${ADMIT_MAX_WAIT}s; keeping the active resource limit strict"
     TIMEOUT_ANNOUNCED=1
   fi
 
@@ -159,8 +173,8 @@ while :; do
   if [ "$ANNOUNCED" -eq 0 ]; then
     admit_log held "$BLOCKER" 0 "$BUSY"
     ANNOUNCED=1
-    if [ "$ADMIT_TIMEOUT_ACTION" = "hold" ]; then
-      echo "fleet: holding this job — $BLOCKER (strict host limit)"
+    if [ "$ADMIT_TIMEOUT_ACTION" = "hold" ] || [ "$STRICT_LIMIT" -eq 1 ]; then
+      echo "fleet: holding this job — $BLOCKER (strict resource limit)"
     else
       echo "fleet: holding this job — $BLOCKER (waiting up to ${ADMIT_MAX_WAIT}s)"
     fi

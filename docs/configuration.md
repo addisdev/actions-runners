@@ -111,15 +111,18 @@ reach the daemon's database.
 |---|---|---|
 | `FLEET_ADMIT_MODE` | `off` | `off` / `observe` / `enforce`. |
 | `FLEET_ADMIT_MAX_CONCURRENT` | `3` | Max concurrent jobs across the host. |
+| `FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT` | `0` | Strict max for runners matching `FLEET_SIMULATOR_RUNNERS`; `0` or no matching patterns disables the extra limit. |
 | `FLEET_ADMIT_MAX_WAIT_S` | `600` | Max wait before `FLEET_ADMIT_TIMEOUT_ACTION` takes effect. |
-| `FLEET_ADMIT_TIMEOUT_ACTION` | `admit` | `admit` fails open after max-wait; `hold` keeps the host limit strict until the run ends. |
+| `FLEET_ADMIT_TIMEOUT_ACTION` | `admit` | `admit` fails open after max-wait for host and disk limits; the Simulator limit remains strict. `hold` keeps every limit strict until the run ends. |
 | `FLEET_ADMIT_CANCEL_POLL_S` | `30` | How often a held hook checks whether GitHub has completed or cancelled its run. |
 | `FLEET_ADMIT_MIN_FREE_DISK_GB` | `40` | Refuse job (then admit after max wait) below this disk level. |
 | `FLEET_ADMIT_POLL_S` | `5` | How often a held job re-checks. |
 | `FLEET_ADMIT_SLOT_TTL_S` | `21600` | Slot lease TTL in seconds. |
 
-Enforced waiters are FIFO. A waiter is removed when its hook exits, and stale
-entries are reaped by hook-process liveness.
+Eligible enforced waiters are FIFO. A Simulator waiter blocked by its
+resource-specific limit does not prevent an unrelated waiter from using free
+host capacity. A waiter is removed when its hook exits, and stale entries are
+reaped by hook-process liveness.
 
 ## Job audio variable
 

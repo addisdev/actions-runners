@@ -63,6 +63,13 @@ esac
 ADMIT_MAX="$(admit_int "${FLEET_ADMIT_MAX_CONCURRENT:-}" 3)"
 [ "$ADMIT_MAX" -lt 1 ] && ADMIT_MAX=1
 
+# A host-wide count is too blunt for Apple builds: two ordinary jobs can share
+# this host, while two Simulator jobs can starve CoreSimulator's launch
+# watchdogs and surface crash dialogs on the interactive desktop. When enabled,
+# this second limit applies only to runner names selected by
+# FLEET_SIMULATOR_RUNNERS. Zero keeps the extra limit disabled.
+ADMIT_SIMULATOR_MAX="$(admit_int "${FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT:-}" 0)"
+
 # A held job is burning its own timeout-minutes while it waits, so an unbounded
 # hold converts a queue into a failed build. After this long the job is admitted
 # regardless and the wait is logged — the fleet is better off with a slow build
@@ -116,6 +123,32 @@ admit_key() {
 }
 
 admit_now() { date +%s; }
+
+admit_runner_matches() {
+  local runner="$1" selected pattern
+  local -a patterns
+  selected="${FLEET_SIMULATOR_RUNNERS:-}"
+  selected="${selected//,/ }"
+  read -r -a patterns <<< "$selected"
+  for pattern in "${patterns[@]}"; do
+    # Entries are shell patterns, matching simulator-control.sh.
+    # shellcheck disable=SC2254
+    case "$runner" in
+      $pattern) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+admit_is_simulator_job() {
+  [ "$ADMIT_SIMULATOR_MAX" -gt 0 ] \
+    && admit_runner_matches "${RUNNER_NAME:-}"
+}
+
+admit_simulator_blocked() {
+  admit_is_simulator_job \
+    && [ "${1:-0}" -ge "$ADMIT_SIMULATOR_MAX" ]
+}
 
 # Minimal JSON string escaping: backslash, double quote, and control characters,
 # which is the whole set that can appear in a workflow or job name and break a
@@ -225,6 +258,18 @@ admit_live_slots() {
   printf '%s' "$n"
 }
 
+admit_live_simulator_slots() {
+  local n=0 f runner
+  [ "$ADMIT_SIMULATOR_MAX" -gt 0 ] || { printf '0'; return 0; }
+  for f in "$ADMIT_SLOTS"/*; do
+    [ -f "$f" ] || continue
+    runner="$(sed -n 's/^runner=//p' "$f" 2>/dev/null | head -1)"
+    [ -n "$runner" ] || runner="$(basename "$f")"
+    admit_runner_matches "$runner" && n=$((n + 1))
+  done
+  printf '%s' "$n"
+}
+
 # A slot must be owned by a process that lives exactly as long as the job, so
 # that PID liveness is a truthful answer to "is this job still running". The
 # hook itself is the wrong choice — it exits the moment the job is admitted, and
@@ -268,8 +313,9 @@ admit_claim_slot() {
   local key="$1"
   mkdir -p "$ADMIT_SLOTS" 2>/dev/null || return 1
   admit_resolve_owner
-  printf 'pid=%s\nowner=%s\nts=%s\nrepo=%s\nrun=%s\njob=%s\n' \
+  printf 'pid=%s\nowner=%s\nts=%s\nrunner=%s\nrepo=%s\nrun=%s\njob=%s\n' \
     "$ADMIT_OWNER_PID" "$ADMIT_OWNER_KIND" "$(admit_now)" \
+    "${RUNNER_NAME:-}" \
     "${GITHUB_REPOSITORY:-}" "${GITHUB_RUN_ID:-}" "${GITHUB_JOB:-}" \
     > "$ADMIT_SLOTS/$key" 2>/dev/null || return 1
   return 0
@@ -313,12 +359,20 @@ admit_reap_waiters() {
   done
 }
 
-admit_waiter_is_first() {
-  local f first=""
+admit_waiter_is_first_eligible() {
+  local simulator_busy="$1" f first="" runner
   [ -n "$ADMIT_WAITER" ] || return 1
   admit_reap_waiters
   for f in "$ADMIT_WAITERS"/*; do
     [ -f "$f" ] || continue
+    runner="$(sed -n 's/^runner=//p' "$f" 2>/dev/null | head -1)"
+    if [ "$ADMIT_SIMULATOR_MAX" -gt 0 ] \
+      && admit_runner_matches "$runner" \
+      && [ "$simulator_busy" -ge "$ADMIT_SIMULATOR_MAX" ]; then
+      # Do not let a Simulator job waiting on the Simulator-specific limit
+      # block an unrelated job from using otherwise-free host capacity.
+      continue
+    fi
     if [ -z "$first" ] || [ "$(basename "$f")" \< "$(basename "$first")" ]; then
       first="$f"
     fi
