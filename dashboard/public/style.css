@@ -1169,8 +1169,7 @@ footer { padding-bottom: env(safe-area-inset-bottom); }
     radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, 0.16), transparent) right center / 10px 100% no-repeat scroll;
 }
 @media (max-width: 640px) {
-  .table-scroll > table th,
-  .table-scroll > table td { white-space: nowrap; }
+  .table-scroll > table th { white-space: nowrap; }
 }
 
 /* --- run rows as stacked cards on very small phones ----------------------- */

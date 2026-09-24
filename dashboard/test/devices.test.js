@@ -3,9 +3,9 @@
 // Tests pairing code generation, single-use enforcement, expiry, rate limiting,
 // token storage/validation, and revocation.
 
-import { test, describe } from 'node:test';
+import { test, describe, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -14,7 +14,11 @@ import {
   deviceTokenMatches,
   listDevices,
   revokeDevice,
+  resetPairingState,
+  PAIRING_CODE_TTL_MS,
 } from '../lib/devices.js';
+
+beforeEach(() => resetPairingState());
 
 function tmpStore() {
   const dir = mkdtempSync(join(tmpdir(), 'devices-test-'));
@@ -89,6 +93,70 @@ describe('exchangeCode', () => {
       const result = exchangeCode(path, '000000', 'phone', '10.0.0.3');
       assert.match(result.error, /invalid/i);
     } finally { cleanup(); }
+  });
+
+  test('flags rate-limited refusals so the route can answer 429', () => {
+    const { path, cleanup } = tmpStore();
+    try {
+      for (let i = 0; i < 5; i++) exchangeCode(path, '000000', 'phone', '10.0.0.9');
+      assert.equal(exchangeCode(path, '000000', 'phone', '10.0.0.9').rateLimited, true);
+    } finally { cleanup(); }
+  });
+
+  test('guessing spread across many addresses burns every pending code', () => {
+    // Behind Tailscale Serve every client shares one address, and on a LAN an
+    // attacker can rotate addresses, so the per-client limit is not enough.
+    const { path, cleanup } = tmpStore();
+    try {
+      const code = createPairingCode();
+      for (let i = 0; i < 20; i++) exchangeCode(path, '000000', 'phone', `10.1.0.${i}`);
+      const late = exchangeCode(path, code, 'phone', '10.2.0.1');
+      assert.ok(late.error, 'a code issued before the flood must not survive it');
+      assert.equal(late.rateLimited, true);
+    } finally { cleanup(); }
+  });
+
+  test('accepts a code typed with a space or dash', () => {
+    const { path, cleanup } = tmpStore();
+    try {
+      const code = createPairingCode();
+      const result = exchangeCode(path, `${code.slice(0, 3)} ${code.slice(3)}`, 'phone', '127.0.0.1');
+      assert.ok(result.token, JSON.stringify(result));
+    } finally { cleanup(); }
+  });
+
+  test('two devices with the same name both stay paired', () => {
+    // Two identical phones send identical default names; the second pairing
+    // must not silently revoke the first.
+    const { path, cleanup } = tmpStore();
+    try {
+      const a = exchangeCode(path, createPairingCode(), 'iPhone · Safari', '127.0.0.1');
+      const b = exchangeCode(path, createPairingCode(), 'iPhone · Safari', '127.0.0.1');
+      assert.equal(deviceTokenMatches(path, a.token), true);
+      assert.equal(deviceTokenMatches(path, b.token), true);
+      const names = listDevices(path).map((d) => d.name).sort();
+      assert.deepEqual(names, ['iPhone · Safari', 'iPhone · Safari (2)']);
+    } finally { cleanup(); }
+  });
+
+  test('strips markup from device names', () => {
+    const { path, cleanup } = tmpStore();
+    try {
+      const r = exchangeCode(path, createPairingCode(), '<img src=x onerror=alert(1)>', '127.0.0.1');
+      assert.doesNotMatch(r.name, /[<>]/);
+    } finally { cleanup(); }
+  });
+
+  test('the token store is written owner-only', () => {
+    const { path, cleanup } = tmpStore();
+    try {
+      exchangeCode(path, createPairingCode(), 'phone', '127.0.0.1');
+      assert.equal(statSync(path).mode & 0o777, 0o600);
+    } finally { cleanup(); }
+  });
+
+  test('codes live for the advertised five minutes', () => {
+    assert.equal(PAIRING_CODE_TTL_MS, 5 * 60 * 1000);
   });
 });
 

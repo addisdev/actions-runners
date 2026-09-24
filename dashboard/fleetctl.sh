@@ -104,6 +104,8 @@ cmd_install() {
     <key>FLEET_HOST</key><string>${FLEET_HOST:-127.0.0.1}</string>
     <key>FLEET_ALLOWED_HOSTS</key><string>${FLEET_ALLOWED_HOSTS:-}</string>
     <key>FLEET_DEVICE_TOKENS_FILE</key><string>${FLEET_DEVICE_TOKENS_FILE:-$HERE/.fleet-device-tokens.json}</string>
+    <key>FLEET_TAILSCALE</key><string>${FLEET_TAILSCALE:-auto}</string>
+    <key>FLEET_TAILSCALE_BIN</key><string>${FLEET_TAILSCALE_BIN:-}</string>
     <key>FLEET_AGENT_TOKEN_FILE</key><string>${agent_token_file}</string>
     <key>FLEET_AGENT_TOKENS_FILE</key><string>${agent_tokens_file}</string>
     <key>FLEET_DATABASE_URL_FILE</key><string>${database_url_file}</string>
@@ -278,190 +280,235 @@ cmd_agent_token() {
   cat "$token_file"
 }
 
-# Generate a pairing code via the running daemon and display it (+ terminal QR
-# if qrencode is installed). The code expires in 5 minutes and is single-use.
-cmd_pair() {
-  local token_file="$HERE/.fleet-token"
-  if [ ! -f "$token_file" ]; then
-    echo "no control token — start the daemon first" >&2
+# JSON is read with node rather than python3: node is already a hard
+# requirement, and python3's version varies by host (3.9 here rejects the
+# f-string escaping this used to need).
+#   json_get <dotted.path>   print one field from JSON on stdin (objects as JSON)
+json_get() {
+  "$(node_bin)" -e '
+    let s = "";
+    process.stdin.on("data", (c) => (s += c)).on("end", () => {
+      let v;
+      try { v = process.argv[1].split(".").reduce((o, k) => (o == null ? o : o[k]), JSON.parse(s)); }
+      catch { process.exit(2); }
+      if (v == null) process.exit(1);
+      console.log(typeof v === "object" ? JSON.stringify(v) : String(v));
+    });' "$1"
+}
+
+control_token() {
+  [ -f "$HERE/.fleet-token" ] || { echo "no control token yet — start the daemon once and it will generate one" >&2; return 1; }
+  cat "$HERE/.fleet-token"
+}
+
+# curl the local daemon with the control token. Prints the body; fails with the
+# daemon's own error message rather than curl's bare "HTTP 403".
+api() {
+  local method="$1" path="$2" body="${3:-}" token out status
+  token="$(control_token)" || return 1
+  out="$(curl -sS --max-time 8 -X "$method" -w '\n%{http_code}' \
+    -H "Authorization: Bearer $token" \
+    ${body:+-H "Content-Type: application/json" -d "$body"} \
+    "http://127.0.0.1:$PORT$path" 2>&1)" || { echo "daemon not answering on 127.0.0.1:$PORT — ./fleetctl.sh status" >&2; return 1; }
+  status="${out##*$'\n'}"
+  out="${out%$'\n'*}"
+  if [ "${status:0:1}" != "2" ]; then
+    echo "daemon refused $path (HTTP $status): $(echo "$out" | json_get error 2>/dev/null || echo "$out")" >&2
     return 1
   fi
-  local token; token="$(cat "$token_file")"
-  local result
-  result="$(curl -fsS --max-time 5 -X POST \
-    -H "Authorization: Bearer $token" \
-    "http://127.0.0.1:$PORT/api/pair/start")" || {
-    echo "daemon did not respond on port $PORT" >&2
-    return 1
-  }
-  local code url
-  code="$(echo "$result" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["code"])')"
-  url="$(echo "$result" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["url"])')"
+  printf '%s\n' "$out"
+}
+
+# Generate a pairing code via the running daemon and display it (+ terminal QR
+# if qrencode is installed). The code is single-use and expires in 5 minutes.
+cmd_pair() {
+  local result code url warning alts
+  result="$(api POST /api/pair/start)" || return 1
+  code="$(echo "$result" | json_get code)"
+  url="$(echo "$result" | json_get url)"
+  warning="$(echo "$result" | json_get warning 2>/dev/null || true)"
+  alts="$(echo "$result" | "$(node_bin)" -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{for(const u of JSON.parse(s).alternatives??[])console.log("  "+u)})' 2>/dev/null || true)"
   echo ""
-  echo "Pairing code: $code"
-  echo "URL: $url"
+  echo "Pairing code: ${code:0:3} ${code:3:3}"
+  echo "Open on the phone: $url"
+  [ -n "$alts" ] && { echo "Other addresses:"; echo "$alts"; }
+  [ -n "$warning" ] && { echo ""; echo "Note: $warning"; }
   echo ""
-  echo "On the remote device: visit the URL or open the dashboard and enter the code."
-  echo "Expires in 5 minutes."
+  echo "Scan the QR, open the link, or choose \"Enter pairing code\" in the"
+  echo "dashboard's Control tab on the other device. Single use; expires in 5 minutes."
   if command -v qrencode >/dev/null 2>&1; then
     echo ""
     qrencode -t UTF8 "$url"
+  else
+    echo "(brew install qrencode to print a QR code here)"
   fi
 }
 
-# List paired devices.
 cmd_devices() {
-  local token_file="$HERE/.fleet-token"
-  if [ ! -f "$token_file" ]; then
-    echo "no control token" >&2; return 1
-  fi
-  local token; token="$(cat "$token_file")"
-  curl -fsS --max-time 5 \
-    -H "Authorization: Bearer $token" \
-    "http://127.0.0.1:$PORT/api/devices" | \
-    python3 -c '
-import json, sys, datetime
-d = json.load(sys.stdin)
-devs = d.get("devices", [])
-if not devs:
-    print("no devices paired")
-    sys.exit(0)
-for dev in devs:
-    created = datetime.datetime.fromtimestamp(dev["createdAt"]/1000).strftime("%Y-%m-%d %H:%M")
-    seen = datetime.datetime.fromtimestamp(dev["lastSeenAt"]/1000).strftime("%Y-%m-%d %H:%M") if dev.get("lastSeenAt") else "never"
-    print(f"  {dev[\"key\"]}  {dev[\"name\"]:<30}  paired {created}  seen {seen}")
-'
+  api GET /api/devices | "$(node_bin)" -e '
+    let s = "";
+    process.stdin.on("data", (c) => (s += c)).on("end", () => {
+      const devs = JSON.parse(s).devices ?? [];
+      if (!devs.length) return console.log("no devices paired");
+      const at = (ms) => (ms ? new Date(ms).toLocaleString() : "never");
+      for (const d of devs) console.log(`  ${d.key}  ${String(d.name).padEnd(30)}  paired ${at(d.createdAt)}  seen ${at(d.lastSeenAt)}`);
+    });'
 }
 
-# Revoke a device by key or name.
+# Revoke a device by key or exact name.
 cmd_revoke() {
   local target="${1:-}"
   [ -n "$target" ] || { echo "usage: $0 revoke <key-or-name>" >&2; return 1; }
-  local token_file="$HERE/.fleet-token"
-  if [ ! -f "$token_file" ]; then
-    echo "no control token" >&2; return 1
-  fi
-  local token; token="$(cat "$token_file")"
+  local key
+  key="$(api GET /api/devices | "$(node_bin)" -e '
+    let s = "";
+    process.stdin.on("data", (c) => (s += c)).on("end", () => {
+      const t = process.argv[1];
+      const hits = (JSON.parse(s).devices ?? []).filter((d) => d.key === t || d.name === t);
+      if (hits.length === 1) return console.log(hits[0].key);
+      console.error(hits.length ? `"${t}" matches ${hits.length} devices — revoke by key (./fleetctl.sh devices)` : `no device found: ${t}`);
+      process.exit(1);
+    });' "$target")" || return 1
+  api POST /api/devices/revoke "{\"key\":\"$key\"}" >/dev/null || return 1
+  echo "revoked $target ($key)"
+}
 
-  # Resolve name to key if not already a key
-  local key="$target"
-  if ! echo "$target" | grep -qE '^[0-9a-f]{16}$'; then
-    key="$(curl -fsS --max-time 5 \
-      -H "Authorization: Bearer $token" \
-      "http://127.0.0.1:$PORT/api/devices" | \
-      python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-name = sys.argv[1]
-for dev in d.get('devices', []):
-    if dev['name'] == name or dev['key'] == name:
-        print(dev['key']); sys.exit(0)
-sys.exit(1)
-" "$target" 2>/dev/null)" || { echo "no device found: $target" >&2; return 1; }
-  fi
+tailscale_bin() {
+  if [ -n "${FLEET_TAILSCALE_BIN:-}" ]; then echo "$FLEET_TAILSCALE_BIN"; return 0; fi
+  command -v tailscale 2>/dev/null && return 0
+  # The Mac App Store build ships its CLI inside the app bundle, off PATH.
+  for p in /opt/homebrew/bin/tailscale /usr/local/bin/tailscale /Applications/Tailscale.app/Contents/MacOS/Tailscale; do
+    [ -x "$p" ] && { echo "$p"; return 0; }
+  done
+  return 1
+}
 
-  if curl -fsS --max-time 5 -X POST \
-      -H "Authorization: Bearer $token" \
-      -H "Content-Type: application/json" \
-      -d "{\"key\":\"$key\"}" \
-      "http://127.0.0.1:$PORT/api/devices/revoke"; then
-    echo "revoked $target"
+# Set KEY=value in fleet.env, replacing any existing KEY= or export KEY= line
+# (and only that key — FLEET_HOST must not clobber FLEET_HOST_NAME).
+set_env_var() {
+  local key="$1" value="$2" env_file="$ROOT/fleet.env"
+  touch "$env_file"
+  { grep -Ev "^[[:space:]]*(export[[:space:]]+)?${key}=" "$env_file" || true; echo "${key}=${value}"; } > "$env_file.tmp"
+  mv "$env_file.tmp" "$env_file"
+}
+
+# The bind address is written into the LaunchAgent at install time, so changing
+# it means regenerating the plist — a plain restart would reload the old value.
+apply_env_change() {
+  if [ -f "$PLIST" ]; then
+    echo "Regenerating the LaunchAgent so the change takes effect..."
+    cmd_install
   else
-    echo "revoke failed" >&2
-    return 1
+    echo "Not installed as a LaunchAgent; run ./fleetctl.sh install (or restart ./fleetctl.sh run)."
   fi
 }
 
-# Remote access management.
 cmd_remote() {
   local sub="${1:-status}"
   case "$sub" in
     status)
-      local host="${FLEET_HOST:-127.0.0.1}"
-      echo "Bind:  $host:$PORT"
-      if [ "$host" = "127.0.0.1" ]; then
-        echo "LAN:   disabled (loopback only)"
+      local access
+      if access="$(curl -fsS --max-time 5 "http://127.0.0.1:$PORT/api/access" 2>/dev/null)"; then
+        local bind; bind="$(echo "$access" | json_get host 2>/dev/null || echo "?")"
+        echo "Bind:  $bind:$PORT (running daemon)"
+        case "$bind" in
+          127.0.0.1|localhost|::1) echo "LAN:   off — loopback only (./fleetctl.sh remote lan on)" ;;
+          0.0.0.0|::)              echo "LAN:   on — listening on all interfaces" ;;
+          *)                       echo "LAN:   bound to $bind only" ;;
+        esac
+        [ "${FLEET_HOST:-127.0.0.1}" != "$bind" ] && \
+          echo "       fleet.env says FLEET_HOST=${FLEET_HOST:-127.0.0.1} — run ./fleetctl.sh install to apply it"
+        echo ""
+        echo "Reachable at:"
+        echo "$access" | "$(node_bin)" -e '
+          let s = "";
+          process.stdin.on("data", (c) => (s += c)).on("end", () => {
+            const urls = JSON.parse(s).urls ?? [];
+            if (!urls.length) console.log("  (this machine only)");
+            for (const u of urls) console.log(`  ${u.label.padEnd(22)} ${u.url}`);
+          });'
       else
-        echo "LAN:   enabled (listening on all interfaces)"
+        echo "Bind:  ${FLEET_HOST:-127.0.0.1}:$PORT (from fleet.env — daemon not answering)"
       fi
       echo ""
-      echo "Reachable URLs:"
-      curl -fsS --max-time 5 "http://127.0.0.1:$PORT/api/access" 2>/dev/null | \
-        python3 -c '
-import json, sys
-d = json.load(sys.stdin)
-for u in d.get("urls", []):
-    print(f"  [{u[\"label\"]}] {u[\"url\"]}")
-' || echo "  (daemon not running)"
-      echo ""
       echo "Tailscale Serve:"
-      if command -v tailscale >/dev/null 2>&1; then
-        tailscale serve status 2>/dev/null || echo "  (not configured)"
+      local ts
+      if ts="$(tailscale_bin)"; then
+        "$ts" serve status 2>/dev/null || echo "  (not configured)"
       else
-        echo "  tailscale not found"
+        echo "  tailscale CLI not found"
       fi
       echo ""
       echo "macOS firewall:"
       if /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>/dev/null | grep -q enabled; then
-        echo "  Firewall is ON — ensure node is allowed:"
-        echo "    sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add \$(which node)"
+        echo "  ON — for LAN access, allow node:"
+        echo "    sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add $(node_bin) --unblockapp $(node_bin)"
       else
-        echo "  Firewall is OFF"
+        echo "  off"
       fi
       ;;
 
     lan)
-      local onoff="${2:-}"
-      [ -n "$onoff" ] || { echo "usage: $0 remote lan on|off" >&2; return 1; }
-      local env_file="$ROOT/fleet.env"
-      touch "$env_file"
-      if [ "$onoff" = "on" ]; then
-        # Remove existing FLEET_HOST line and add the new one
-        { grep -v '^FLEET_HOST=' "$env_file" 2>/dev/null || true; echo 'FLEET_HOST=0.0.0.0'; } > "$env_file.tmp" && mv "$env_file.tmp" "$env_file"
-        echo "Set FLEET_HOST=0.0.0.0 in fleet.env"
-        echo ""
-        echo "If the macOS Application Firewall is on, allow node:"
-        echo "  sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add \$(which node)"
-        echo ""
-        if daemon_running; then
-          echo "Restarting daemon..."
-          cmd_restart
-        fi
-      elif [ "$onoff" = "off" ]; then
-        { grep -v '^FLEET_HOST=' "$env_file" 2>/dev/null || true; echo 'FLEET_HOST=127.0.0.1'; } > "$env_file.tmp" && mv "$env_file.tmp" "$env_file"
-        echo "Set FLEET_HOST=127.0.0.1 in fleet.env (loopback only)"
-        if daemon_running; then
-          echo "Restarting daemon..."
-          cmd_restart
-        fi
-      else
-        echo "usage: $0 remote lan on|off" >&2; return 1
-      fi
+      case "${2:-}" in
+        on)
+          set_env_var FLEET_HOST 0.0.0.0
+          export FLEET_HOST=0.0.0.0
+          echo "Set FLEET_HOST=0.0.0.0 in fleet.env"
+          echo "Anyone on this network can view the dashboard; controls still need a token or pairing."
+          if /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>/dev/null | grep -q enabled; then
+            echo ""
+            echo "The macOS firewall is on. If phones cannot connect, allow node:"
+            echo "  sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add $(node_bin) --unblockapp $(node_bin)"
+          fi
+          echo ""
+          apply_env_change
+          ;;
+        off)
+          set_env_var FLEET_HOST 127.0.0.1
+          export FLEET_HOST=127.0.0.1
+          echo "Set FLEET_HOST=127.0.0.1 in fleet.env (loopback only; Tailscale Serve keeps working)"
+          echo ""
+          apply_env_change
+          ;;
+        *) echo "usage: $0 remote lan on|off" >&2; return 1 ;;
+      esac
       ;;
 
     tailscale)
-      local onoff="${2:-}"
-      [ -n "$onoff" ] || { echo "usage: $0 remote tailscale on|off" >&2; return 1; }
-      command -v tailscale >/dev/null 2>&1 || { echo "tailscale not found — install it first" >&2; return 1; }
-      if [ "$onoff" = "on" ]; then
-        # Only Serve, never Funnel. Funnel exposes to the public internet.
-        tailscale serve --bg --https=443 "http://127.0.0.1:$PORT"
-        echo ""
-        echo "Tailscale Serve is ON. The dashboard is reachable on your tailnet only."
-        echo "It is NOT public — Tailscale Funnel is deliberately not used here."
-        echo ""
-        echo "Pairing is recommended for control access from remote devices:"
-        echo "  ./fleetctl.sh pair"
-      elif [ "$onoff" = "off" ]; then
-        tailscale serve reset || true
-        echo "Tailscale Serve reset."
-      else
-        echo "usage: $0 remote tailscale on|off" >&2; return 1
-      fi
+      local ts
+      ts="$(tailscale_bin)" || { echo "tailscale CLI not found — install Tailscale, or set FLEET_TAILSCALE_BIN" >&2; return 1; }
+      case "${2:-}" in
+        on)
+          "$ts" status >/dev/null 2>&1 || { echo "Tailscale is not connected — run: $ts up" >&2; return 1; }
+          # Serve only, never Funnel: Serve is reachable from your tailnet,
+          # Funnel from the whole internet.
+          "$ts" serve --bg --https=443 "http://127.0.0.1:$PORT" || {
+            echo "tailscale serve failed — if it printed a link, Serve must first be enabled for your tailnet there." >&2
+            return 1
+          }
+          local dns
+          dns="$("$ts" status --json 2>/dev/null | json_get Self.DNSName 2>/dev/null | sed 's/\.$//' || true)"
+          echo ""
+          echo "Tailscale Serve is on. Reachable from your tailnet only (Funnel is never used)."
+          [ -n "$dns" ] && echo "  https://$dns/"
+          echo ""
+          echo "To use controls from a remote device: ./fleetctl.sh pair"
+          ;;
+        off)
+          # Only our listener: 'serve reset' would also remove anything else
+          # this machine serves on the tailnet.
+          "$ts" serve --https=443 off 2>/dev/null || "$ts" serve --https=443 "http://127.0.0.1:$PORT" off 2>/dev/null || {
+            echo "could not remove the Serve config; inspect with: $ts serve status" >&2
+            return 1
+          }
+          echo "Tailscale Serve for the dashboard is off."
+          ;;
+        *) echo "usage: $0 remote tailscale on|off" >&2; return 1 ;;
+      esac
       ;;
 
     *)
-      echo "usage: $0 remote status|lan|tailscale" >&2; return 1 ;;
+      echo "usage: $0 remote status|lan on|off|tailscale on|off" >&2; return 1 ;;
   esac
 }
 

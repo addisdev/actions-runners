@@ -589,14 +589,15 @@ Behaviour by `FLEET_ADMIT_MODE`:
 |---|---|
 | `off` (default) | Exits immediately. Anything unrecognised also means `off`, because a misspelled mode reading as `enforce` would be the most expensive interpretation of a typo. |
 | `observe` | Takes a slot so the count stays honest, never delays anything, and logs whether enforcing *would* have held this job. |
-| `enforce` | Queues eligible waiters FIFO until there is room. At `FLEET_ADMIT_MAX_WAIT_S`, either admits or continues holding according to `FLEET_ADMIT_TIMEOUT_ACTION`. |
+| `enforce` | Queues eligible waiters FIFO until there is room. At `FLEET_ADMIT_MAX_WAIT_S`, host and disk limits either admit or continue holding according to `FLEET_ADMIT_TIMEOUT_ACTION`; the Simulator limit remains strict. |
 
 A job is held when an older eligible waiter has priority, the live slot count
 has reached `FLEET_ADMIT_MAX_CONCURRENT`, a matching Apple runner has reached
 `FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT`, or free disk is below
 `FLEET_ADMIT_MIN_FREE_DISK_GB`. A Simulator waiter blocked on that narrower
 limit does not prevent an unrelated job from using otherwise-free host
-capacity. While held, the hook polls GitHub every
+capacity. The Simulator limit requires matching `FLEET_SIMULATOR_RUNNERS`
+patterns; zero or no matches disables it. While held, the hook polls GitHub every
 `FLEET_ADMIT_CANCEL_POLL_S`; a completed or cancelled run returns immediately
 so its assigned runner does not remain trapped in `Set up runner`. Every
 decision is appended as one NDJSON line to
@@ -934,6 +935,38 @@ referenced from the plist rather than embedded in `EnvironmentVariables` where
 it would be readable by any local user via `defaults read`.
 
 See [Federation](../federation.md) for the full multi-host setup guide.
+
+### `dashboard/host-token.mjs`
+
+Generates or rotates a host-scoped fleet-agent token and prints the plaintext
+token once. The token store keeps only its SHA-256 hash. `fleetctl.sh
+agent-token --host <id>` is the normal operator-facing wrapper.
+Source: [`dashboard/host-token.mjs`](https://github.com/addisdev/actions-runners/blob/main/dashboard/host-token.mjs).
+
+```bash
+node dashboard/host-token.mjs <stable-host-id>
+```
+
+### `dashboard/scripts/migrate-sqlite-to-pg.mjs`
+
+One-shot migration that streams every SQLite table into PostgreSQL as a
+checksummed JSONB archive. It reads `FLEET_DB` and requires
+`FLEET_DATABASE_URL`; the source database is opened read-only and rerunning the
+command replaces each table's archived rows transactionally.
+Source: [`dashboard/scripts/migrate-sqlite-to-pg.mjs`](https://github.com/addisdev/actions-runners/blob/main/dashboard/scripts/migrate-sqlite-to-pg.mjs).
+
+```bash
+cd dashboard
+FLEET_DATABASE_URL=postgres://... node scripts/migrate-sqlite-to-pg.mjs
+```
+
+### `dashboard/autofix/fix.sh`
+
+The allowlisted entry point used by the remediation bridge to launch a cloud
+agent for a failed run and open a fix pull request. An empty
+`AUTOFIX_FIX_REPOS` disables it. `--login` establishes the Cursor credential
+and `--verify` checks it without launching a fix.
+Source: [`dashboard/autofix/fix.sh`](https://github.com/addisdev/actions-runners/blob/main/dashboard/autofix/fix.sh).
 
 ### `install.sh`
 

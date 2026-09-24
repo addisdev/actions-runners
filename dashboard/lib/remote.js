@@ -296,7 +296,7 @@ export function viewerContext(req) {
   const addr = clientAddress(req);
   let via = 'lan';
   if (isLocalRequest(req)) via = 'local';
-  else if (req.headers['tailscale-user-login'] || isTailnetAddress(addr)) via = 'tailscale';
+  else if ((proxied && req.headers['tailscale-user-login']) || isTailnetAddress(addr)) via = 'tailscale';
   else if (proxied) via = 'proxy';
 
   const tailscaleUser = proxied

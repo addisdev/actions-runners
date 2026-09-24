@@ -87,6 +87,8 @@ that `fleetctl.sh install` writes. To change after install:
 | `FLEET_PORT` | `7878` | Dashboard HTTP port. | Yes |
 | `FLEET_HOST` | `127.0.0.1` | Bind address. `0.0.0.0` for LAN. See [Federation](federation.md#security). | Yes |
 | `FLEET_ALLOWED_HOSTS` | local hostnames and interfaces | Additional comma-separated DNS names or IPs accepted by the Host-header rebinding guard. | Yes |
+| `FLEET_TAILSCALE` | `auto` | Automatically discover Tailscale for reachable URLs and proxy context. Set `off` to disable discovery. | Yes |
+| `FLEET_TAILSCALE_BIN` | auto-detected | Explicit Tailscale CLI path, including the Mac App Store application binary when needed. | Yes |
 | `FLEET_ROOT` | `~/actions-runners` | Fleet root. | Yes |
 | `FLEET_DB` | `dashboard/fleet.db` | SQLite database path. | Yes |
 | `FLEET_TOKEN_FILE` | `dashboard/.fleet-token` | Browser control token path. | Yes |
@@ -276,9 +278,9 @@ reach the daemon's database.
 |---|---|---|
 | `FLEET_ADMIT_MODE` | `off` | `off` / `observe` / `enforce`. |
 | `FLEET_ADMIT_MAX_CONCURRENT` | `3` | Max concurrent jobs across the host. |
-| `FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT` | `0` | Optional max for runners matching `FLEET_SIMULATOR_RUNNERS`; `0` disables the extra limit. |
+| `FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT` | `0` | Strict max for runners matching `FLEET_SIMULATOR_RUNNERS`; `0` or no matching patterns disables the extra limit. |
 | `FLEET_ADMIT_MAX_WAIT_S` | `600` | Max wait before `FLEET_ADMIT_TIMEOUT_ACTION` takes effect. |
-| `FLEET_ADMIT_TIMEOUT_ACTION` | `admit` | `admit` fails open after max-wait; `hold` keeps the host limit strict until the run ends. |
+| `FLEET_ADMIT_TIMEOUT_ACTION` | `admit` | `admit` fails open after max-wait for host and disk limits; the Simulator limit remains strict. `hold` keeps every limit strict until the run ends. |
 | `FLEET_ADMIT_CANCEL_POLL_S` | `30` | How often a held hook checks whether GitHub has completed or cancelled its run. |
 | `FLEET_ADMIT_MIN_FREE_DISK_GB` | `40` | Refuse job (then admit after max wait) below this disk level. |
 | `FLEET_ADMIT_POLL_S` | `5` | How often a held job re-checks. |

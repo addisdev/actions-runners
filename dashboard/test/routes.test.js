@@ -7,6 +7,7 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
+import http from 'node:http';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,6 +48,11 @@ async function startDaemon(extraEnv = {}) {
       // reject the control token just the same.
       FLEET_AGENT_TOKEN: token,
       FLEET_AGENT_TOKENS_FILE: join(dir, 'host-tokens.json'),
+      // The default lives in the dashboard directory, where test pairings
+      // would land in the operator's real paired-device list.
+      FLEET_DEVICE_TOKENS_FILE: join(dir, 'device-tokens.json'),
+      // Never shell out to the developer's real tailscale from a test daemon.
+      FLEET_TAILSCALE: 'off',
       FLEET_ALERTS: '0',
       FLEET_BACKFILL_MS: '999999999',
       FLEET_FAST_MS: '999999999',
@@ -606,21 +612,26 @@ describe('federation: staged host-token rollout', () => {
 // WHATWG fetch() forbids overriding the Host header (it's a forbidden header
 // per the spec). Use Node's http.request for these tests so we can send an
 // arbitrary Host header the way a real DNS-rebinding attack would.
-import http from 'node:http';
-function rawGet(port, path, hostHeader) {
+function rawRequest(port, path, { method = 'GET', headers = {}, body } = {}) {
   return new Promise((resolve, reject) => {
-    const req = http.request(
-      { hostname: '127.0.0.1', port, path, method: 'GET', headers: { host: hostHeader } },
-      (res) => { res.resume(); resolve(res.statusCode); }
-    );
+    const req = http.request({ hostname: '127.0.0.1', port, path, method, headers }, (res) => {
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { data += c; });
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: data }));
+    });
     req.on('error', reject);
+    if (body) req.write(body);
     req.end();
   });
+}
+async function rawGet(port, path, hostHeader) {
+  return (await rawRequest(port, path, { headers: { host: hostHeader } })).status;
 }
 
 describe('host-header allowlist (DNS-rebinding defence)', () => {
   let d;
-  before(async () => { d = await startDaemon(); });
+  before(async () => { d = await startDaemon({ FLEET_ALLOWED_HOSTS: 'dash.example.internal' }); });
   after(() => d?.kill());
 
   test('known host (localhost) is accepted', async () => {
@@ -631,6 +642,90 @@ describe('host-header allowlist (DNS-rebinding defence)', () => {
   test('unknown host gets 421', async () => {
     const status = await rawGet(d.port, '/api/state', 'evil.example.com');
     assert.equal(status, 421);
+  });
+
+  test('static files are covered too', async () => {
+    assert.equal(await rawGet(d.port, '/', 'evil.example.com'), 421);
+  });
+
+  test('FLEET_ALLOWED_HOSTS names are accepted', async () => {
+    assert.equal(await rawGet(d.port, '/api/state', 'dash.example.internal'), 200);
+  });
+
+  test('agent routes are exempt: they are token-authenticated machine calls', async () => {
+    // An agent addresses the coordinator by whatever name its fleet.env holds.
+    // It must get an auth answer, not a Host refusal.
+    const r = await rawRequest(d.port, '/api/host/heartbeat', {
+      method: 'POST',
+      headers: { host: 'coordinator.somewhere.example', 'content-type': 'application/json' },
+      body: '{}',
+    });
+    assert.notEqual(r.status, 421);
+    assert.ok([401, 403].includes(r.status), `expected an auth refusal, got ${r.status}`);
+  });
+});
+
+describe('proxied (Tailscale Serve) requests', () => {
+  let d;
+  before(async () => { d = await startDaemon({ FLEET_ALERTS: '1', FLEET_ALLOWED_HOSTS: 'mac.tail1234.ts.net' }); });
+  after(() => d?.kill());
+
+  const proxied = (extra = {}) => ({
+    host: 'mac.tail1234.ts.net',
+    'x-forwarded-for': '100.64.1.2',
+    'x-forwarded-proto': 'https',
+    'tailscale-user-login': 'me@example.com',
+    ...extra,
+  });
+
+  test('a proxied viewer is not treated as local: dismiss needs a token', async () => {
+    // Serve connects from 127.0.0.1. Treating that as "this machine" would
+    // hand every tailnet viewer the local no-token dismiss.
+    const r = await rawRequest(d.port, '/api/alerts/dismiss', {
+      method: 'POST',
+      headers: proxied({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ key: 'x' }),
+    });
+    assert.equal(r.status, 401, r.body);
+  });
+
+  test('a paired token over https is not blocked by the Origin check', async () => {
+    const r = await rawRequest(d.port, '/api/devices', {
+      headers: proxied({ authorization: `Bearer ${d.token}`, origin: 'https://mac.tail1234.ts.net' }),
+    });
+    assert.equal(r.status, 200, r.body);
+  });
+
+  test('/api/access reports the tailnet viewer', async () => {
+    const r = await rawRequest(d.port, '/api/access', { headers: proxied() });
+    const body = JSON.parse(r.body);
+    assert.equal(body.via, 'tailscale');
+    assert.equal(body.tailscaleUser, 'me@example.com');
+  });
+});
+
+describe('static assets', () => {
+  let d;
+  before(async () => { d = await startDaemon(); });
+  after(() => d?.kill());
+
+  test('PNG icons are served as image/png', async () => {
+    const r = await fetch(`http://127.0.0.1:${d.port}/assets/icon-192.png`);
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('content-type'), 'image/png');
+  });
+
+  test('the service worker is served with a scope header and no-cache', async () => {
+    const r = await fetch(`http://127.0.0.1:${d.port}/sw.js`);
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('service-worker-allowed'), '/');
+    assert.equal(r.headers.get('cache-control'), 'no-cache');
+  });
+
+  test('the vendored QR library is served as a module script', async () => {
+    const r = await fetch(`http://127.0.0.1:${d.port}/vendor/qrcodegen.js`);
+    assert.equal(r.status, 200);
+    assert.match(r.headers.get('content-type'), /javascript/);
   });
 });
 

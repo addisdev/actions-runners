@@ -23,7 +23,8 @@
 export const ENV_ONLY = ['FLEET_PORT', 'FLEET_HOST', 'FLEET_DB', 'FLEET_TOKEN_FILE',
   'FLEET_ADMISSION_LOG', 'FLEET_COLLECTOR_STALE_MS', 'FLEET_AUTOFIX_STATUS_URL',
   'FLEET_DATABASE_URL', 'FLEET_DATABASE_URL_FILE', 'FLEET_REPLICA_ID',
-  'FLEET_AGENT_TOKENS_FILE', 'FLEET_ALLOWED_HOSTS', 'FLEET_DEVICE_TOKENS_FILE'];
+  'FLEET_AGENT_TOKENS_FILE', 'FLEET_ALLOWED_HOSTS', 'FLEET_DEVICE_TOKENS_FILE',
+  'FLEET_TAILSCALE', 'FLEET_TAILSCALE_BIN'];
 
 // type drives both parsing and validation. Anything rejected leaves the previous
 // value in place — a settings screen that can brick the daemon with a typo is

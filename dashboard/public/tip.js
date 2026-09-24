@@ -1,14 +1,18 @@
-// tip.js — touch-friendly tooltip/popover for data-tip attributes.
+// Tap-to-reveal tooltips for touch screens.
 //
-// On pointer devices the browser's built-in title= tooltip is fine.
-// On touch devices it never shows. We add a tap popover for any element with
-// a data-tip attribute (or a title= that we've moved over).
+// The dashboard explains a lot through title= (KPI detail, chart bars, drift
+// reasons), and a touch browser never shows a title. On a device with no hover,
+// tapping a non-interactive element that carries a title (or data-tip) shows
+// the text in a small popover instead.
 //
-// Usage: set data-tip="text" on any element and import this module.
-// The popover appears on tap and hides after 3 s or on next tap anywhere.
+// Interactive elements are left alone: a tap on a button must press it, and
+// hijacking that for a tooltip would make every titled button take two taps.
 
 let popover = null;
 let hideTimer = null;
+let anchor = null;
+
+const INTERACTIVE = 'a[href], button, input, select, textarea, summary, label, [role="button"], [role="tab"], [onclick]';
 
 function getPopover() {
   if (!popover) {
@@ -22,51 +26,51 @@ function getPopover() {
 
 function show(el, text) {
   clearTimeout(hideTimer);
+  anchor = el;
   const p = getPopover();
   p.textContent = text;
   p.classList.add('is-visible');
-  document.body.appendChild(p);
 
+  // The popover is position: fixed, so viewport coordinates are used as-is.
   const rect = el.getBoundingClientRect();
+  const margin = 8;
   const pw = p.offsetWidth;
   const ph = p.offsetHeight;
-  const margin = 8;
-
-  let left = rect.left + rect.width / 2 - pw / 2;
-  let top  = rect.top - ph - margin;
-
-  // Flip below if not enough room above
+  let top = rect.top - ph - margin;
   if (top < margin) top = rect.bottom + margin;
-  // Clamp to viewport
-  left = Math.max(margin, Math.min(left, window.innerWidth - pw - margin));
-
+  top = Math.min(top, window.innerHeight - ph - margin);
+  const left = Math.max(margin, Math.min(rect.left + rect.width / 2 - pw / 2, window.innerWidth - pw - margin));
   p.style.left = `${left}px`;
-  p.style.top  = `${top + window.scrollY}px`;
+  p.style.top = `${Math.max(margin, top)}px`;
 
-  hideTimer = setTimeout(hide, 3000);
+  hideTimer = setTimeout(hide, 4000);
 }
 
 function hide() {
   clearTimeout(hideTimer);
-  const p = getPopover();
-  p.classList.remove('is-visible');
+  anchor = null;
+  popover?.classList.remove('is-visible');
 }
 
-// Only activate on touch devices
+function tipText(el) {
+  return el.dataset.tip || el.getAttribute('title') || el.getAttribute('aria-description') || '';
+}
+
 if (window.matchMedia('(hover: none)').matches) {
-  document.addEventListener('touchstart', (e) => {
-    const el = e.target.closest('[data-tip]');
-    const p  = getPopover();
-    if (!el) {
-      if (p.classList.contains('is-visible')) { hide(); return; }
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest?.('[data-tip], [title]');
+    if (!el || e.target.closest(INTERACTIVE)) {
+      if (anchor) hide();
       return;
     }
-    const text = el.dataset.tip;
+    const text = tipText(el);
     if (!text) return;
-    e.preventDefault();
+    if (anchor === el) return hide();
     show(el, text);
-  }, { passive: false });
+  });
+  // A fixed popover would otherwise float away from its anchor.
+  window.addEventListener('scroll', () => { if (anchor) hide(); }, { passive: true, capture: true });
+  window.addEventListener('resize', () => { if (anchor) hide(); });
 }
 
-// Export for explicit calls
 export { show, hide };

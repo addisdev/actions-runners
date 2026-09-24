@@ -156,7 +156,11 @@ export function exchangeCode(path, code, name, ip) {
 
   const token = randomBytes(32).toString('hex');
   const store = readStore(path);
-  const safeName = String(name ?? 'device').slice(0, 64).replace(/[^\w\s()._-]/g, '').trim();
+  const safeName = String(name ?? 'device')
+    .replace(/[^\p{L}\p{N} ()._·'’-]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 64);
   const baseName = safeName || 'device';
 
   // Two identical phones produce identical default names. Replacing the entry

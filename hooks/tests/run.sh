@@ -226,6 +226,24 @@ wait_for "3" "events admitted" 15
 ok "second Simulator admitted after first released" "$(events admitted)" "3"
 end_jobs
 
+echo "== Simulator limit stays strict after fail-open timeout =="
+setup enforce 2 2 1
+{
+  echo 'FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT=1'
+  echo 'FLEET_SIMULATOR_RUNNERS=*-ios'
+} >> "$ROOT/fleet.env"
+LIVE=$(fake_slot alpha-ios)
+( sleep 4; kill "$LIVE" 2>/dev/null ) &
+RELEASER=$!
+BEFORE=$(date +%s)
+start beta-ios
+AFTER=$(date +%s)
+wait "$RELEASER" 2>/dev/null
+ok "Simulator wait did not fail open" "$(events timeout)" "0"
+ok "strict Simulator hold was logged" "$(events continued-hold)" "1"
+ok "Simulator admitted only after release" \
+  "$([ $((AFTER - BEFORE)) -ge 4 ] && echo waited || echo early)" "waited"
+
 echo "== completing a job frees the slot for a waiter =="
 setup enforce 2 20 1
 start alpha; start beta

@@ -1888,6 +1888,26 @@ loadRemediation();
 setInterval(loadRemediation, 120_000);
 control.maybeExchangePairCode();
 
+// Every table gets a horizontal scroll container, so a wide one scrolls inside
+// its panel instead of widening the whole page on a phone. Done once here
+// rather than at each of the many places a table is built.
+function wrapTables(root) {
+  const tables = root.tagName === 'TABLE' ? [root] : root.querySelectorAll('table');
+  for (const table of tables) {
+    if (!table.parentElement || table.parentElement.classList.contains('table-scroll')) continue;
+    const wrap = document.createElement('div');
+    wrap.className = 'table-scroll';
+    table.replaceWith(wrap);
+    wrap.append(table);
+  }
+}
+new MutationObserver((mutations) => {
+  for (const m of mutations) {
+    for (const node of m.addedNodes) if (node.nodeType === 1) wrapTables(node);
+  }
+}).observe(document.body, { childList: true, subtree: true });
+wrapTables(document.body);
+
 // Register service worker only on secure contexts (localhost or HTTPS/Tailscale).
 // Plain LAN HTTP will not get a service worker — see docs/remote-access.md.
 if ('serviceWorker' in navigator && isSecureContext) {
