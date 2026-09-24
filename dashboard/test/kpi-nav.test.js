@@ -20,7 +20,7 @@ describe('KPI card navigation contract', () => {
   });
 
   test('setView centralises tab-switching logic', () => {
-    assert.match(src, /function setView\(name\)/);
+    assert.match(src, /function setView\(name(?:,\s*\{[^)]*\})?\)/);
     assert.match(src, /aria-selected/);
     assert.match(src, /is-entering/);
   });

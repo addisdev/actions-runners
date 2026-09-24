@@ -12,6 +12,8 @@ import './tip.js';
 
 const $ = (sel) => document.querySelector(sel);
 let snap = null;
+let streamConnected = false;
+let everConnected = false;
 let view = 'fleet';
 let analyticsLoaded = false;
 let accessCtx = null;       // /api/access context
@@ -287,13 +289,20 @@ function updateConnectionIndicator() {
   const age = snapshotAgeMs();
   const stale = isSnapshotStale();
 
-  // Three distinct states so the operator can distinguish network from collector
+  // Distinct states so the operator can tell their network, the stream, and
+  // the collector apart.
   if (!navigator.onLine) {
     dot.className = 'dot is-dead';
-    label.textContent = 'Offline';
+    label.textContent = snap ? 'Offline — showing last update' : 'Offline';
     label.className = 'conn-offline';
     brand?.classList.remove('is-connecting');
     brand?.classList.add('is-offline');
+  } else if (snap && !streamConnected) {
+    dot.className = 'dot is-stale';
+    label.textContent = everConnected ? 'Reconnecting…' : 'Connecting…';
+    label.className = 'conn-stale';
+    brand?.classList.remove('is-offline');
+    brand?.classList.add('is-connecting');
   } else if (stale) {
     dot.className = 'dot is-stale';
     const collectorDown = collectorHealth?.ok === false;
@@ -1574,18 +1583,19 @@ function renderFooter(s) {
   );
 }
 
-function setView(name) {
+function setView(name, { fromHistory = false } = {}) {
   const changed = view !== name;
   view = name;
   // The hash makes the tab bookmarkable and gives Back something to return to.
   // A drawer open over the old tab gives up its history entry to the new tab
-  // rather than leaving a dead "close the drawer" step behind it.
+  // rather than leaving a dead "close the drawer" step behind it. Navigation
+  // that came from history (Back, a typed hash) must not push, or it would
+  // wipe the forward stack.
   const hashTarget = `#/${name}`;
-  if (drawerOpen) {
-    closeDrawer({ fromHistory: true });
-    history.replaceState(null, '', hashTarget);
-  } else if (location.hash !== hashTarget) {
-    history.pushState(null, '', hashTarget);
+  if (drawerOpen) closeDrawer({ fromHistory: true });
+  if (!fromHistory && location.hash !== hashTarget) {
+    if (history.state?.drawer) history.replaceState(null, '', hashTarget);
+    else history.pushState(null, '', hashTarget);
   }
   if (changed) window.scrollTo({ top: 0 });
   for (const t of document.querySelectorAll('.tab')) {
@@ -1754,42 +1764,50 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', syn
 syncThemeToggle();
 
 // ---------------------------------------------------------------- hash routing
-// URLs like #/runs, #/alerts, #/hosts, #/runner/<id> are bookmarkable and
-// restorable on refresh. setView() pushes history entries; the drawer open/
-// close uses replaceState so Back closes the drawer without a double-pop.
+// #/runs, #/alerts, #/hosts … are bookmarkable and restored on refresh.
+// setView() pushes one entry per tab change; an open drawer adds one more
+// (see openDrawerShell) so Back closes it first.
 
 const VIEWS = ['fleet', 'runs', 'analytics', 'lint', 'alerts', 'capacity', 'hosts', 'control'];
 
 function viewFromHash() {
-  const h = location.hash.replace(/^#\/?/, '');
-  return VIEWS.includes(h) ? h : 'fleet';
+  const name = location.hash.replace(/^#\/?/, '');
+  return VIEWS.includes(name) ? name : 'fleet';
 }
 
 function applyHash() {
   const name = viewFromHash();
-  if (name !== view) setView(name);
+  if (name !== view) setView(name, { fromHistory: true });
 }
 
-// Override setView to push hash
-const _origSetView = setView;
-// Re-define setView to also push history
-(function patchSetView() {
-  const origFn = setView;
-  window._setViewNoHistory = origFn;
-})();
-
 window.addEventListener('hashchange', applyHash);
-// Apply on load (handles bookmark or back-nav to a tab)
 applyHash();
 
 // ---------------------------------------------------------------- SSE connect
-// Exponential backoff on reconnect (1s → 2 → 4 → 8 → 16 → 30s cap).
-// Visibility-aware: reconnect immediately when the tab becomes visible.
+// Exponential backoff on reconnect (1s → 2 → 4 → 8 → 16 → 30s cap, jittered
+// so a restarted daemon is not hit by every phone in the same second).
+// The last snapshot stays on screen through an outage, labelled as such —
+// blanking the page tells the operator less than showing what we last knew.
 
 let activeEs = null;
 let sseBackoffMs = 1000;
 let sseReconnectTimer = null;
 let elapsedTimerPaused = false;
+
+function acceptSnapshot(next) {
+  if (!next || typeof next !== 'object') return;
+  // A cached or slow /api/state response must not overwrite a newer SSE push.
+  if (snap?.ts && next.ts && next.ts < snap.ts) return;
+  snap = next;
+  render();
+}
+
+function refreshState() {
+  return fetch('/api/state', { cache: 'no-store' })
+    .then((r) => (r.ok ? r.json() : null))
+    .then(acceptSnapshot)
+    .catch(() => {});
+}
 
 function connect() {
   clearTimeout(sseReconnectTimer);
@@ -1798,37 +1816,54 @@ function connect() {
   activeEs = es;
   es.onopen = () => {
     sseBackoffMs = 1000;
+    streamConnected = true;
+    everConnected = true;
     updateConnectionIndicator();
   };
-  es.onmessage = (e) => { snap = JSON.parse(e.data); render(); };
+  es.onmessage = (e) => {
+    streamConnected = true;
+    try { acceptSnapshot(JSON.parse(e.data)); } catch { /* partial frame — the next push replaces it */ }
+  };
   es.onerror = () => {
-    snap = null;
+    streamConnected = false;
     updateConnectionIndicator();
     es.close();
     if (activeEs === es) activeEs = null;
-    sseReconnectTimer = setTimeout(connect, sseBackoffMs);
+    sseReconnectTimer = setTimeout(connect, sseBackoffMs * (0.75 + Math.random() * 0.5));
     sseBackoffMs = Math.min(sseBackoffMs * 2, 30000);
   };
 }
 
-// When the tab becomes visible again, reconnect immediately and refresh state
+// iOS and Android freeze background tabs, often leaving an EventSource that
+// looks open but will never deliver again. On return, reconnect only when the
+// stream is actually suspect, so flicking between apps does not churn it.
+function resumeIfStale() {
+  const age = snapshotAgeMs();
+  const fastMs = snap?.collector?.fastMs ?? 15000;
+  const suspect = !activeEs || activeEs.readyState !== EventSource.OPEN
+    || age == null || age > fastMs * 3;
+  if (suspect) {
+    sseBackoffMs = 1000;
+    connect();
+    refreshState();
+  }
+  pollHealth();
+}
+
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     elapsedTimerPaused = false;
-    connect();
-    fetch('/api/state').then((r) => r.json()).then((d) => { snap = d; render(); }).catch(() => {});
-    pollHealth();
+    resumeIfStale();
   } else {
     elapsedTimerPaused = true;
   }
 });
 
 window.addEventListener('pageshow', (e) => {
-  if (e.persisted) {
-    connect();
-    fetch('/api/state').then((r) => r.json()).then((d) => { snap = d; render(); }).catch(() => {});
-  }
+  if (e.persisted) resumeIfStale();
 });
+window.addEventListener('online', resumeIfStale);
+window.addEventListener('offline', updateConnectionIndicator);
 
 // Elapsed timers must tick between snapshots, or a build that started two
 // minutes ago reads "15s" for as long as the fleet stays quiet.
@@ -1846,8 +1881,12 @@ setInterval(pollHealth, 30000);
 pollHealth();
 
 connect();
+// Paints before the first SSE push arrives, and — through the service worker's
+// cached copy — gives an offline launch something to show.
+refreshState();
 loadRemediation();
 setInterval(loadRemediation, 120_000);
+control.maybeExchangePairCode();
 
 // Register service worker only on secure contexts (localhost or HTTPS/Tailscale).
 // Plain LAN HTTP will not get a service worker — see docs/remote-access.md.
