@@ -44,7 +44,7 @@ is grounded in something that actually went wrong on a real fleet — see
 
 | Note | The argument |
 |---|---|
-| [Zero dependencies](design/zero-dependencies.md) | Why a monitoring daemon has no npm packages |
+| [Minimal dependencies](design/zero-dependencies.md) | Why single-host mode uses built-ins and HA isolates one locked driver |
 | [Inferred groups](design/groups.md) | Why headings are derived from disk, never from the current tick |
 | [The control plane](design/control-plane.md) | No shell, no free-form commands, and an allowlisted bundle |
 | [Workflow lint](design/lint.md) | Parsing the YAML rather than grepping it, on the branches that run |

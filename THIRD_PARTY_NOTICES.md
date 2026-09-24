@@ -3,6 +3,20 @@
 This file documents the third-party software bundled in this repository, its
 license, and any known telemetry or network behaviour.
 
+## `pg` — optional PostgreSQL HA driver
+
+| Field | Value |
+|---|---|
+| Location | `dashboard/package.json` and `dashboard/package-lock.json` |
+| Purpose | Shared state and leader election for optional two-replica HA |
+| License | MIT; `pg-int8` and `split2` transitive packages use ISC |
+| Network behaviour | Connects only to the operator-configured `FLEET_DATABASE_URL` |
+
+Single-host mode dynamically avoids loading this package. `fleetctl.sh install`
+uses the committed lockfile when PostgreSQL HA is configured. The complete,
+pinned transitive dependency list and integrity hashes are in
+`dashboard/package-lock.json`.
+
 ## `dashboard/autofix/escalate/` — AI escalation bridge
 
 | Field | Value |

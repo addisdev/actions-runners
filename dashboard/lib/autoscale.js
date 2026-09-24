@@ -8,16 +8,62 @@
 // resource. Putting it here also avoids widening autofix's action allowlist to
 // include registration and removal, which it deliberately excludes.
 //
-// ONE ACTION PER SWEEP, always. Registering a runner takes tens of seconds and
-// changes the very inputs this reads, so a batch decision is stale before it
-// finishes. Scaling five repos at once is also how a bad threshold becomes a
-// bad afternoon.
+// ONE ACTION PER SWEEP by default, always. Registering a runner takes tens of
+// seconds and changes the very inputs this reads, so a batch decision is stale
+// before it finishes. When the caller opts into `revalidate`, a bounded list may
+// be returned — but only if the executor re-runs this planner between actions.
 //
 // WHAT THIS CANNOT DO. It cannot make a fan-out burst faster. Peak demand for one
 // repo on this fleet is 33 simultaneous jobs and a runner takes tens of seconds
-// to create, so by the time capacity arrives the burst is over. It is aimed at
-// the SUSTAINED case: the repo that has queued for ten minutes because it owns
-// one runner and wants two.
+// to create, so by the time capacity arrives the burst is over. Burst mode only
+// shortens the *wait* before the first addition; it still adds one runner per
+// validated sweep. It is aimed at the SUSTAINED case: the repo that has queued
+// for ten minutes because it owns one runner and wants two.
+
+import { queuedJobLabels } from './queue-cause.js';
+import { roleFromExtraLabels, roleFromJobLabels, sizingKey } from './sizing.js';
+
+const isSelfHosted = (labels) => labels.some((l) => String(l).toLowerCase() === 'self-hosted');
+
+// Labels every self-hosted runner on this fleet already carries, so they say
+// nothing about what a NEW runner would need. register.sh applies them itself;
+// passing them back as extra labels would ask config.sh for a duplicate of
+// `arm64` and fail the registration. Kept in step with the same list in
+// lib/queue-cause.js, which strips them for the same reason.
+const PLATFORM_LABELS = new Set(['self-hosted', 'macos', 'linux', 'windows', 'x64', 'arm64']);
+
+function extraFromJobLabels(labels = []) {
+  return (labels ?? []).filter((l) => !PLATFORM_LABELS.has(String(l).toLowerCase()));
+}
+
+function cooldownKey(repo, role) {
+  return sizingKey(repo, role);
+}
+
+/**
+ * Pick burst vs sustained thresholds for one repo+role row.
+ *
+ * @returns {{ mode: 'burst'|'sustained', minQueuedMs: number, cooldownMs: number }}
+ */
+export function resolveScaleMode({ queuedCount = 0, waitedMs = 0, limits = {} } = {}) {
+  const burstEnabled = limits.burstScale ?? false;
+  const burstMinJobs = limits.burstMinQueuedJobs ?? 2;
+  const burstMinMs = limits.burstMinQueuedMs ?? 120000;
+  const sustainedMinMs = limits.minQueuedMs ?? 600000;
+
+  if (burstEnabled && queuedCount >= burstMinJobs && waitedMs >= burstMinMs) {
+    return {
+      mode: 'burst',
+      minQueuedMs: burstMinMs,
+      cooldownMs: limits.burstScaleCooldownMs ?? 300000,
+    };
+  }
+  return {
+    mode: 'sustained',
+    minQueuedMs: sustainedMinMs,
+    cooldownMs: limits.scaleCooldownMs ?? 1800000,
+  };
+}
 
 // A runner to clone from. Prefers an idle one so the summary reads sensibly, but
 // any sibling will do — duplicate only reads its repo and labels.
@@ -27,21 +73,37 @@
 // runner modelled on the one being removed — which reads, correctly, as the
 // scaler and the operator working against each other.
 function cloneSource(siblings, preferRole = null) {
-  // When a preferred role is supplied (e.g. 'ci'), use runners of that role as
-  // the clone template. Falls back to any non-draining runner if no role match
-  // exists, so the first-runner path still works.
+  const nonDraining = siblings.filter((r) => !r.drainState);
   const pool = preferRole != null
-    ? (siblings.filter((r) => !r.drainState && (r.extraLabels ?? []).includes(preferRole)).length
-        ? siblings.filter((r) => !r.drainState && (r.extraLabels ?? []).includes(preferRole))
-        : siblings.filter((r) => !r.drainState))
-    : siblings.filter((r) => !r.drainState);
+    ? (nonDraining.filter((r) => roleFromExtraLabels(r.extraLabels) === preferRole).length
+        ? nonDraining.filter((r) => roleFromExtraLabels(r.extraLabels) === preferRole)
+        : nonDraining)
+    : nonDraining;
   return pool.find((r) => !r.workingLocally && !r.ghBusy) ?? pool[0] ?? null;
 }
 
+function sameRoleSiblings(siblings, role) {
+  return siblings.filter((r) => roleFromExtraLabels(r.extraLabels) === role);
+}
+
 /**
- * @returns {{ act: false, reason: string } | { act: true, name, repo, reason }}
+ * Full scale-up evaluation. Returns the next action plus any remaining deficit.
+ *
+ * @returns {{
+ *   act: boolean,
+ *   reason: string,
+ *   mode?: 'burst'|'sustained',
+ *   deficit?: number,
+ *   revalidate?: boolean,
+ *   actions?: object[],
+ *   register?: boolean,
+ *   name?: string|null,
+ *   repo?: string,
+ *   role?: string|null,
+ *   extraLabels?: string[],
+ * }}
  */
-export function planScaleUp({
+export function buildScaleUpPlan({
   sizing = [],
   capacity = { ok: false, reasons: [] },
   runners = [],
@@ -50,99 +112,214 @@ export function planScaleUp({
   limits = {},
   now = Date.now(),
   queueCauses = null,
+  revalidate = false,
 } = {}) {
-  if (!capacity.ok) {
-    return { act: false, reason: `no headroom: ${capacity.reasons.join('; ')}` };
+  const rows = capacity.ok ? sizing : sizing.filter((r) => r.unserved);
+  if (!capacity.ok && !rows.length) {
+    return { act: false, reason: `no headroom: ${capacity.reasons.join('; ')}`, deficit: 0 };
   }
 
-  const cooldown = limits.scaleCooldownMs ?? 1800000;
-  const minQueued = limits.minQueuedMs ?? 600000;
-
-  // Adding a runner is the right answer to exactly one of the reasons a job sits
-  // queued: every runner for the repo is busy and the host has room for another.
-  // For the other six it is somewhere between useless and harmful — cloning a
-  // runner whose labels do not match the workflow produces a second runner that
-  // also never matches, which is how one idle runner became two.
-  //
-  // So the classifier is consulted before acting, and only a HIGH-confidence
-  // repo-capacity verdict clears the gate. Medium and low confidence mean the
-  // evidence was circumstantial, and spending a concurrency slot on a guess is
-  // not what an unattended process should do. When no classifier is supplied
-  // this is skipped and the older heuristics stand alone.
-  const causeAllows = (repo) => {
+  const causeAllows = (repo, role, runIdsForRole) => {
     if (!queueCauses) return { ok: true };
-    const causes = [...queueCauses.values()].filter((c) => c.repo === repo);
+    const roleSpecific = [...queueCauses.entries()]
+      .filter(([runId]) => runIdsForRole.has(runId))
+      .map(([, c]) => c)
+      .filter((c) => c.repo === repo);
+    // When run ids are present, honour per-run verdicts. Otherwise fall back to
+    // the repo-wide map fleetd already supplies for backward compatibility.
+    const causes = roleSpecific.length
+      ? roleSpecific
+      : [...queueCauses.values()].filter((c) => c.repo === repo);
     if (!causes.length) return { ok: true };
     const eligible = causes.find((c) => c.actionEligible && c.confidence === 'high');
     if (eligible) return { ok: true };
     const worst = causes[0];
-    return { ok: false, why: `diagnosed as ${worst.cause} (${worst.confidence} confidence), not capacity` };
+    const tag = role ? `${short(repo)}/${role}` : short(repo);
+    return {
+      ok: false,
+      why: `${tag}: diagnosed as ${worst.cause} (${worst.confidence} confidence), not capacity`,
+    };
   };
 
-  // Queued work, and for how long. Time queued is the whole justification: a job
-  // that has been waiting twenty seconds is not evidence of anything, and adding
-  // a runner takes longer than that to help.
   const queuedSince = new Map();
+  const queuedLabels = new Map();
+  const queuedCount = new Map();
+  const runIdsByKey = new Map();
+
   for (const a of active) {
     if (a.status !== 'queued') continue;
     const at = Date.parse(a.startedAt ?? a.createdAt ?? '');
     if (!Number.isFinite(at)) continue;
-    const prev = queuedSince.get(a.repo);
-    if (prev == null || at < prev) queuedSince.set(a.repo, at);
+
+    const labels = queuedJobLabels(a);
+    const role = roleFromJobLabels(labels ?? []);
+    const key = sizingKey(a.repo, role);
+
+    const prev = queuedSince.get(key);
+    if (prev == null || at < prev) queuedSince.set(key, at);
+    queuedCount.set(key, (queuedCount.get(key) ?? 0) + 1);
+    if (!runIdsByKey.has(key)) runIdsByKey.set(key, new Set());
+    runIdsByKey.get(key).add(a.id);
+
+    if (labels?.length) {
+      const prevLabels = queuedLabels.get(key);
+      if (!prevLabels || (!isSelfHosted([...prevLabels]) && isSelfHosted(labels))) {
+        queuedLabels.set(key, new Set(labels));
+      }
+    }
   }
 
   const blocked = [];
-  for (const row of sizing) {
+  const candidates = [];
+
+  for (const row of rows) {
     if (row.delta <= 0) continue;
 
-    const since = queuedSince.get(row.repo);
+    const key = sizingKey(row.repo, row.role ?? null);
+    const since = queuedSince.get(key);
     if (since == null) {
-      blocked.push(`${short(row.repo)}: wants ${row.want} but nothing is queued`);
+      blocked.push(`${label(row)}: wants ${row.want} but nothing is queued for this role`);
       continue;
     }
+
     const waited = now - since;
-    if (waited < minQueued) {
-      blocked.push(`${short(row.repo)}: queued ${Math.round(waited / 60000)}m, needs ${Math.round(minQueued / 60000)}m`);
+    const qCount = queuedCount.get(key) ?? 0;
+    const scale = resolveScaleMode({ queuedCount: qCount, waitedMs: waited, limits });
+
+    if (waited < scale.minQueuedMs) {
+      blocked.push(
+        `${label(row)}: queued ${Math.round(waited / 60000)}m, needs ${Math.round(scale.minQueuedMs / 60000)}m (${scale.mode})`
+      );
       continue;
     }
 
-    const last = lastUpByRepo[row.repo] ?? 0;
-    if (now - last < cooldown) {
-      blocked.push(`${short(row.repo)}: scaled up ${Math.round((now - last) / 60000)}m ago`);
+    const last = lastUpByRepo[cooldownKey(row.repo, row.role ?? null)]
+      ?? lastUpByRepo[row.repo]
+      ?? 0;
+    if (now - last < scale.cooldownMs) {
+      blocked.push(
+        `${label(row)}: scaled up ${Math.round((now - last) / 60000)}m ago (${scale.mode} cooldown)`
+      );
       continue;
     }
 
-    const allowed = causeAllows(row.repo);
+    const allowed = causeAllows(row.repo, row.role ?? null, runIdsByKey.get(key) ?? new Set());
     if (!allowed.ok) {
-      blocked.push(`${short(row.repo)}: ${allowed.why}`);
+      blocked.push(allowed.why);
       continue;
     }
 
     const siblings = runners.filter((r) => r.repo === row.repo);
-    const source = cloneSource(siblings);
+    const role = row.role ?? null;
+    const roleSiblings = role != null ? sameRoleSiblings(siblings, role) : siblings;
+    const source = cloneSource(siblings, role);
+
     if (!source) {
-      blocked.push(`${short(row.repo)}: no existing runner to copy labels from`);
+      if (!row.unserved) {
+        blocked.push(`${label(row)}: no existing runner to copy labels from`);
+        continue;
+      }
+
+      const asked = [...(queuedLabels.get(key) ?? [])];
+      if (!asked.some((l) => l.toLowerCase() === 'self-hosted')) {
+        blocked.push(
+          asked.length
+            ? `${label(row)}: queued work targets GitHub-hosted runners`
+            : `${label(row)}: no job labels available to size a runner from`
+        );
+        continue;
+      }
+
+      candidates.push({
+        row,
+        scale,
+        action: {
+          register: true,
+          firstRunner: true,
+          name: null,
+          repo: row.repo,
+          role,
+          extraLabels: extraFromJobLabels(asked),
+          reason:
+            `queued ${Math.round(waited / 60000)}m with no runner registered; ` +
+            `${row.reason}`,
+        },
+      });
       continue;
     }
 
+    const asked = [...(queuedLabels.get(key) ?? [])];
+    const extraLabels = roleSiblings.length
+      ? (source.extraLabels ?? [])
+      : extraFromJobLabels(asked.length ? asked : (source.extraLabels ?? []));
+    const registerRole = role != null && roleSiblings.length === 0;
+
+    candidates.push({
+      row,
+      scale,
+      action: {
+        // A repo can already have a runner while this role has none. Duplicating
+        // an arbitrary sibling would copy the wrong labels locally; register the
+        // first runner for the new role explicitly from queued-job labels.
+        register: registerRole,
+        firstRunner: false,
+        name: registerRole ? null : source.name,
+        repo: row.repo,
+        role,
+        extraLabels,
+        reason:
+          `queued ${Math.round(waited / 60000)}m with ${row.have} ${role ?? 'unroled'} runner(s); ` +
+          `${row.reason}`,
+      },
+    });
+  }
+
+  if (!candidates.length) {
     return {
-      act: true,
-      name: source.name,
-      repo: row.repo,
-      reason:
-        `queued ${Math.round(waited / 60000)}m with ${row.have} runner(s); ` +
-        `${row.reason}`,
-      // Labels the new runner must carry — copied from the clone source so the
-      // coordinator can include them in a runner.register command for a remote host
-      // without having to re-derive them from a snapshot that may not be current.
-      extraLabels: source.extraLabels ?? [],
+      act: false,
+      reason: blocked.length ? blocked.join(' · ') : 'nothing under-provisioned with queued work',
+      deficit: 0,
     };
   }
 
+  // Worst deficit first — same ordering as sizeFleet.
+  candidates.sort((a, b) => b.row.delta - a.row.delta || b.row.concurrency.p90 - a.row.concurrency.p90);
+
+  const totalDeficit = candidates.reduce((sum, c) => sum + c.row.delta, 0);
+
+  if (revalidate && (limits.burstScale ?? false)) {
+    const maxBatch = limits.burstMaxAdditionsPerRepo ?? 2;
+    const actions = candidates.slice(0, maxBatch).map(({ action, scale, row }) => ({
+      ...action,
+      mode: scale.mode,
+      deficit: Math.max(0, row.delta - 1),
+    }));
+    return {
+      act: true,
+      revalidate: true,
+      actions,
+      mode: actions[0]?.mode ?? 'sustained',
+      deficit: Math.max(0, totalDeficit - actions.length),
+      reason: actions.map((a) => a.reason).join(' · '),
+      ...actions[0],
+    };
+  }
+
+  const pick = candidates[0];
+  const deficit = Math.max(0, totalDeficit - 1);
   return {
-    act: false,
-    reason: blocked.length ? blocked.join(' · ') : 'nothing under-provisioned with queued work',
+    act: true,
+    mode: pick.scale.mode,
+    deficit,
+    ...pick.action,
   };
+}
+
+/**
+ * @returns {{ act: false, reason: string, deficit?: number } | { act: true, name, repo, reason, mode, deficit, role?, register?, extraLabels?, revalidate?, actions? }}
+ */
+export function planScaleUp(opts = {}) {
+  return buildScaleUpPlan(opts);
 }
 
 /**
@@ -219,4 +396,8 @@ export function planScaleDown({
 
 function short(repo) {
   return String(repo).split('/').pop();
+}
+
+function label(row) {
+  return row.role ? `${short(row.repo)}/${row.role}` : short(row.repo);
 }

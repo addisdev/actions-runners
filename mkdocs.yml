@@ -111,14 +111,16 @@ nav:
       - Scripts: reference/scripts.md
       - HTTP API: api.md
       - Glossary: glossary.md
+  - Remote access and mobile: remote-access.md
   - Security: security-hardening.md
   - Design notes:
       - Overview: design/index.md
-      - Zero dependencies: design/zero-dependencies.md
+      - Minimal dependencies: design/zero-dependencies.md
       - Inferred groups: design/groups.md
       - The control plane: design/control-plane.md
       - Workflow lint: design/lint.md
       - Alerts and autofix: design/alerts.md
+      - Dismissing alerts: design/dismissing.md
       - Capacity and autoscaling: design/capacity.md
       - Honest analytics: design/analytics.md
   - Brand: brand.md

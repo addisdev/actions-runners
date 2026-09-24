@@ -40,15 +40,15 @@ Full documentation is in the [docs handbook](../docs/README.md):
 - **[Admission and scaling](../docs/admission-and-scaling.md)** — throttling concurrent jobs
 
 For the reasoning behind the design — why the grouping logic works the way it
-does, why there are no dependencies, what may act unattended, what the numbers
-exclude — see the [design notes](../docs/design/index.md). What drift means and
-why a job is queued are in [Concepts](../docs/concepts.md).
+does, why dependencies are kept minimal and isolated, what may act unattended,
+what the numbers exclude — see the [design notes](../docs/design/index.md).
+What drift means and why a job is queued are in [Concepts](../docs/concepts.md).
 
 ## Design principles
 
-- **Zero runtime dependencies.** `dashboard/package.json` has no dependencies by
-  design. `node:sqlite` (Node >= 22.5.0) is the reason for the Node version
-  requirement, not an npm package.
+- **Minimal runtime dependencies.** Single-host mode uses Node built-ins,
+  including `node:sqlite`. Optional PostgreSQL HA dynamically loads the locked
+  `pg` dependency installed by `fleetctl.sh install`.
 - **One process.** The collector and server share the in-memory snapshot. No
   polling between them; one LaunchAgent to reason about at 3 AM.
 - **Loopback by default.** The control plane executes shell commands as the

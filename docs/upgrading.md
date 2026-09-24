@@ -69,10 +69,10 @@ This project installs the [GitHub Actions runner binary](https://github.com/acti
 The runner binary updates itself via GitHub's runner update mechanism. Check the
 runner version in the dashboard's runner drawer.
 
-To pin a runner version, set `RUNNER_VERSION` before running `register.sh`:
-```bash
-RUNNER_VERSION=2.337.0 ./register.sh owner/project-ios
-```
+`register.sh` pins both the runner version and its SHA-256 checksum in the
+script. Update those two constants together after verifying a new GitHub
+release; an environment-only version override is intentionally unsupported
+because it would bypass the pinned checksum.
 
 ## Node.js version
 

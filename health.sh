@@ -83,7 +83,11 @@ for d in "$ROOT"/*/; do
 
   printf "%-42s %-10s %s\n" "$name" "$lstate" "$gstate"
 
-  if [ "$REPAIR" = "1" ] && [ "$lstate" != "running" ]; then
+  # A listener can remain alive locally while GitHub has dropped its session.
+  # Restarting that idle listener is the only way to establish a fresh session;
+  # drained runners were already excluded above, and a busy runner is never
+  # reported as offline.
+  if [ "$REPAIR" = "1" ] && { [ "$lstate" != "running" ] || [ "$gstate" = "offline" ]; }; then
     echo "    -> restarting $label"
     (cd "$d" && ./svc.sh stop >/dev/null 2>&1; ./svc.sh start >/dev/null 2>&1)
   fi

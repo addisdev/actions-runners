@@ -4,14 +4,33 @@
 set -uo pipefail
 
 HOOKS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ROOT="${TMPDIR:-/tmp}/admit-test/root"
-LOG="$ROOT/dashboard/logs/admission.ndjson"
-BIN="$ROOT/bin"
-RUN_STATUS="$ROOT/run-status"
+BASE="${TMPDIR:-/tmp}/admit-test"
+ROOT=""
+LOG=""
+BIN=""
+RUN_STATUS=""
 PASS=0
 FAIL=0
+CASE=0
+
+finish_jobs() {
+  local p
+  for p in "${JOBPIDS[@]:-}"; do
+    [ -n "$p" ] && kill "$p" 2>/dev/null
+  done
+  for p in "${JOBPIDS[@]:-}"; do
+    [ -n "$p" ] && wait "$p" 2>/dev/null || true
+  done
+  JOBPIDS=()
+}
 
 setup() {
+  finish_jobs
+  CASE=$((CASE + 1))
+  ROOT="$BASE/case-$CASE"
+  LOG="$ROOT/dashboard/logs/admission.ndjson"
+  BIN="$ROOT/bin"
+  RUN_STATUS="$ROOT/run-status"
   rm -rf "$ROOT"
   mkdir -p "$ROOT/dashboard/logs" "$BIN"
   {
@@ -27,6 +46,17 @@ setup() {
 cat "$FAKE_RUN_STATUS"
 EOF
   chmod +x "$BIN/gh"
+}
+
+wait_for() {
+  local expected="$1" cmd="$2" tries="${3:-30}" got=""
+  while [ "$tries" -gt 0 ]; do
+    got="$(eval "$cmd")"
+    [ "$got" = "$expected" ] && return 0
+    tries=$((tries - 1))
+    sleep 1
+  done
+  return 1
 }
 
 # Runs the started hook as if a job on $1 were beginning.
@@ -56,11 +86,7 @@ start_bg() {
 }
 
 end_jobs() {
-  local p
-  for p in "${JOBPIDS[@]:-}"; do
-    [ -n "$p" ] && kill "$p" 2>/dev/null
-  done
-  JOBPIDS=()
+  finish_jobs
 }
 
 complete() {
@@ -172,19 +198,32 @@ sleep 1
 ok "both jobs joined the waiter queue" \
   "$(ls -1 "$ROOT/.admission/waiters" 2>/dev/null | wc -l | tr -d ' ')" "2"
 kill "$LIVE" 2>/dev/null
-for _ in 1 2 3 4 5; do
-  [ "$(events admitted)" = "1" ] && break
-  sleep 1
-done
+wait_for "1" "events admitted" 15
 FIRST="$(grep '"event":"admitted"' "$LOG" | sed -n 's/.*"runner":"\([^"]*\)".*/\1/p' | head -1)"
 ok "oldest waiter admitted first" "$FIRST" "beta"
 complete beta
-for _ in 1 2 3 4 5; do
-  [ "$(events admitted)" = "2" ] && break
-  sleep 1
-done
+wait_for "2" "events admitted" 15
 SECOND="$(grep '"event":"admitted"' "$LOG" | sed -n 's/.*"runner":"\([^"]*\)".*/\1/p' | tail -1)"
 ok "second waiter admitted next" "$SECOND" "gamma"
+end_jobs
+
+echo "== Simulator limit does not serialize unrelated jobs =="
+setup enforce 3 30 1
+{
+  echo 'FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT=1'
+  echo 'FLEET_SIMULATOR_RUNNERS=*-ios'
+} >> "$ROOT/fleet.env"
+start_bg alpha-ios
+sleep 1
+start_bg beta-ios
+sleep 1
+ok "second Simulator job held" "$(events held)" "1"
+start backend
+ok "backend bypassed Simulator-only waiter" "$(events admitted)" "2"
+ok "one Simulator plus backend occupied two slots" "$(slots)" "2"
+complete alpha-ios
+wait_for "3" "events admitted" 15
+ok "second Simulator admitted after first released" "$(events admitted)" "3"
 end_jobs
 
 echo "== completing a job frees the slot for a waiter =="
@@ -266,7 +305,9 @@ setup enforce 2 3 1
 for r in a b c d e; do start_bg "$r"; done
 # The stand-in parents sleep, so `wait` would block on them. Two jobs are
 # admitted at once and three hold for the 3s bound.
-sleep 7
+wait_for "2" "events admitted" 10
+wait_for "3" "events held" 10
+wait_for "3" "events timeout" 15
 ok "exactly the limit admitted without waiting" "$(events admitted)" "2"
 ok "the rest were held" "$(events held)" "3"
 ok "the held ones hit the bound" "$(events timeout)" "3"
@@ -290,7 +331,7 @@ end_jobs
 echo "== a waiter is admitted as soon as a real job ends =="
 setup enforce 1 30 1
 start_bg alpha
-sleep 1
+wait_for "1" "events admitted" 10
 ok "alpha admitted" "$(events admitted)" "1"
 # End alpha's stand-in worker without running the completed hook, which is the
 # SIGKILL case: the slot is reclaimed only by the PID check.
@@ -300,6 +341,58 @@ start beta
 AFTER=$(date +%s)
 ok "beta admitted, not timed out" "$(events timeout)" "0"
 ok "beta got in promptly" "$([ $((AFTER - BEFORE)) -le 3 ] && echo prompt || echo slow)" "prompt"
+
+echo "== cancellation works via curl when gh is absent =="
+setup enforce 1 30 1
+echo "FLEET_ADMIT_CANCEL_POLL_S=1" >> "$ROOT/fleet.env"
+LIVE=$(fake_slot occupied)
+( sleep 2; echo completed > "$RUN_STATUS" ) &
+STATUS_WRITER=$!
+CURL_BIN="$ROOT/bin-curl-only"
+mkdir -p "$CURL_BIN"
+cat > "$CURL_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+cat > "$CURL_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *actions/runs/* ]]; then
+  printf '{"status":"%s"}' "$(cat "$FAKE_RUN_STATUS")"
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$CURL_BIN/gh" "$CURL_BIN/curl"
+BEFORE=$(date +%s)
+# Keep coreutils and python3 on PATH; omit Homebrew so only the fake gh/curl run.
+GITHUB_TOKEN=test-token \
+  PATH="$CURL_BIN:/usr/bin:/bin:/usr/sbin:/sbin:$(dirname "$(command -v python3)")" \
+  FLEET_ROOT="$ROOT" RUNNER_NAME=curl-runner \
+  GITHUB_REPOSITORY="acme/curl-runner" GITHUB_RUN_ID=200 GITHUB_JOB=build \
+  FAKE_RUN_STATUS="$RUN_STATUS" \
+  bash "$HOOKS/job-started.sh"
+AFTER=$(date +%s)
+wait "$STATUS_WRITER"
+kill "$LIVE" 2>/dev/null
+ok "curl cancellation event logged" "$(events cancelled)" "1"
+ok "curl path claimed no slot" \
+  "$([ -f "$ROOT/.admission/slots/curl-runner" ] && echo yes || echo no)" "no"
+ok "curl path returned promptly" \
+  "$([ $((AFTER - BEFORE)) -lt 10 ] && echo prompt || echo slow)" "prompt"
+
+echo "== enforce mode does not fail open on mutex contention =="
+setup enforce 1 30 1
+echo "FLEET_ADMIT_MUTEX_TRIES=1" >> "$ROOT/fleet.env"
+LIVE=$(fake_slot occupied)
+start_bg blocked
+wait_for "1" "events held" 10
+ok "contended mutex keeps waiting" "$(events held)" "1"
+MUTEX_BYPASS="$(grep -c 'mutex unavailable' "$LOG" 2>/dev/null)"
+ok "mutex contention did not bypass the limit" "${MUTEX_BYPASS:-0}" "0"
+ok "contended job did not claim a slot" \
+  "$([ -f "$ROOT/.admission/slots/blocked" ] && echo yes || echo no)" "no"
+kill "$LIVE" 2>/dev/null
+end_jobs
 
 echo
 echo "passed $PASS, failed $FAIL"

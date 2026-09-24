@@ -2,7 +2,7 @@
   "name": "actions-runners-docs-tools",
   "version": "0.1.0",
   "private": true,
-  "description": "Renders the documentation figures and captures the dashboard screenshots. Deliberately outside dashboard/, which has no dependencies.",
+  "description": "Renders documentation figures and screenshots, isolated from dashboard runtime dependencies.",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"

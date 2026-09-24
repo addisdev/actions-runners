@@ -66,6 +66,7 @@ cmd_install() {
     <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key><string>$HOME</string>
     <key>FLEET_PORT</key><string>$PORT</string>
+    <key>WATCH_NOTIFY</key><string>${WATCH_NOTIFY:-0}</string>
   </dict>
   <!-- KeepAlive for the same reason the dashboard sets it: a watchdog that dies
        quietly is worse than no watchdog. ThrottleInterval is 30 rather than 10

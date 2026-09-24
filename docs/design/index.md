@@ -19,11 +19,11 @@ screens, the [API reference](../api.md).
 
 <div class="grid cards" markdown>
 
--   __[Zero dependencies](zero-dependencies.md)__
+-   __[Minimal dependencies](zero-dependencies.md)__
 
     ---
 
-    A monitoring daemon that breaks unattended because a transitive dependency changed is worse than no daemon.
+    Single-host mode uses built-ins; optional HA isolates and locks its one database driver.
 
 -   __[Groups are inferred, not configured](groups.md)__
 
@@ -48,6 +48,12 @@ screens, the [API reference](../api.md).
     ---
 
     Alerts fire on transitions, only three faults have a deterministic repair, and the rest get explained rather than fixed.
+
+-   __[Dismissing alerts](dismissing.md)__
+
+    ---
+
+    A dismissal that closes the alert is a notification loop, and one that hides it stops the repair.
 
 -   __[Capacity and autoscaling](capacity.md)__
 

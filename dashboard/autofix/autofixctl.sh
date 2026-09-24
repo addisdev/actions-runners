@@ -78,6 +78,29 @@ cmd_install() {
   mkdir -p "$DASH/logs" "$HOME/Library/LaunchAgents"
   chmod +x "$HERE"/*.sh
 
+  # Operator-tunable settings reach the daemon only if they are named here.
+  # launchd does not inherit the installing shell's environment, so anything
+  # set in fleet.env and not emitted below is silently absent at runtime. That
+  # is how AUTOFIX_FIX_REPOS could be set in fleet.env, documented, and still
+  # leave AI fixes switched off, with nothing anywhere reporting the mismatch.
+  #
+  # Only variables that actually have a value are emitted, so an unset one
+  # keeps the default compiled into bridge.js instead of arriving as an empty
+  # string — which for the numeric settings would parse as 0 and turn every
+  # cooldown and cap off at once.
+  local env_extra="" v val
+  for v in AUTOFIX_DRY_RUN AUTOFIX_SWEEP_MS AUTOFIX_COOLDOWN_MS AUTOFIX_STORM \
+           AUTOFIX_ESCALATE_CAP AUTOFIX_ESCALATE_TIMEOUT_MS \
+           AUTOFIX_RERUN_MIN_WAIT_MS AUTOFIX_RERUN_COOLDOWN_MS AUTOFIX_RERUN_DAILY_CAP \
+           AUTOFIX_FIX_REPOS AUTOFIX_FIX_MIN_WAIT_MS AUTOFIX_FIX_COOLDOWN_MS \
+           AUTOFIX_FIX_DAILY_CAP AUTOFIX_FIX_TIMEOUT_MS \
+           FIX_MODEL FIX_ALLOW_BRANCH_UPDATE FIX_ARCHIVE_AGENTS; do
+    val="${!v:-}"
+    [ -n "$val" ] || continue
+    val="${val//&/&amp;}"; val="${val//</&lt;}"; val="${val//>/&gt;}"
+    env_extra="${env_extra}    <key>$v</key><string>$val</string>"$'\n'
+  done
+
   cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -96,7 +119,7 @@ cmd_install() {
     <key>HOME</key><string>$HOME</string>
     <key>AUTOFIX_PORT</key><string>$PORT</string>
     <key>FLEET_URL</key><string>http://127.0.0.1:$FLEET_PORT</string>
-  </dict>
+${env_extra}  </dict>
   <key>KeepAlive</key><true/>
   <key>RunAtLoad</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>

@@ -18,6 +18,35 @@
 // as the steady state. p90 is used instead: it covers the common bursts and
 // ignores the once-a-month fan-out, which is what the queue is for.
 
+import { queuedJobLabels } from './queue-cause.js';
+import { roleLabel } from './state.js';
+
+const PLATFORM_LABELS = new Set(['self-hosted', 'macos', 'linux', 'windows', 'x64', 'arm64']);
+
+/** @returns {string|null} */
+export function roleFromExtraLabels(extraLabels = []) {
+  return roleLabel(extraLabels ?? []) ?? null;
+}
+
+/** @returns {string|null} */
+export function roleFromJobLabels(labels = []) {
+  const extra = (labels ?? []).filter((l) => !PLATFORM_LABELS.has(String(l).toLowerCase()));
+  return roleLabel(extra) ?? null;
+}
+
+/** @param {string} repo @param {string|null} role */
+export function sizingKey(repo, role) {
+  return `${repo}\0${role ?? ''}`;
+}
+
+/** @param {string} key */
+export function parseSizingKey(key) {
+  const idx = key.indexOf('\0');
+  if (idx === -1) return { repo: key, role: null };
+  const role = key.slice(idx + 1);
+  return { repo: key.slice(0, idx), role: role || null };
+}
+
 // Concurrent demand per repo, measured from job history.
 //
 // Sampled at each job's START rather than by integrating over time. A job that
@@ -71,33 +100,58 @@ export function concurrencyByRepo(db, { days = 30 } = {}) {
 }
 
 /**
- * Desired runner count per repo.
+ * Desired runner count per repo and role.
  *
- * @returns array of { repo, have, want, delta, reason, concurrency }
+ * @returns array of { repo, role, have, want, delta, reason, concurrency }
  *   sorted worst-first, so the repo most starved of runners is at the top.
  */
-export function sizeFleet({ runners = [], active = [], concurrency = new Map(), limits = {} } = {}) {
+export function sizeFleet({ runners = [], active = [], concurrency = new Map(), limits = {}, includeUnserved = false } = {}) {
   const cap = limits.maxInstancesPerRepo ?? 4;
 
   const have = new Map();
-  for (const r of runners) have.set(r.repo, (have.get(r.repo) ?? 0) + 1);
+  const rolesByRepo = new Map();
+  for (const r of runners) {
+    const role = roleFromExtraLabels(r.extraLabels);
+    const key = sizingKey(r.repo, role);
+    have.set(key, (have.get(key) ?? 0) + 1);
+    if (!rolesByRepo.has(r.repo)) rolesByRepo.set(r.repo, new Set());
+    rolesByRepo.get(r.repo).add(role);
+  }
 
-  // Live queue, per repo. A queued run means work is waiting right now, which is
-  // evidence history cannot provide and which decays the moment it starts.
+  // Live queue, per repo and role. A queued run means work is waiting right now.
   const queued = new Map();
   for (const a of active) {
-    if (a.status === 'queued') queued.set(a.repo, (queued.get(a.repo) ?? 0) + 1);
+    if (a.status !== 'queued') continue;
+    const labels = queuedJobLabels(a);
+    const role = roleFromJobLabels(labels ?? []);
+    const key = sizingKey(a.repo, role);
+    queued.set(key, (queued.get(key) ?? 0) + 1);
+    if (!rolesByRepo.has(a.repo)) rolesByRepo.set(a.repo, new Set());
+    rolesByRepo.get(a.repo).add(role);
+  }
+
+  const reposWithRunners = new Set(runners.map((r) => r.repo));
+  const keys = new Set([...have.keys()]);
+  // Queued work for a repo that still has runners creates or enlarges a role row.
+  // Repos with no runners at all are handled only via includeUnserved below.
+  for (const key of queued.keys()) {
+    const { repo } = parseSizingKey(key);
+    if (reposWithRunners.has(repo)) keys.add(key);
   }
 
   const out = [];
-  for (const [repo, count] of have) {
+  for (const key of keys) {
+    const { repo, role } = parseSizingKey(key);
+    const count = have.get(key) ?? 0;
     const c = concurrency.get(repo) ?? { jobs: 0, peak: 0, p50: 0, p90: 0 };
-    const nowQueued = queued.get(repo) ?? 0;
+    const nowQueued = queued.get(key) ?? 0;
+    const roleCount = rolesByRepo.get(repo)?.size ?? 1;
 
-    // The larger of what history says it usually needs and what is waiting right
-    // now. History alone is blind to a repo that just started fanning out; the
-    // live queue alone is blind to a repo whose burst has not begun yet.
-    const wanted = Math.max(c.p90, count + nowQueued, 1);
+    // History is per repo, not per role. When a repo runs multiple roles the
+    // p90 is applied only if there is a single role bucket; otherwise the live
+    // queue is the honest signal for each role separately.
+    const historyWant = roleCount === 1 ? c.p90 : 0;
+    const wanted = Math.max(historyWant, count + nowQueued, 1);
     const want = Math.min(cap, wanted);
 
     let reason;
@@ -106,18 +160,18 @@ export function sizeFleet({ runners = [], active = [], concurrency = new Map(), 
         ? `p90 concurrent demand is ${c.p90} over ${c.jobs} jobs`
         : 'no measured history';
     } else if (nowQueued > 0) {
-      reason = `${nowQueued} job(s) queued right now, p90 demand ${c.p90}`;
+      reason = role
+        ? `${nowQueued} ${role} job(s) queued, p90 demand ${c.p90}`
+        : `${nowQueued} job(s) queued right now, p90 demand ${c.p90}`;
     } else {
       reason = `p90 concurrent demand is ${c.p90} over ${c.jobs} jobs`;
     }
 
-    // Called out explicitly because it is the case where this screen has nothing
-    // useful to offer and should say so, rather than showing want === cap and
-    // implying the cap is the answer.
     const capped = wanted > cap;
 
     out.push({
       repo,
+      role,
       have: count,
       want,
       delta: want - count,
@@ -125,6 +179,52 @@ export function sizeFleet({ runners = [], active = [], concurrency = new Map(), 
       reason,
       concurrency: c,
     });
+  }
+
+  // Repos with NO runner at all for any role — one row per queued role bucket.
+  if (includeUnserved) {
+    for (const [key, nowQueued] of queued) {
+      const { repo, role } = parseSizingKey(key);
+      if (reposWithRunners.has(repo)) continue;
+      const c = concurrency.get(repo) ?? { jobs: 0, peak: 0, p50: 0, p90: 0 };
+      out.push({
+        repo,
+        role,
+        have: 0,
+        want: 1,
+        delta: 1,
+        capped: false,
+        unserved: true,
+        reason: `${nowQueued} job(s) queued and no runner is registered`,
+        concurrency: c,
+      });
+    }
+  }
+
+  // maxInstancesPerRepo is a repo-wide safety limit, not a per-role allowance.
+  // Without a final allocation pass, two role rows could each request `cap`
+  // runners and quietly double the operator's configured maximum.
+  const byRepo = new Map();
+  for (const row of out) {
+    if (!byRepo.has(row.repo)) byRepo.set(row.repo, []);
+    byRepo.get(row.repo).push(row);
+  }
+  for (const rows of byRepo.values()) {
+    const totalHave = rows.reduce((sum, row) => sum + row.have, 0);
+    let additionsLeft = Math.max(0, cap - totalHave);
+    // Live deficits first; stable role ordering makes identical inputs replay.
+    rows.sort((a, b) => b.delta - a.delta || String(a.role ?? '').localeCompare(String(b.role ?? '')));
+    for (const row of rows) {
+      const requested = Math.max(0, row.delta);
+      const granted = Math.min(requested, additionsLeft);
+      if (granted < requested) {
+        row.capped = true;
+        row.reason += `; repo-wide cap ${cap} leaves room for ${granted} more in this role`;
+      }
+      row.want = row.have + granted;
+      row.delta = granted;
+      additionsLeft -= granted;
+    }
   }
 
   out.sort((a, b) => b.delta - a.delta || b.concurrency.p90 - a.concurrency.p90);
@@ -184,5 +284,5 @@ export function queueEffect(db, splits = []) {
     });
   }
   // Biggest improvement first.
-  return out.sort((a, b) => b.beforeMs - b.afterMs - (a.beforeMs - a.afterMs));
+  return out.sort((a, b) => b.beforeMs - b.beforeMs - (a.beforeMs - a.afterMs));
 }

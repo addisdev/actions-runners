@@ -85,8 +85,16 @@ while IFS= read -r script; do
   fi
 done < <(git ls-files '*.sh' '*.py' '*.mjs')
 
-# There is deliberately no check in the other direction — that every script
-# name appearing in the reference exists. The page names `teardown.sh`, which
+for required in \
+  dashboard/host-token.mjs \
+  dashboard/scripts/migrate-sqlite-to-pg.mjs \
+  dashboard/package-lock.json
+do
+  [ -f "$required" ] && ok "$required present" || fail "$required is required by documented install/HA commands"
+done
+
+# There is deliberately no broad check in the other direction — that every
+# script name appearing in the reference exists. The page names `teardown.sh`, which
 # was removed and is described as history, and `config.sh`, `svc.sh` and
 # `runsvc.sh`, which ship inside each runner directory and are never tracked
 # here. A check that has to special-case those is a check that will be silenced

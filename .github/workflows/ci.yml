@@ -22,12 +22,33 @@ jobs:
   node-tests:
     name: Node unit tests
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: fleet
+          POSTGRES_PASSWORD: fleet-test
+          POSTGRES_DB: fleet_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fleet -d fleet_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://fleet:fleet-test@127.0.0.1:5432/fleet_test
+      FLEET_DATABASE_SSL: '0'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: '22'
+
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: npm ci
 
       - name: Run tests
         working-directory: dashboard
@@ -91,6 +112,9 @@ jobs:
 
       - name: Simulator cleanup tests
         run: bash hooks/tests/simulator.sh
+
+      - name: Admission control tests
+        run: bash hooks/tests/run.sh
 
   # ---------------------------------------------------------------------------
   # Offline release check (no network, checks tracked files for private data)

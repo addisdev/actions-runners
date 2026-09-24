@@ -12,10 +12,12 @@
 //
 // Sentinels, greppable and stable: FLEET_PROBLEM / FLEET_RECOVERED /
 // FLEET_UNREACHABLE.
+import { execFile } from 'node:child_process';
 
 const BASE = process.env.FLEET_BASE ?? `http://127.0.0.1:${process.env.FLEET_PORT ?? 7878}`;
 const EVERY_MS = Number(process.env.WATCH_MS ?? 30000);
 const HEARTBEAT_EVERY = Number(process.env.WATCH_HEARTBEAT ?? 20);
+const NOTIFY = process.env.WATCH_NOTIFY === '1';
 
 // A fault must survive this many consecutive polls before it is reported.
 //
@@ -30,6 +32,15 @@ const SUSTAIN = Number(process.env.WATCH_SUSTAIN ?? 2);
 
 const stamp = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 const say = (...m) => console.log(`[${stamp()}]`, ...m);
+const notify = (title, message) => {
+  if (!NOTIFY || process.platform !== 'darwin') return;
+  const esc = (s) => String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  execFile('/usr/bin/osascript', [
+    '-e', `display notification "${esc(message).slice(0, 500)}" with title "${esc(title)}"`,
+  ], { timeout: 10000 }, (err) => {
+    if (err) say('watch notification failed:', err.message);
+  });
+};
 
 async function grab(path) {
   const res = await fetch(`${BASE}${path}`, { signal: AbortSignal.timeout(10000) });
@@ -46,12 +57,17 @@ async function probe() {
   if (health.ok !== true) faults.push('collector-not-ok');
   if (health.lastError) faults.push(`collector-error: ${health.lastError}`);
   if (health.drift > 0) faults.push(`drift x${health.drift}`);
-  for (const a of alerts.open ?? []) faults.push(`${a.rule}: ${a.title}`);
+  // Dismissed conditions stay in `open` so the bridge keeps repairing them, but
+  // a watcher exists to shout — reporting something the operator has already
+  // waved away would make the signature change on a decision rather than on a
+  // fault, which is the opposite of what it is for.
+  const audible = (alerts.open ?? []).filter((a) => !a.dismissed_at);
+  for (const a of audible) faults.push(`${a.rule}: ${a.title}`);
   return {
     sig: faults.sort().join(' | '),
     runners: health.runners,
     drift: health.drift,
-    open: (alerts.open ?? []).length,
+    open: audible.length,
   };
 }
 
@@ -75,6 +91,7 @@ async function tick() {
     pendingFor = 0;
     if (reported !== '' && reported !== null) {
       say('FLEET_RECOVERED — all clear:', `${snap.runners} runners, 0 drift, 0 open alerts`);
+      notify('Runner fleet recovered', `${snap.runners} runners; all clear`);
       quietPolls = 0;
     } else if (reported === null) {
       say(`watch started — healthy: ${snap.runners} runners, 0 drift, 0 open alerts`);
@@ -91,6 +108,7 @@ async function tick() {
       const tag = snap.unreachable ? 'FLEET_UNREACHABLE' : 'FLEET_PROBLEM';
       const where = snap.unreachable ? '' : ` (${snap.open} open alert(s), drift ${snap.drift})`;
       say(`${tag}${where}:`, snap.sig, `[sustained ${pendingFor} polls]`);
+      notify(snap.unreachable ? 'Runner fleet unreachable' : 'Runner fleet problem', snap.sig);
       reported = snap.sig;
       pending = null;
       pendingFor = 0;

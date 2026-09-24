@@ -25,7 +25,7 @@ ADMIT_STATE="$ROOT/.admission"
 ADMIT_SLOTS="$ADMIT_STATE/slots"
 ADMIT_WAITERS="$ADMIT_STATE/waiters"
 ADMIT_MUTEX="$ADMIT_STATE/mutex"
-ADMIT_LOG="$ROOT/dashboard/logs/admission.ndjson"
+ADMIT_LOG="${FLEET_ADMISSION_LOG:-$ROOT/dashboard/logs/admission.ndjson}"
 
 # fleet.env is sourced the same way the other scripts source it, so a value set
 # there applies to the hooks too. The hooks run inside a job's environment,
@@ -63,6 +63,13 @@ esac
 ADMIT_MAX="$(admit_int "${FLEET_ADMIT_MAX_CONCURRENT:-}" 3)"
 [ "$ADMIT_MAX" -lt 1 ] && ADMIT_MAX=1
 
+# A host-wide count is too blunt for Apple builds: two ordinary jobs can share
+# this host, while two Simulator jobs can starve CoreSimulator's launch
+# watchdogs and surface crash dialogs on the interactive desktop. When enabled,
+# this second limit applies only to runner names selected by
+# FLEET_SIMULATOR_RUNNERS. Zero keeps the extra limit disabled.
+ADMIT_SIMULATOR_MAX="$(admit_int "${FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT:-}" 0)"
+
 # A held job is burning its own timeout-minutes while it waits, so an unbounded
 # hold converts a queue into a failed build. After this long the job is admitted
 # regardless and the wait is logged — the fleet is better off with a slow build
@@ -96,6 +103,13 @@ ADMIT_MIN_DISK_GB="$(admit_int "${FLEET_ADMIT_MIN_FREE_DISK_GB:-}" 40)"
 ADMIT_POLL="$(admit_int "${FLEET_ADMIT_POLL_S:-}" 5)"
 [ "$ADMIT_POLL" -lt 1 ] && ADMIT_POLL=1
 
+# Short mutex spin per wait-loop iteration. The enforce loop retries every
+# ADMIT_POLL seconds, so a long single lock attempt would stall timeout and
+# cancellation checks — five concurrent hooks each spinning 10 s once made the
+# bounded wait lie about elapsed time and occasionally fail open.
+ADMIT_MUTEX_TRIES="$(admit_int "${FLEET_ADMIT_MUTEX_TRIES:-}" 50)"
+[ "$ADMIT_MUTEX_TRIES" -lt 1 ] && ADMIT_MUTEX_TRIES=1
+
 # Six hours, which was GitHub's own default job ceiling. A slot older than this
 # belongs to a job that cannot still be running, even if a PID happens to be
 # live after a reboot recycled the number.
@@ -116,6 +130,27 @@ admit_key() {
 }
 
 admit_now() { date +%s; }
+
+admit_runner_matches() {
+  local runner="$1" selected pattern
+  local -a patterns
+  selected="${FLEET_SIMULATOR_RUNNERS:-}"
+  selected="${selected//,/ }"
+  read -r -a patterns <<< "$selected"
+  for pattern in "${patterns[@]}"; do
+    # Entries are shell patterns, matching simulator-control.sh.
+    # shellcheck disable=SC2254
+    case "$runner" in
+      $pattern) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+admit_is_simulator_job() {
+  [ "$ADMIT_SIMULATOR_MAX" -gt 0 ] \
+    && admit_runner_matches "${RUNNER_NAME:-}"
+}
 
 # Minimal JSON string escaping: backslash, double quote, and control characters,
 # which is the whole set that can appear in a workflow or job name and break a
@@ -159,9 +194,10 @@ admit_log() {
 # needs no dependency beyond coreutils behaviour that has been stable for
 # decades.
 #
-# Returns non-zero rather than waiting forever if the mutex cannot be taken.
-# Every caller treats that as "proceed without counting", because a contended
-# mutex must not be the thing that stops CI.
+# Returns non-zero when the mutex cannot be taken within ADMIT_MUTEX_TRIES.
+# Enforce mode retries on the next poll tick instead of bypassing the limit;
+# observe mode may still claim a slot without the lock so dry-run counts stay
+# useful under burst contention.
 admit_lock() {
   local tries=0 holder
   mkdir -p "$ADMIT_STATE" 2>/dev/null || return 1
@@ -182,8 +218,8 @@ admit_lock() {
       fi
     fi
     tries=$((tries + 1))
-    [ "$tries" -ge 100 ] && return 1
-    sleep 0.1
+    [ "$tries" -ge "$ADMIT_MUTEX_TRIES" ] && return 1
+    sleep 0.05
   done
   printf '%s' "$$" > "$ADMIT_MUTEX/pid" 2>/dev/null || true
   return 0
@@ -221,6 +257,18 @@ admit_live_slots() {
       continue
     fi
     n=$((n + 1))
+  done
+  printf '%s' "$n"
+}
+
+admit_live_simulator_slots() {
+  local n=0 f runner
+  [ "$ADMIT_SIMULATOR_MAX" -gt 0 ] || { printf '0'; return 0; }
+  for f in "$ADMIT_SLOTS"/*; do
+    [ -f "$f" ] || continue
+    runner="$(sed -n 's/^runner=//p' "$f" 2>/dev/null | head -1)"
+    [ -n "$runner" ] || runner="$(basename "$f")"
+    admit_runner_matches "$runner" && n=$((n + 1))
   done
   printf '%s' "$n"
 }
@@ -268,8 +316,9 @@ admit_claim_slot() {
   local key="$1"
   mkdir -p "$ADMIT_SLOTS" 2>/dev/null || return 1
   admit_resolve_owner
-  printf 'pid=%s\nowner=%s\nts=%s\nrepo=%s\nrun=%s\njob=%s\n' \
+  printf 'pid=%s\nowner=%s\nts=%s\nrunner=%s\nrepo=%s\nrun=%s\njob=%s\n' \
     "$ADMIT_OWNER_PID" "$ADMIT_OWNER_KIND" "$(admit_now)" \
+    "${RUNNER_NAME:-}" \
     "${GITHUB_REPOSITORY:-}" "${GITHUB_RUN_ID:-}" "${GITHUB_JOB:-}" \
     > "$ADMIT_SLOTS/$key" 2>/dev/null || return 1
   return 0
@@ -313,12 +362,20 @@ admit_reap_waiters() {
   done
 }
 
-admit_waiter_is_first() {
-  local f first=""
+admit_waiter_is_first_eligible() {
+  local simulator_busy="$1" f first="" runner
   [ -n "$ADMIT_WAITER" ] || return 1
   admit_reap_waiters
   for f in "$ADMIT_WAITERS"/*; do
     [ -f "$f" ] || continue
+    runner="$(sed -n 's/^runner=//p' "$f" 2>/dev/null | head -1)"
+    if [ "$ADMIT_SIMULATOR_MAX" -gt 0 ] \
+      && admit_runner_matches "$runner" \
+      && [ "$simulator_busy" -ge "$ADMIT_SIMULATOR_MAX" ]; then
+      # Do not let a Simulator job waiting on the Simulator-specific limit
+      # block an unrelated job from using otherwise-free host capacity.
+      continue
+    fi
     if [ -z "$first" ] || [ "$(basename "$f")" \< "$(basename "$first")" ]; then
       first="$f"
     fi
@@ -326,14 +383,37 @@ admit_waiter_is_first() {
   [ "$first" = "$ADMIT_WAITER" ]
 }
 
+# Returns the GitHub Actions run status string, or empty when unknown.
+# gh is preferred; curl + GITHUB_TOKEN/GH_TOKEN is the fallback because the
+# hook environment is not guaranteed to ship the CLI even though the token is.
+admit_run_status() {
+  local status repo="${GITHUB_REPOSITORY:-}" run_id="${GITHUB_RUN_ID:-}"
+  [ -n "$repo" ] && [ -n "$run_id" ] || return 1
+  if command -v gh >/dev/null 2>&1; then
+    status="$(gh api "repos/${repo}/actions/runs/${run_id}" --jq .status 2>/dev/null)"
+    if [ -n "$status" ]; then
+      printf '%s' "$status"
+      return 0
+    fi
+  fi
+  local token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+  command -v curl >/dev/null 2>&1 && [ -n "$token" ] || return 1
+  status="$(curl -fsSL \
+    -H "Authorization: Bearer ${token}" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "https://api.github.com/repos/${repo}/actions/runs/${run_id}" 2>/dev/null \
+    | python3 -c 'import json,sys
+try:
+  print(json.load(sys.stdin).get("status","") or "")
+except Exception:
+  pass' 2>/dev/null)"
+  [ -n "$status" ] && printf '%s' "$status"
+  return 0
+}
+
 admit_run_completed() {
-  local status
-  [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ] || return 1
-  command -v gh >/dev/null 2>&1 || return 1
-  status="$(gh api \
-    "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
-    --jq .status 2>/dev/null)"
-  [ "$status" = "completed" ]
+  [ "$(admit_run_status)" = "completed" ]
 }
 
 admit_free_disk_gb() {

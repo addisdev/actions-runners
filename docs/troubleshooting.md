@@ -37,6 +37,14 @@ does not restart it. This can be an OOM kill (check `log show --last 1h --predic
 ./health.sh --repair    # restarts dead services
 ```
 
+On a production host, install automatic repair so the next silent death closes
+without manual intervention:
+
+```bash
+./healthctl.sh install
+./healthctl.sh logs     # confirm sweeps are running
+```
+
 If it keeps dying:
 ```bash
 # Check the runner log for the crash reason:
@@ -53,7 +61,8 @@ tail -200 ~/actions-runners/project-ios/_diag/Runner_<newest>.log
 1. Open the Fleet tab → find the repo → check the runner status badge.
 2. If `drained`: use the Resume button in the drawer, or
    `scripts/drain-runner.sh project-ios --resume`.
-3. If `dead`: `./health.sh --repair`.
+3. If `dead`: `./health.sh --repair` (or install `./healthctl.sh` so this
+   happens automatically).
 4. If `offline`: re-register (see above).
 5. If `online` but jobs still queue → check the **Lint** tab for a label
    mismatch: the workflow may require a label the runner does not have.

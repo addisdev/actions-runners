@@ -1,10 +1,9 @@
 # Documentation tools
 
 Everything that produces an image in `docs/img/`. It lives here, and not in
-`dashboard/`, because `dashboard/package.json` having **no dependencies** is a
-design principle of the daemon and a claim on the front page — a docs
-screenshot rig is not a reason to break it. Nothing here is needed to run a
-fleet, and CI never installs it.
+`dashboard/`, because the daemon keeps dependencies minimal and runtime-focused;
+a docs screenshot rig is not a reason to enlarge them. Nothing here is needed
+to run a fleet, and CI never installs it.
 
 ```bash
 cd docs/tools && npm install

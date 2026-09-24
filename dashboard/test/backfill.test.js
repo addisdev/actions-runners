@@ -114,6 +114,30 @@ describe('job detail phase', () => {
 });
 
 describe('cause phase', () => {
+  test('timed_out jobs are selected for failure classification', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'backfill-timeout-'));
+    dirs.push(dir);
+    const db = openDb(join(dir, 'test.db'));
+    db.prepare(
+      `INSERT INTO jobs (id, run_id, repo, conclusion, started_at) VALUES (?,?,?,?,?)`,
+    ).run(5001, 1, 'testowner/app', 'timed_out', '2026-01-01T00:00:00Z');
+
+    const calls = { annotations: 0 };
+    const gh = {
+      rate: { remaining: 5000 },
+      failureAnnotations: async () => { calls.annotations++; return ['The job was cancelled']; },
+    };
+    const backfill = new Backfill({ db, gh, log: () => {}, warn: () => {} });
+    const persistRun = () => {};
+    const persistJob = () => {};
+
+    await backfill.pass(['testowner/app'], { persistRun, persistJob, maxCalls: 10 });
+
+    assert.equal(calls.annotations, 1, 'timed_out job gets cause lookup');
+    const row = db.prepare('SELECT failure_class FROM jobs WHERE id = 5001').get();
+    assert.ok(row?.failure_class, 'timed_out job is classified');
+  });
+
   // The symptom that made the livelock visible in the log: "0 causes
   // classified" pass after pass, while the failure backlog only grew.
   test('empty runs do not starve cause classification of budget', async () => {

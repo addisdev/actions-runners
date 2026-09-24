@@ -153,3 +153,21 @@ coordinator never initiates a connection to agents; commands flow back via the
 polling response to the agent's heartbeat.
 
 See [Federation](federation.md) for the operational details.
+
+## Two-replica control plane
+
+The optional PostgreSQL HA mode changes the physical deployment without
+creating two logical coordinators. Both Macs run runner listeners and `fleetd`;
+PostgreSQL advisory locking elects one fleet leader. These Macs do not also run
+`agent.js`: their local `fleetd` process already reports host state and consumes
+commands for its stable replica ID.
+
+The leader alone runs GitHub collection, autoscaling, backfill, placement, and
+alert reconciliation. The standby serves the leader's shared snapshot, records
+host heartbeats, queues host-directed commands, and continuously competes for
+the lock. Both replicas report their own host state and execute commands
+addressed to their stable `FLEET_REPLICA_ID`.
+
+If the leader process or its PostgreSQL session disappears, the lock is
+released and the standby promotes. Existing builds are independent of this
+process and continue even if both dashboard replicas or PostgreSQL are down.

@@ -235,7 +235,7 @@ dashboard stays on loopback on the host; the tunnel carries only your session.
 - [Concepts](concepts.md) — what a runner, a fleet root and drift actually are
 - [The dashboard](dashboard.md) — what each tab answers
 - [Configure your workflows](workflows.md) — labels, caching and concurrency
-- [Set up maintenance schedules](operations.md#scheduled-maintenance) for
-  health checks and cleanup
+- [Set up maintenance schedules](operations.md#scheduled-maintenance) —
+  `./healthctl.sh install` for automatic health repair, plus weekly cleanup
 - [Security deployment models](security-hardening.md) — read this before
   putting the dashboard on a LAN
