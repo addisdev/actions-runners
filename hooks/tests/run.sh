@@ -336,27 +336,26 @@ ok "the held ones hit the bound" "$(events timeout)" "3"
 ok "owner pid on every event that took a slot" "$(grep -c '"owner_pid":"[0-9][0-9]*"' "$LOG")" "5"
 ok "no owner on a hold, which claims nothing" \
   "$(grep '"event":"held"' "$LOG" | grep -c '"owner_pid":""')" "3"
-# This harness has no Runner.Worker in the tree, so every owner resolves through
-# the fallback path. That the fallback is exercised at all is the point: it is
-# the branch that keeps admission working on an unexpected process shape.
-ok "owner kind recorded wherever there is an owner" "$(grep -c '"owner_kind":"fallback"' "$LOG")" "5"
+# A local invocation takes the fallback path. In GitHub-hosted CI the harness
+# itself is legitimately below Runner.Worker, so either kind is correct; every
+# claimed slot must still record which branch was used.
+ok "owner kind recorded wherever there is an owner" \
+  "$(grep -Ec '"owner_kind":"(worker|fallback)"' "$LOG")" "5"
 if [ "$(events admitted)" != "2" ]; then
   echo "  --- log for the failing case ---"
   sed 's/^/  /' "$LOG"
 fi
 end_jobs
 
-echo "== a waiter is admitted as soon as a real job ends =="
+echo "== a waiter is admitted as soon as a live slot owner dies =="
 setup enforce 1 30 1
-start_bg alpha
-wait_for "1" "events admitted" 10
-ok "alpha admitted" "$(events admitted)" "1"
-# End alpha's stand-in worker without running the completed hook, which is the
-# SIGKILL case: the slot is reclaimed only by the PID check.
-end_jobs
+LIVE=$(fake_slot alpha)
+( sleep 2; kill "$LIVE" 2>/dev/null ) &
+RELEASER=$!
 BEFORE=$(date +%s)
 start beta
 AFTER=$(date +%s)
+wait "$RELEASER" 2>/dev/null
 ok "beta admitted, not timed out" "$(events timeout)" "0"
 ok "beta got in promptly" "$([ $((AFTER - BEFORE)) -le 3 ] && echo prompt || echo slow)" "prompt"
 
