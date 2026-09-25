@@ -99,10 +99,12 @@ fi
 
 # enforce
 WAITED=0
+ADMIT_WAIT_START="$(admit_now)"
 ANNOUNCED=0
 TIMEOUT_ANNOUNCED=0
 LAST_CANCEL_CHECK=-1
 while :; do
+  WAITED=$(($(admit_now) - ADMIT_WAIT_START))
   BUSY=0
   SIMULATOR_BUSY=0
   STRICT_LIMIT=0
@@ -126,12 +128,10 @@ while :; do
     fi
     admit_unlock
   else
-    # Lock contention is not a reason to stop CI. The count may be off by one
-    # for a moment; a build blocked by a mutex would be off by a lot more.
-    admit_leave_waiters
-    admit_claim_slot "$KEY"
-    admit_log admitted 'mutex unavailable, admitted without counting' "$WAITED" 0
-    exit 0
+    # Mutex contended — retry on the next poll tick. Enforce mode keeps the
+    # host limit strict; skipping the count here was the source of bursts past
+    # FLEET_ADMIT_MAX_CONCURRENT under simultaneous job starts.
+    :
   fi
 
   # Runner.Worker does not reliably interrupt a hook that is sleeping when its
@@ -181,5 +181,4 @@ while :; do
   fi
 
   sleep "$ADMIT_POLL"
-  WAITED=$((WAITED + ADMIT_POLL))
 done

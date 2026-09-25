@@ -21,6 +21,9 @@
 # asks gh: who are you, and what are your repos called. Anything it finds in
 # tracked content is reported with a file and line.
 set -uo pipefail
+# macOS sed treats arbitrary tracked bytes as locale text and aborts on image
+# data under UTF-8 locales. Byte-oriented matching is what this scrub wants.
+export LC_ALL=C
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"

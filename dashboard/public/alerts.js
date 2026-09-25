@@ -1,6 +1,7 @@
 // The alerts view: what is open now, and what has fired recently.
 
 import { chartEl as h } from './charts.js';
+import { authHeaders } from './control.js';
 
 const mount = (el, ...kids) =>
   el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
@@ -42,10 +43,36 @@ export async function loadAlerts() {
 // old — a freshness indicator lying about the thing directly beneath it. The
 // snapshot already carries the open count, so a mismatch is the cue to refetch:
 // exactly when something changed, and never otherwise.
+// Both sides count what is still speaking. Comparing the snapshot's audible
+// count against every open row would differ by the number of dismissed ones and
+// refetch on a loop for as long as any dismissal existed.
 function refetchIfCountMoved() {
   if (loading || !data) return;
   const open = getSnapshot()?.collector?.alerts?.open;
-  if (open != null && open !== (data.open?.length ?? 0)) loadAlerts();
+  const shown = data.counts?.open ?? (data.open ?? []).filter((a) => !a.dismissed_at).length;
+  if (open != null && open !== shown) loadAlerts();
+}
+
+// One click, and one to put it back. No confirmation, no reason prompt and no
+// token: the daemon takes this from the local machine unauthenticated, because
+// it changes what this page tells you rather than anything about the fleet.
+//
+// `authHeaders()` is still sent for the case where someone has bound the
+// dashboard to a LAN address, where the token does apply. It is empty when no
+// token has been pasted, which on loopback is the normal state and is fine.
+async function post(path, key) {
+  try {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ key }),
+    });
+    const parsed = await res.json();
+    if (!parsed.ok) throw new Error(parsed.error ?? `HTTP ${res.status}`);
+    await loadAlerts();
+  } catch (err) {
+    window.alert(`That did not work: ${err.message}`);
+  }
 }
 
 export function render() {
@@ -60,7 +87,9 @@ export function render() {
       h('div', { class: 'empty', text: 'Alerting is disabled (FLEET_ALERTS=0).' }));
   }
 
-  const open = data.open ?? [];
+  const allOpen = data.open ?? [];
+  const open = allOpen.filter((a) => !a.dismissed_at);
+  const dismissed = allOpen.filter((a) => a.dismissed_at);
   const channels = data.channels ?? {};
 
   const channelLine =
@@ -70,22 +99,64 @@ export function render() {
 
   const head = h('div', { class: 'section-head' },
     h('h2', { text: 'Alerts' }),
-    h('span', { class: 'count', text: open.length ? `${open.length} open` : 'nothing open' })
+    h('span', { class: 'count', text:
+      [open.length ? `${open.length} open` : 'nothing open',
+        dismissed.length ? `${dismissed.length} dismissed` : null].filter(Boolean).join(' · ') })
   );
 
   const openPanel = open.length
     ? h('div', { class: 'drift-list' },
         open.map((a) =>
-          h('div', { class: `drift-item ${a.severity}` },
+          h('div', { class: `drift-item actionable ${a.severity}` },
             h('span', { class: 'drift-sev', text: a.severity }),
             h('span', { class: 'drift-subject', text: `${ago(a.opened_at)} ago` }),
             h('span', { class: 'drift-detail' }, a.title,
-              a.body ? h('span', { class: 'drift-hint', text: a.body }) : null)
+              a.body ? h('span', { class: 'drift-hint', text: a.body }) : null),
+            h('button', {
+              class: 'row-x', text: '×', title: 'Dismiss — stops it notifying until it clears',
+              'aria-label': `Dismiss ${a.title}`,
+              onclick: () => post('/api/alerts/dismiss', a.key),
+            })
           )
         )
       )
+    // The old copy said silence here meant every condition was clear. That is
+    // only true when nothing is dismissed, and a page that looks clear while
+    // four conditions are hidden is the lie this feature has to avoid — so say
+    // which of the two it is.
     : h('div', { class: 'all-clear' }, h('b', { text: '✓' }),
-        ' Nothing is open. Alerts fire on transitions, so silence here means every condition is clear.');
+        dismissed.length
+          ? ` Nothing is speaking. ${dismissed.length} condition${dismissed.length === 1 ? ' is' : 's are'} `
+            + 'still open and dismissed, below.'
+          : ' Nothing is open. Alerts fire on transitions, so silence here means every condition is clear.');
+
+  // Dismissed conditions are always listed, never merely absent. There is no
+  // expiry to reassure anyone with, so being permanently visible is the only
+  // thing standing between a dismissal and a fault hidden for ever.
+  const dismissedPanel = dismissed.length
+    ? h('div', { class: 'panel' },
+        h('div', { class: 'panel-head' }, h('h3', { text: 'Dismissed' }),
+          h('span', { class: 'count', text: `${dismissed.length} still open` })),
+        h('div', { class: 'panel-sub', text:
+          'Not notifying, but still open and still being repaired by autofix. Each one comes back on its own '
+          + 'if the condition clears and then happens again.' }),
+        h('div', { class: 'drift-list' },
+          dismissed.map((a) =>
+            h('div', { class: 'drift-item actionable dismissed' },
+              h('span', { class: 'drift-sev', text: a.severity }),
+              h('span', { class: 'drift-subject', text: `${ago(a.opened_at)} ago` }),
+              h('span', { class: 'drift-detail' }, a.title,
+                h('span', { class: 'drift-hint', text: `Dismissed ${ago(a.dismissed_at)} ago` })),
+              h('button', {
+                class: 'row-x', text: '↩', title: 'Undo — start notifying again',
+                'aria-label': `Restore ${a.title}`,
+                onclick: () => post('/api/alerts/restore', a.key),
+              })
+            )
+          )
+        )
+      )
+    : null;
 
   const recent = (data.recent ?? []).filter((r) => r.closed_at);
   const history = recent.length
@@ -121,6 +192,7 @@ export function render() {
         'either — macOS never reclaims swap, so that number only ever climbs.' })
     ),
     openPanel,
+    dismissedPanel,
     history
   );
 }

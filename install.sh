@@ -45,8 +45,8 @@ check_macos() {
     exit 1
   fi
   local maj; maj="$(sw_vers -productVersion | cut -d. -f1)"
-  if [[ "$maj" -lt 13 ]]; then
-    fail "macOS 13 (Ventura) or later required (found: $(sw_vers -productVersion))"
+  if [[ "$maj" -lt 14 ]]; then
+    fail "macOS 14 (Sonoma) or later required (found: $(sw_vers -productVersion))"
     exit 1
   fi
   ok "macOS $(sw_vers -productVersion)"
@@ -67,9 +67,12 @@ check_node() {
     exit 1
   fi
   local version; version="$(node --version)"
-  local major; major="${version#v}"; major="${major%%.*}"
-  if [[ "$major" -lt 20 ]]; then
-    fail "Node.js 20+ required (found: $version)"
+  local normalized="${version#v}"
+  local major="${normalized%%.*}"
+  local rest="${normalized#*.}"
+  local minor="${rest%%.*}"
+  if [[ "$major" -lt 22 || ( "$major" -eq 22 && "$minor" -lt 5 ) ]]; then
+    fail "Node.js 22.5+ required (found: $version)"
     exit 1
   fi
   ok "Node.js $version at $(command -v node)"
@@ -108,7 +111,7 @@ check_fleet_env() {
       echo "     Copying examples/fleet.env.federated-agent — edit it before installing."
       cp "$HERE/examples/fleet.env.federated-agent" "$HERE/fleet.env"
       echo ""
-      echo "  Required: FLEET_COORDINATOR, FLEET_AGENT_TOKEN, FLEET_HOST_NAME"
+      echo "  Required: FLEET_COORDINATOR or FLEET_COORDINATORS, plus FLEET_AGENT_TOKEN and FLEET_HOST_NAME"
       echo "  Then re-run: ./install.sh agent"
       exit 1
     fi
@@ -119,7 +122,8 @@ check_fleet_env() {
 
 check_required_agent() {
   local missing=0
-  [[ -z "${FLEET_COORDINATOR:-}" ]] && { fail "FLEET_COORDINATOR not set in fleet.env"; missing=1; }
+  [[ -z "${FLEET_COORDINATOR:-}" && -z "${FLEET_COORDINATORS:-}" ]] \
+    && { fail "FLEET_COORDINATOR or FLEET_COORDINATORS not set in fleet.env"; missing=1; }
   [[ -z "${FLEET_AGENT_TOKEN:-}" ]] && { fail "FLEET_AGENT_TOKEN not set in fleet.env"; missing=1; }
   [[ -z "${FLEET_HOST_NAME:-}" ]]  && { fail "FLEET_HOST_NAME not set in fleet.env"; missing=1; }
   if [[ "$missing" -ne 0 ]]; then
@@ -127,17 +131,8 @@ check_required_agent() {
     echo "  Set the missing variables in $HERE/fleet.env and re-run."
     exit 1
   fi
-  ok "FLEET_COORDINATOR=${FLEET_COORDINATOR}"
+  ok "coordinator(s)=${FLEET_COORDINATORS:-${FLEET_COORDINATOR}}"
   ok "FLEET_HOST_NAME=${FLEET_HOST_NAME}"
-}
-
-install_npm_deps() {
-  if [[ ! -d "$DASHBOARD/node_modules" ]]; then
-    header "Installing npm dependencies"
-    (cd "$DASHBOARD" && npm install --omit=dev)
-  else
-    ok "npm dependencies already installed"
-  fi
 }
 
 # ---- roles -------------------------------------------------------------------
@@ -150,9 +145,6 @@ do_coordinator() {
   check_git
   check_gh
   check_fleet_env
-
-  header "Dependencies"
-  install_npm_deps
 
   header "Installing coordinator daemon"
   "$DASHBOARD/fleetctl.sh" install
@@ -178,9 +170,6 @@ do_agent() {
   check_git
   check_fleet_env
   check_required_agent
-
-  header "Dependencies"
-  install_npm_deps
 
   header "Installing agent daemon"
   "$DASHBOARD/agentctl.sh" install

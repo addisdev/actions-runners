@@ -3,6 +3,32 @@
 This file documents the third-party software bundled in this repository, its
 license, and any known telemetry or network behaviour.
 
+## `pg` — optional PostgreSQL HA driver
+
+| Field | Value |
+|---|---|
+| Location | `dashboard/package.json` and `dashboard/package-lock.json` |
+| Purpose | Shared state and leader election for optional two-replica HA |
+| License | MIT; `pg-int8` and `split2` transitive packages use ISC |
+| Network behaviour | Connects only to the operator-configured `FLEET_DATABASE_URL` |
+
+Single-host mode dynamically avoids loading this package. `fleetctl.sh install`
+uses the committed lockfile when PostgreSQL HA is configured. The complete,
+pinned transitive dependency list and integrity hashes are in
+`dashboard/package-lock.json`.
+
+## Nayuki QR Code generator
+
+| Field | Value |
+|---|---|
+| Location | `dashboard/public/vendor/qrcodegen.js` |
+| Purpose | Render device-pairing QR codes locally in the dashboard |
+| License | MIT |
+| Network behaviour | None |
+
+The copyright and complete MIT license text are retained at the top of the
+vendored source file.
+
 ## `dashboard/autofix/escalate/` — AI escalation bridge
 
 | Field | Value |
@@ -100,6 +126,6 @@ loads no font at all.
 | `mkdocs-material`, `mkdocs-redirects` | BSD 2-Clause and MIT; pinned in `requirements-docs.txt` |
 | `playwright` | Apache 2.0; a devDependency of `docs/tools/` only |
 
-None of these is bundled, and none is needed to run a fleet. `dashboard/` still
-has **no dependencies** — that is why the figure and screenshot rig lives in
-`docs/tools/` behind its own `package.json` rather than beside the daemon.
+None of these is bundled, and none is needed to run a fleet. The documentation
+toolchain remains isolated in `docs/tools/` rather than adding browser tooling
+to the dashboard runtime.

@@ -121,26 +121,70 @@ export async function addRunner(runnerName) {
   return forced;
 }
 
+async function registerRoleRunner(row) {
+  const current = getSnapshot() ?? {};
+  const siblings = (current.runners ?? []).filter((r) => r.repo === row.repo);
+  const instance = siblings.length
+    ? Math.max(...siblings.map((r) => Number(r.instance ?? 1))) + 1
+    : 1;
+  const platform = new Set(['self-hosted', 'macos', 'linux', 'windows', 'x64', 'arm64']);
+  const queued = (current.queue ?? []).find((q) =>
+    q.repo === row.repo && (!row.role || (q.labels ?? []).includes(row.role))
+  );
+  const labels = queued
+    ? (queued.labels ?? []).filter((label) => !platform.has(String(label).toLowerCase()))
+    : (row.role ? [row.role] : []);
+  const args = { repo: row.repo, label: labels, instance };
+  const first = await control.confirmAct('runner.register', args);
+  if (!first) return null;
+  if (first.ok) {
+    alert('Added.\n\n' + (first.output || ''));
+    return first;
+  }
+  const refusal = first.error || first.output || 'unknown error';
+  if (first.status !== 409 || !window.confirm(`${refusal}\n\nAdd it anyway?`)) {
+    alert('Failed: ' + refusal);
+    return first;
+  }
+  const forced = await control.act('runner.register', { ...args, force: true });
+  alert(forced.ok ? 'Added.\n\n' + (forced.output || '') : 'Failed: ' + (forced.error || forced.output));
+  return forced;
+}
+
 // ------------------------------------------------------------------- panels
 
-function headroomPanel(s) {
-  const cap = s.capacity ?? {};
-  const ok = cap.ok;
-  return h('div', { class: 'panel' },
-    h('div', { class: 'section-head' },
-      h('h2', { text: 'Headroom' }),
+function headroomBlock(title, cap, { note } = {}) {
+  const ok = cap?.ok;
+  return h('div', { class: 'headroom-block' },
+    h('div', { class: 'headroom-head' },
+      h('h3', { text: title }),
       h('span', { class: `count ${ok ? '' : 'warn'}`, text: ok ? 'room to add a runner' : 'not now' })
     ),
     ok
       ? h('div', { class: 'all-clear' }, h('b', { text: '✓' }),
-          ` ${cap.busy ?? 0} job(s) running, under the limit of ${cap.ceiling}.`)
-      : h('ul', { class: 'reasons' }, (cap.reasons ?? []).map((r) => h('li', { text: r }))),
-    // Said plainly because the numbers above invite the opposite reading, and
-    // acting on that misreading is how a fleet gets a load average of 760.
-    //
-    // Conditional on admission control actually enforcing: once it is, the flat
-    // claim is no longer true, and a screen that kept saying it would be
-    // teaching the operator something false about their own fleet.
+          ` ${cap.busy ?? 0} job(s) running, under the limit of ${cap.ceiling ?? '?'}.`)
+      : h('ul', { class: 'reasons' }, (cap?.reasons ?? ['no headroom']).map((r) => h('li', { text: r }))),
+    note ? h('p', { class: 'note muted', text: note }) : null
+  );
+}
+
+function headroomPanel(s) {
+  const local = s.capacity ?? {};
+  const fleet = s.fleetCapacity ?? local;
+  const federated = Boolean(s.federation?.enabled);
+  return h('div', { class: 'panel' },
+    h('div', { class: 'section-head' },
+      h('h2', { text: 'Headroom' }),
+      h('span', { class: 'count', text: federated ? 'local and fleet' : 'this host' })
+    ),
+    headroomBlock('This host', local),
+    federated
+      ? headroomBlock('Fleet-wide', fleet, {
+          note: fleet.ok
+            ? 'At least one live, undrained host can accept another runner — autoscale may place on an agent.'
+            : 'No connected host currently has headroom. Scale-up waits until load drops or a stale host returns.',
+        })
+      : null,
     (s.admission?.mode === 'enforce')
       ? h('p', { class: 'note', text:
           'This gate only governs ADDING runners. Jobs that are already running are ' +
@@ -272,8 +316,8 @@ function admissionPanel(s) {
           h('h4', { text: `Waiting now (${waiting.length})` }),
           h('table', { class: 'grid' },
             h('thead', {}, h('tr', {},
-              h('th', { text: 'runner' }), h('th', { text: 'repo' }),
-              h('th', { text: 'waiting' }), h('th', { text: 'why' })
+              h('th', { scope: 'col', text: 'runner' }), h('th', { scope: 'col', text: 'repo' }),
+              h('th', { scope: 'col', text: 'waiting' }), h('th', { scope: 'col', text: 'why' })
             )),
             h('tbody', {}, waiting.map((w) =>
               h('tr', { class: 'is-warn' },
@@ -298,6 +342,9 @@ function admissionPanel(s) {
 function autoscalePanel(s) {
   const a = s.autoscale ?? {};
   const state = !a.enabled ? 'off' : a.dryRun ? 'dry run' : 'live';
+  const mode = a.mode ?? 'none';
+  const deficit = a.deficit ?? 0;
+  const host = a.host ?? '–';
   return h('div', { class: 'panel' },
     h('div', { class: 'section-head' },
       h('h2', { text: 'Autoscaler' }),
@@ -308,6 +355,12 @@ function autoscalePanel(s) {
       h('dd', { text: a.at ? new Date(a.at).toLocaleTimeString() : 'not run yet' }),
       h('dt', { text: 'outcome' }),
       h('dd', { text: a.acted ? `acted: ${a.action}` : 'no action' }),
+      h('dt', { text: 'host' }),
+      h('dd', { text: host }),
+      h('dt', { text: 'mode' }),
+      h('dd', { text: mode }),
+      h('dt', { text: 'remaining deficit' }),
+      h('dd', { class: deficit > 0 ? 'warn' : '', text: String(deficit) }),
       h('dt', { text: 'why' }),
       h('dd', { text: a.reason ?? '–' })
     )
@@ -322,7 +375,7 @@ function sizingPanel(s) {
 
   return h('div', { class: 'panel' },
     h('div', { class: 'section-head' },
-      h('h2', { text: 'Runners per repo' }),
+      h('h2', { text: 'Runners per repo and role' }),
       h('span', { class: 'count', text: `${under.length} under-provisioned` })
     ),
     h('p', { class: 'note', text:
@@ -332,12 +385,14 @@ function sizingPanel(s) {
       'normal. The queue is what covers the rest.' }),
     h('table', { class: 'grid' },
       h('thead', {}, h('tr', {},
-        h('th', { text: 'repo' }), h('th', { text: 'have' }), h('th', { text: 'want' }),
-        h('th', { text: 'why' }), h('th', { text: '' })
+        h('th', { scope: 'col', text: 'repo' }), h('th', { scope: 'col', text: 'role' }),
+        h('th', { scope: 'col', text: 'have' }), h('th', { scope: 'col', text: 'want' }),
+        h('th', { scope: 'col', text: 'why' }), h('th', { scope: 'col', text: '' })
       )),
       h('tbody', {}, rows.map((r) =>
         h('tr', { class: r.delta > 0 ? 'is-warn' : '' },
           h('td', { text: short(r.repo) }),
+          h('td', { class: 'mono', text: r.role ?? 'default' }),
           h('td', { text: String(r.have) }),
           h('td', { text: r.capped ? `${r.want} (capped)` : String(r.want) }),
           h('td', { class: 'muted', text: r.reason }),
@@ -349,9 +404,14 @@ function sizingPanel(s) {
                     // Cloned from an existing runner rather than registered from
                     // scratch: the action copies the sibling's labels, which is
                     // the part that is easy to get wrong by hand.
-                    const sib = (getSnapshot()?.runners ?? []).find((x) => x.repo === r.repo);
-                    if (!sib) return;
-                    await addRunner(sib.name);
+                    const siblings = (getSnapshot()?.runners ?? []).filter((x) => x.repo === r.repo);
+                    const sib = siblings.find((x) =>
+                      r.role
+                        ? (x.extraLabels ?? []).includes(r.role)
+                        : !(x.extraLabels ?? []).some((label) => label === 'ci' || label === 'ui-web')
+                    );
+                    if (sib) await addRunner(sib.name);
+                    else await registerRoleRunner(r);
                   },
                 })
               : null

@@ -28,6 +28,11 @@
 import { execFile } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { FAILURE_CLASSES } from './failures.js';
+import {
+  annotateActiveFromDb,
+  longRunningAlertFindings,
+  DEFAULTS as LONG_RUNNING_DEFAULTS,
+} from './long-running.js';
 
 export const DEFAULTS = {
   diskWarnGb: 40,
@@ -43,6 +48,12 @@ export const DEFAULTS = {
   stormThreshold: 5,
   // How long a runner must have run zero jobs before the unused-runner alert fires.
   unusedRunnerWindowMs: 7 * 24 * 60 * 60 * 1000,
+  // Long-running in-progress runs vs historical p95 baselines (see lib/long-running.js).
+  longRunningHistoryDays: LONG_RUNNING_DEFAULTS.historyDays,
+  longRunningPercentile: LONG_RUNNING_DEFAULTS.percentile,
+  longRunningMultiplier: LONG_RUNNING_DEFAULTS.multiplier,
+  longRunningFloorMs: LONG_RUNNING_DEFAULTS.floorMs,
+  longRunningMinSamples: LONG_RUNNING_DEFAULTS.minSamples,
   // Channels. macOS notifications are on by default because they cost nothing
   // and stay on the machine. The webhook is off and stays off until someone
   // fills it in — it sends fleet state to a third party, which is a decision
@@ -85,13 +96,31 @@ const DRIFT_ALERTS = {
 const QUEUE_CAUSE_ALERTS = {
   'telemetry-unavailable': { severity: 'info', title: 'Queue diagnosis unavailable' },
   unserved: { severity: 'critical', title: 'No runner exists for this repo' },
+  'role-unserved': { severity: 'warning', title: 'No runner exists for this job role' },
   'label-mismatch': { severity: 'critical', title: 'Job labels match no runner' },
   'runner-down': { severity: 'critical', title: 'Runner is down and work is queued' },
-  'concurrency-block': { severity: 'warning', title: 'Work held by workflow concurrency' },
+  'concurrency-block': { severity: 'warning', title: 'Run held before GitHub dispatch' },
   'host-saturation': { severity: 'warning', title: 'Host is saturated and work is queued' },
   'repo-capacity': { severity: 'warning', title: 'Every runner for this repo is busy' },
   'github-delay': { severity: 'info', title: 'Probable GitHub dispatch delay' },
 };
+
+// The condition, not the instance it was noticed on.
+//
+// A newly-failing key ends in the run id, so every push mints a new one. An
+// operator dismissing "this workflow is failing" means the workflow, and would
+// be very surprised to be told again by the next commit. Every other rule's key
+// already names its condition, so it is its own scope.
+//
+// bridge.js and autofix/escalate/run.mjs each hold these same three lines for
+// their cooldowns, which found the same problem first. They are separate
+// processes that deliberately import nothing from the dashboard core, so the
+// duplication is the price of that isolation rather than an oversight.
+export function alertScope(alert) {
+  return alert.key.startsWith('newfail:')
+    ? alert.key.split(':').slice(0, 3).join(':')
+    : alert.key;
+}
 
 export class Alerts {
   constructor({ db, config, log, warn }) {
@@ -109,8 +138,13 @@ export class Alerts {
     this.close = db.prepare('UPDATE alerts SET closed_at = ? WHERE key = ? AND closed_at IS NULL');
     this.causeRows = db.prepare(`
       SELECT failure_class, COUNT(*) AS n FROM jobs
-      WHERE run_id = ? AND conclusion = 'failure' AND failure_class IS NOT NULL
+      WHERE run_id = ? AND conclusion IN ('failure', 'timed_out') AND failure_class IS NOT NULL
       GROUP BY failure_class ORDER BY n DESC`);
+
+    this.dismissalRows = db.prepare('SELECT scope, dismissed_at FROM dismissals');
+    this.insertDismissal = db.prepare(
+      'INSERT OR REPLACE INTO dismissals (scope, dismissed_at) VALUES (?, ?)');
+    this.deleteDismissal = db.prepare('DELETE FROM dismissals WHERE scope = ?');
 
     // Anything left open from a previous process is reloaded, so a restart does
     // not re-announce every condition that was already known.
@@ -133,6 +167,56 @@ export class Alerts {
       return false;
     }
     return now - since >= windowMs;
+  }
+
+  // ---- dismissals --------------------------------------------------------
+  //
+  // Dismissing decides one thing: whether a condition is allowed to interrupt
+  // someone. It never closes the interval and never reaches autofix.
+
+  dismissals() {
+    return new Map(this.dismissalRows.all().map((d) => [d.scope, d.dismissed_at]));
+  }
+
+  // Takes an alert key rather than a scope, because the caller is a person
+  // clicking a row and the scope is this module's business.
+  dismiss(key, now = Date.now()) {
+    const alert = this.open.get(key);
+    if (!alert) return null;
+    const scope = alertScope(alert);
+    this.insertDismissal.run(scope, now);
+    this.log(`dismissed ${scope}`);
+    return { key, scope, dismissed_at: now };
+  }
+
+  restore(key) {
+    const alert = this.open.get(key);
+    if (!alert) return false;
+    return this.deleteDismissal.run(alertScope(alert)).changes > 0;
+  }
+
+  // A dismissal dies with the condition it was about. Doing this instead of
+  // storing an expiry is what keeps the whole feature to two columns — and it
+  // is the more honest rule anyway, since a condition that clears and comes
+  // back is genuinely new rather than a continuation of what was waved away.
+  forgetClearedDismissals(dismissed) {
+    if (!dismissed.size) return;
+    const live = new Set([...this.open.values()].map(alertScope));
+    for (const scope of dismissed.keys()) {
+      if (!live.has(scope)) {
+        this.deleteDismissal.run(scope);
+        this.log(`dismissal of ${scope} forgotten — the condition cleared`);
+      }
+    }
+  }
+
+  // What the header badge counts. A badge reading 6 while the Alerts tab shows
+  // two open and four dismissed is a badge nobody trusts twice.
+  counts() {
+    const dismissed = this.dismissals();
+    let hidden = 0;
+    for (const a of this.open.values()) if (dismissed.has(alertScope(a))) hidden++;
+    return { open: this.open.size - hidden, dismissed: hidden, total: this.open.size };
   }
 
   evaluate(snapshot, now = Date.now()) {
@@ -296,6 +380,22 @@ export class Alerts {
         if (!unusedRunners.some((r) => r.name === name)) this.pending.delete(key);
       }
     } catch { /* pre-migration db — skip silently */ }
+
+    // In-progress runs that exceed their historical p95 threshold. Annotated here
+    // so alerts work even before fleetd wires the same call into the snapshot;
+    // when fleetd does, the fields are already present and this is a no-op merge.
+    try {
+      const active = snapshot.active ?? [];
+      annotateActiveFromDb(this.db, active, {
+        now,
+        historyDays: c.longRunningHistoryDays ?? LONG_RUNNING_DEFAULTS.historyDays,
+        percentile: c.longRunningPercentile ?? LONG_RUNNING_DEFAULTS.percentile,
+        multiplier: c.longRunningMultiplier ?? LONG_RUNNING_DEFAULTS.multiplier,
+        floorMs: c.longRunningFloorMs ?? LONG_RUNNING_DEFAULTS.floorMs,
+        minSamples: c.longRunningMinSamples ?? LONG_RUNNING_DEFAULTS.minSamples,
+      });
+      for (const f of longRunningAlertFindings(active)) found.set(f.key, f);
+    } catch { /* pre-migration db or empty history — skip silently */ }
 
     // Newly-failing workflows go through the SAME reconcile as everything else.
     // They used to be inserted straight into `open`, which meant the next tick
@@ -491,17 +591,43 @@ export class Alerts {
     this.ticks++;
     const now = Date.now();
     const { opened, closed } = this.evaluate(snapshot, now);
-    const messages = this.summarise(opened, closed);
+
+    // Read before the cleanup below, so an alert that was dismissed and has now
+    // closed stays quiet on the way out rather than announcing its own
+    // resolution to someone who asked not to hear about it.
+    const dismissed = this.dismissals();
+    const audible = (a) => !dismissed.has(alertScope(a));
+    this.forgetClearedDismissals(dismissed);
+
+    const speaking = opened.filter(audible);
+    const messages = this.summarise(speaking, closed.filter(audible));
     if (messages.length) await this.notify(messages);
-    return { opened: opened.length, closed: closed.length };
+    return {
+      opened: opened.length,
+      closed: closed.length,
+      dismissed: opened.length - speaking.length,
+    };
   }
 
   snapshot() {
+    const dismissed = this.dismissals();
+    const order = { critical: 0, warning: 1, info: 2 };
     return {
-      open: [...this.open.values()].sort((a, b) => {
-        const order = { critical: 0, warning: 1, info: 2 };
-        return (order[a.severity] ?? 3) - (order[b.severity] ?? 3) || b.opened_at - a.opened_at;
-      }),
+      // Dismissed conditions stay in `open` rather than being filtered out of
+      // it. The bridge prunes its per-alert state for anything it stops seeing
+      // here, so hiding them would both stop the repair and quietly reset the
+      // attempt budgets — a notification preference changing what an unattended
+      // process may do to the fleet. Consumers read the flag and decide.
+      open: [...this.open.values()]
+        .map((a) => {
+          const at = dismissed.get(alertScope(a));
+          return at ? { ...a, dismissed_at: at } : a;
+        })
+        .sort((a, b) => {
+          if (Boolean(a.dismissed_at) !== Boolean(b.dismissed_at)) return a.dismissed_at ? 1 : -1;
+          return (order[a.severity] ?? 3) - (order[b.severity] ?? 3) || b.opened_at - a.opened_at;
+        }),
+      counts: this.counts(),
       channels: {
         macos: Boolean(this.config.macos),
         webhook: Boolean(this.config.webhook?.url),

@@ -8,10 +8,10 @@
 ![Actions Runners: many self-hosted GitHub Actions runners on one Mac, and the page that says whether any of them is broken](docs/img/banner.png)
 
 Register, supervise and observe a fleet of self-hosted GitHub Actions runners
-on one Apple Silicon Mac — one runner per repo, each its own directory and its
-own LaunchAgent. One Node daemon with no dependencies and no build step polls
-GitHub and the machine, keeps everything it learns in SQLite forever, and
-serves a single page.
+across one or more Apple Silicon Macs — one runner per repo, each its own
+directory and its own LaunchAgent. One Node daemon per coordinator has no build
+step, keeps local history in SQLite, and serves a single page; optional
+two-replica HA adds managed PostgreSQL and its locked `pg` driver.
 
 The dashboard exists because GitHub has no cross-repo Actions view, and half of
 the question — *is that runner even alive* — is not answerable from GitHub at
@@ -165,13 +165,13 @@ and each repo had exactly one.
 
 If you want cloud autoscaling, use
 [actions-runner-controller](https://github.com/actions/actions-runner-controller)
-instead. This is one Mac, no Kubernetes, no cloud control plane.
+instead. This is a small Mac fleet, no Kubernetes and no cloud runner control plane.
 
 ## What is in here
 
 | | What it is |
 |---|---|
-| **[`dashboard/`](dashboard)** | The daemon and the page. `fleetd.js`, the collector and server, SQLite, and a browser UI with no build step. Zero runtime dependencies, on purpose. |
+| **[`dashboard/`](dashboard)** | The daemon and the page. `fleetd.js`, the collector and server, SQLite, and a browser UI with no build step. Single-host mode uses Node built-ins; optional PostgreSQL HA uses the locked `pg` dependency. |
 | **Fleet scripts** | `preflight.sh`, `register.sh`, `status.sh`, `health.sh`, `runs.sh`, `cleanup.sh` at the top level; the rest in [`scripts/`](scripts). Every destructive one is dry-run by default. |
 | **[`hooks/`](hooks)** | `job-started` and `job-completed`. The only mechanism that can hold a job already dispatched to a runner. |
 | **[`examples/`](examples)** | Workflow files, `fleet.env` for three deployment shapes, and the LaunchAgent plists. |

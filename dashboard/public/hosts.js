@@ -8,12 +8,17 @@
 // stale host's runners are visibly held at arm's length rather than dropped.
 
 import { chartEl as h } from './charts.js';
+import * as control from './control.js';
 
 const mount = (el, ...kids) =>
   el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
 
+const REFRESH_MS = 30_000;
+
 let data = null;
 let loading = false;
+let active = false;
+let refreshTimer = null;
 
 const ago = (ts) => {
   if (!ts) return 'never';
@@ -22,6 +27,8 @@ const ago = (ts) => {
   if (s < 3600) return `${Math.round(s / 60)}m ago`;
   return `${Math.round(s / 3600)}h ago`;
 };
+
+const gb = (n) => (n == null ? '–' : n >= 100 ? Math.round(n) : n.toFixed(1));
 
 export async function loadHosts() {
   loading = true;
@@ -35,6 +42,19 @@ export async function loadHosts() {
   render();
 }
 
+export function setActive(on) {
+  active = on;
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+  if (!on) return;
+  loadHosts();
+  refreshTimer = setInterval(() => {
+    if (active && !loading) loadHosts();
+  }, REFRESH_MS);
+}
+
 // Explains what this tab is for on a fleet that has only one machine, which is
 // the state most installations are in and is not a problem to be fixed.
 function notFederatedPanel() {
@@ -45,8 +65,10 @@ function notFederatedPanel() {
       + 'To add another Mac, run the agent on it — it reports outbound to this dashboard, so '
       + 'the new host needs no open ports and no inbound firewall rule:'),
     h('pre', { class: 'snippet', text:
-      'FLEET_COORDINATOR=http://this-host:7878 \\\n'
-      + 'FLEET_AGENT_TOKEN=<./fleetctl.sh token> \\\n'
+      '# On this coordinator: ./fleetctl.sh agent-token --host mac-studio\n'
+      + 'FLEET_COORDINATOR=http://this-host:7878 \\\n'
+      + 'FLEET_AGENT_TOKEN=<host-scoped-token> \\\n'
+      + 'FLEET_HOST_ID=mac-studio \\\n'
       + 'FLEET_HOST_NAME=mac-studio \\\n'
       + '  node dashboard/agent.js' }),
     h('div', { class: 'panel-sub muted' },
@@ -58,9 +80,151 @@ function notFederatedPanel() {
   );
 }
 
+function fleetCapacityPanel(data) {
+  const hosts = data.hosts ?? [];
+  if (!hosts.length) return null;
+  const eligible = hosts.filter((host) => !host.stale && !host.drained && host.capacity?.ok);
+  return h('div', { class: 'panel' },
+    h('div', { class: 'panel-head' },
+      h('h3', { text: 'Fleet-wide capacity' }),
+      h('span', { class: `flag ${eligible.length ? 'good' : 'warning'}`,
+        text: eligible.length ? `${eligible.length} host(s) with headroom` : 'no headroom now' }),
+    ),
+    h('div', { class: 'panel-sub', text:
+      eligible.length
+        ? 'At least one connected host can accept another runner — autoscale may place on an agent.'
+        : 'Every live host is at its ceiling or stale. Scale-up will be refused until load drops.' }),
+    h('ul', { class: 'fleet-cap-list' },
+      hosts.map((host) => {
+        const cap = host.capacity ?? {};
+        const state = host.stale ? 'stale — unknown'
+          : host.drained ? 'drained'
+            : cap.ok ? 'room for another runner'
+              : (cap.reasons ?? ['at ceiling']).join('; ');
+        return h('li', {},
+          h('span', { class: 'host-name', text: host.name }),
+          h('span', { class: host.stale ? 'critical' : cap.ok ? 'good' : 'warn', text: state })
+        );
+      })
+    )
+  );
+}
+
+function placementsPanel(placements) {
+  if (!placements?.length) return null;
+  return h('div', { class: 'panel' },
+    h('div', { class: 'panel-head' },
+      h('h3', { text: 'Recent placements' }),
+      h('span', { class: 'count', text: `last ${placements.length}` }),
+    ),
+    h('div', { class: 'panel-sub muted', text:
+      'Why autoscale chose or refused a host for runner.register. Dry-run rows logged a decision only.' }),
+    h('table', { class: 'mini-table', 'aria-label': 'Recent autoscale placement decisions' },
+      h('thead', {}, h('tr', {},
+        h('th', { scope: 'col', text: 'When' }), h('th', { scope: 'col', text: 'Repo' }),
+        h('th', { scope: 'col', text: 'Host' }), h('th', { scope: 'col', text: 'Outcome' })
+      )),
+      h('tbody', {}, placements.slice(0, 10).map((p) =>
+        h('tr', {},
+          h('td', { text: ago(p.ts) }),
+          h('td', { class: 'mono', text: p.repo?.split('/').pop() ?? p.repo ?? '–' }),
+          h('td', { class: 'mono', text: p.host_id ?? 'none' }),
+          h('td', { class: 'mini', text:
+            p.host_id
+              ? `${p.dry_run ? 'dry run · ' : ''}placed on ${p.host_id}`
+              : (p.reason ?? 'refused') })
+        )
+      ))
+    )
+  );
+}
+
+function pendingCommandsPanel(commands) {
+  if (!commands?.length) return null;
+  return h('div', { class: 'panel' },
+    h('div', { class: 'panel-head' },
+      h('h3', { text: 'Pending commands' }),
+      h('span', { class: 'count warn', text: `${commands.length} in flight` }),
+    ),
+    h('div', { class: 'panel-sub muted', text:
+      'Commands queued for remote agents. They ride back on the next heartbeat.' }),
+    h('table', { class: 'mini-table', 'aria-label': 'Pending remote host commands' },
+      h('thead', {}, h('tr', {},
+        h('th', { scope: 'col', text: 'Host' }), h('th', { scope: 'col', text: 'Action' }),
+        h('th', { scope: 'col', text: 'Status' }), h('th', { scope: 'col', text: 'Queued' })
+      )),
+      h('tbody', {}, commands.slice(0, 10).map((c) =>
+        h('tr', {},
+          h('td', { class: 'mono', text: c.host_id ?? '–' }),
+          h('td', { text: c.action ?? '–' }),
+          h('td', {}, h('span', { class: `status ${c.status}`, text: c.status ?? '–' })),
+          h('td', { text: ago(c.ts) })
+        )
+      ))
+    )
+  );
+}
+
+function hostActions(host) {
+  const canAct = control.hasToken() && !host.stale;
+  if (!canAct && !control.hasToken()) {
+    return h('p', { class: 'note muted', text: 'Unlock the Control tab to drain, resume, or repair hosts.' });
+  }
+  return h('div', { class: 'host-actions', role: 'group', 'aria-label': `Actions for ${host.name}` },
+    h('button', {
+          class: 'btn tiny',
+          text: 'Health repair',
+          'aria-label': `Run health check and repair on ${host.name}`,
+          disabled: canAct ? null : 'disabled',
+          onclick: async () => {
+            const res = await control.confirmAct('fleet.healthRepair', { hostId: host.id });
+            if (res) alert(res.ok ? (res.output || 'Repair finished.') : `Failed: ${res.error || res.output}`);
+            if (active) loadHosts();
+          },
+        }),
+    host.drained
+      ? h('button', {
+          class: 'btn tiny warn',
+          text: 'Resume host',
+          'aria-label': `Resume runner placement on ${host.name}`,
+          disabled: canAct ? null : 'disabled',
+          onclick: async () => {
+            const res = await control.confirmAct('host.resume', { hostId: host.id });
+            if (res) alert(res.ok ? (res.output || 'Resume queued.') : `Failed: ${res.error || res.output}`);
+            if (active) loadHosts();
+          },
+        })
+      : h('button', {
+          class: 'btn tiny warn',
+          text: 'Drain host',
+          'aria-label': `Stop new runner placement on ${host.name}`,
+          disabled: canAct ? null : 'disabled',
+          onclick: async () => {
+            const res = await control.confirmAct('host.drain', { hostId: host.id });
+            if (res) alert(res.ok ? (res.output || 'Drain queued.') : `Failed: ${res.error || res.output}`);
+            if (active) loadHosts();
+          },
+        })
+  );
+}
+
 function hostCard(host) {
   const cap = host.capacity ?? {};
-  return h('div', { class: `host-card ${host.stale ? 'is-stale' : ''}` },
+  const v = host.host ?? {};
+  const loadLine = v.load1 != null && v.cores
+    ? `${v.load1.toFixed(2)} / ${v.cores} cores (5m ${(v.load5 ?? 0).toFixed(2)})`
+    : '–';
+  const memLine = v.memFreePct != null
+    ? `${v.memFreePct}% free${v.memTotalMb ? ` · ${Math.round(v.memTotalMb / 1024)} GB total` : ''}`
+    : '–';
+  const diskLine = v.diskFreeGb != null
+    ? `${gb(v.diskFreeGb)} GB free${v.diskTotalGb ? ` of ${gb(v.diskTotalGb)} GB` : ''}`
+    : '–';
+
+  return h('article', {
+    class: `host-card ${host.stale ? 'is-stale' : ''}`,
+    'aria-label': `${host.name}${host.stale ? ', stale heartbeat' : ', live'}`,
+  },
     h('div', { class: 'host-head' },
       h('span', { class: 'host-name', text: host.name }),
       host.stale
@@ -68,9 +232,6 @@ function hostCard(host) {
         : h('span', { class: 'flag good', text: `live · ${ago(host.lastHeartbeat)}` }),
       host.drained ? h('span', { class: 'flag warning', text: 'drained' }) : null
     ),
-    // Said in full rather than implied by the greying, because the consequence
-    // matters: these numbers are a snapshot from the past, and acting on them is
-    // acting on history.
     host.stale
       ? h('div', { class: 'note warn' },
           'No heartbeat for '
@@ -79,6 +240,12 @@ function hostCard(host) {
           + 'not depend on this dashboard — so this is a reporting problem until proven otherwise.')
       : null,
     h('dl', { class: 'host-stats' },
+      h('dt', { text: 'load' }),
+      h('dd', { text: loadLine }),
+      h('dt', { text: 'memory' }),
+      h('dd', { text: memLine }),
+      h('dt', { text: 'disk' }),
+      h('dd', { text: diskLine }),
       h('dt', { text: 'runners' }),
       h('dd', { text: `${host.runnerCount} (${host.busyCount} busy)` }),
       h('dt', { text: 'headroom' }),
@@ -88,7 +255,8 @@ function hostCard(host) {
       host.labels?.length ? h('dd', { class: 'mono', text: host.labels.join(', ') }) : null,
       host.version ? h('dt', { text: 'agent' }) : null,
       host.version ? h('dd', { text: `v${host.version}` }) : null
-    )
+    ),
+    hostActions(host)
   );
 }
 
@@ -102,8 +270,11 @@ export function render() {
       ? `${data.totalHosts} host(s)${data.staleHosts ? `, ${data.staleHosts} stale` : ''}`
       : '' }),
     h('button', {
-      class: 'btn tiny', text: loading ? 'loading…' : 'Refresh',
-      disabled: loading, onclick: () => loadHosts(),
+      class: 'btn tiny',
+      text: loading ? 'loading…' : 'Refresh',
+      'aria-label': 'Refresh host list',
+      disabled: loading,
+      onclick: () => loadHosts(),
     })
   );
 
@@ -114,8 +285,6 @@ export function render() {
   const hosts = data.hosts ?? [];
 
   mount(root, head,
-    // Led with, not buried: a fleet view that is substantially stale is not a
-    // view of the fleet, and the reader needs to know that before reading it.
     data.staleHosts > 0
       ? h('div', { class: 'drift-item serious' },
           h('span', { class: 'drift-sev', text: 'serious' }),
@@ -126,7 +295,10 @@ export function render() {
             + 'need this dashboard — so check the agent process and the network before the runners.')
         )
       : null,
+    fleetCapacityPanel(data),
     h('div', { class: 'host-grid' }, hosts.map(hostCard)),
+    placementsPanel(data.recentPlacements),
+    pendingCommandsPanel(data.pendingCommands),
     data.federated === false ? notFederatedPanel() : null
   );
 }

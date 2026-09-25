@@ -7,6 +7,8 @@
 // level would remediate 240 times an hour for one dead runner.
 //
 //   fleetd alert  ──webhook──>  bridge  ──>  health.sh --repair
+//                                       ──>  run.rerun (runner-lost failures)
+//                                       ──>  fix.sh    (code/config failures)
 //
 // The webhook is treated as a DOORBELL, not as the message. Its payload carries
 // only {severity,title,body,host,at} — no rule, no key — and a storm collapses
@@ -16,12 +18,18 @@
 // real state, so a missed webhook, a duplicate, or a daemon restart all
 // converge to the same place instead of each needing their own handling.
 //
-// It only ever runs `health.sh --repair`, and only for the three conditions
-// that script already fixes correctly. There is deliberately no model in this
-// loop: for a dead LaunchAgent the repair is known, deterministic and one shell
-// call away, and the alerts that DO need judgement — a stuck queue, a workflow
-// that went red — are left to notify a human instead. An automated guess at
-// those is worth less than the notification it would replace.
+// Three layers of action, each with a different blast radius:
+//
+//   1. Infrastructure repair (health.sh --repair): deterministic, reversible,
+//      triggered by alert transitions. Unchanged from the original design.
+//
+//   2. Infra reruns (run.rerun): when a runner crashed under load and the run
+//      failed with runner-lost, retrying is the right response. One attempt per
+//      run/attempt triple, with a daily cap and storm guard.
+//
+//   3. AI fixes (fix.sh): for code or config failures, a cloud agent reads the
+//      workflow and proposes a PR. Opt-in per repo (AUTOFIX_FIX_REPOS), much
+//      tighter budgets, and never acts without an explicit allowlist.
 //
 // Zero dependencies, matching the rest of the dashboard. A remediation daemon
 // that breaks unattended because a transitive dependency changed is strictly
@@ -29,7 +37,7 @@
 
 import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, renameSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -86,6 +94,30 @@ const CONFIG = {
   // is installed.
   escalateDailyCap: Number(process.env.AUTOFIX_ESCALATE_CAP ?? 8),
   escalateTimeoutMs: Number(process.env.AUTOFIX_ESCALATE_TIMEOUT_MS ?? 420_000),
+  // --- Infra reruns ---
+  // Minimum time a run must have been completed (and classified) before we
+  // rerun it. Five minutes ensures we don't race the fast loop's own detection
+  // and that the failure class is final.
+  rerunMinWaitMs: Number(process.env.AUTOFIX_RERUN_MIN_WAIT_MS ?? 5 * 60_000),
+  // Per-run/attempt combination, reset never (the ledger key persists). One
+  // auto-rerun per run attempt is the hard limit.
+  rerunMaxAttempts: 1,
+  // Per-scope cooldown so the same (repo, workflow) pair does not trigger
+  // repeated reruns if it keeps runner-losing.
+  rerunCooldownMs: Number(process.env.AUTOFIX_RERUN_COOLDOWN_MS ?? 3 * 3_600_000),
+  // Daily cap, separate from the escalation cap.
+  rerunDailyCap: Number(process.env.AUTOFIX_RERUN_DAILY_CAP ?? 20),
+  // --- AI fixes ---
+  // Comma-separated list of repos eligible for automated fix PRs. Empty means
+  // AI fixes are disabled entirely (the safe default).
+  fixRepos: (process.env.AUTOFIX_FIX_REPOS ?? '').split(',').filter(Boolean),
+  fixMinWaitMs: Number(process.env.AUTOFIX_FIX_MIN_WAIT_MS ?? 5 * 60_000),
+  // Per-condition cooldown: the scope strips the run/attempt id away so
+  // repeated failures on the same workflow don't each spend a fix budget.
+  fixCooldownMs: Number(process.env.AUTOFIX_FIX_COOLDOWN_MS ?? 24 * 3_600_000),
+  // Daily cap across all repos.
+  fixDailyCap: Number(process.env.AUTOFIX_FIX_DAILY_CAP ?? 3),
+  fixTimeoutMs: Number(process.env.AUTOFIX_FIX_TIMEOUT_MS ?? 10 * 60_000),
 };
 
 // The only three rules with an automatic fix, and it is the same fix for all
@@ -137,6 +169,8 @@ const ESCALATE = {
 // close in under a minute, so a cooldown stored under its key would evaporate
 // before it ever suppressed anything.
 const LEDGER = '#escalations';
+const RERUN_LEDGER = '#reruns';
+const FIX_LEDGER = '#fixes';
 
 // ---------------------------------------------------------------------------
 
@@ -151,8 +185,39 @@ function log(...parts) {
 function loadState() {
   try { return JSON.parse(readFileSync(CONFIG.statePath, 'utf8')); } catch { return {}; }
 }
+
+// Write to a pid-scoped temp file then rename into place so a crash mid-write
+// never leaves a truncated state.json for the next reconcile to parse.
 function saveState(state) {
-  writeFileSync(CONFIG.statePath, JSON.stringify(state, null, 2) + '\n');
+  const body = JSON.stringify(state, null, 2) + '\n';
+  const tmp = `${CONFIG.statePath}.${process.pid}.tmp`;
+  writeFileSync(tmp, body);
+  try {
+    renameSync(tmp, CONFIG.statePath);
+  } catch (err) {
+    try { unlinkSync(tmp); } catch { /* already gone */ }
+    throw err;
+  }
+}
+
+function fleetActionable(health) {
+  return Boolean(health?.ok) && !health?.stale;
+}
+
+function recordFleetStale(state, health, now = Date.now()) {
+  const prev = state.__fleetStale ?? {};
+  state.__fleetStale = {
+    since: prev.since ?? now,
+    lastChecked: now,
+    ok: health?.ok ?? false,
+    stale: health?.stale ?? true,
+    ageMs: health?.ageMs ?? null,
+    lastError: health?.lastError ?? null,
+  };
+}
+
+function clearFleetStale(state) {
+  delete state.__fleetStale;
 }
 
 let state = loadState();
@@ -163,18 +228,128 @@ async function getAlerts() {
   return res.json();
 }
 
+async function getRemediationCandidates() {
+  const res = await fetch(
+    `${CONFIG.fleetUrl}/api/remediation-candidates`,
+    { signal: AbortSignal.timeout(15_000) },
+  );
+  if (!res.ok) throw new Error(`GET /api/remediation-candidates -> ${res.status}`);
+  return res.json();
+}
+
+async function getFleetHealth() {
+  const res = await fetch(`${CONFIG.fleetUrl}/api/health`, { signal: AbortSignal.timeout(15_000) });
+  if (!res.ok) throw new Error(`GET /api/health -> ${res.status}`);
+  return res.json();
+}
+
 // Every action goes through fleet-action.sh rather than being POSTed from here.
 // That script exact-matches an allowlist and holds the control token, so the
 // set of things this daemon can do stays one readable list in one file — and
 // the token stays out of any process that talks to the network.
-function runAction(action) {
+function runAction(action, args = {}) {
   return new Promise((resolve) => {
-    execFile(join(HERE, 'fleet-action.sh'), [action, '{}'],
+    execFile(join(HERE, 'fleet-action.sh'), [action, JSON.stringify(args)],
       { cwd: HERE, timeout: 330_000, maxBuffer: 4 << 20 },
       (err, stdout, stderr) => {
         resolve({ ok: !err, code: err?.code ?? 0, output: `${stdout ?? ''}${stderr ?? ''}`.trim() });
       });
   });
+}
+
+// fire-and-forget on purpose. fix.sh launches a cloud agent that can take many
+// minutes. Awaiting it here would stall the reconcile loop just as escalate.sh
+// would, and two fix agents running against the same repo simultaneously would
+// each be spending budget without adding information.
+let fixing = false;
+
+function considerFix(candidate, now, openCount) {
+  if (!CONFIG.fixRepos.length) return false;               // feature disabled
+  if (!CONFIG.fixRepos.includes(candidate.repo)) return false;
+  if (openCount >= CONFIG.stormThreshold) return false;    // systemic; per-run fix is wrong
+  if (fixing) return false;                                // one at a time
+
+  const ledger = state[FIX_LEDGER] ?? {};
+
+  // Scope strips repo+workflow but not the run/attempt id, so the same broken
+  // workflow does not get fixed on every push.
+  const scope = `${candidate.repo}:${candidate.workflowName ?? candidate.runId}`;
+  const last = ledger[scope]?.lastTs ?? 0;
+  if (last && now - last < CONFIG.fixCooldownMs) return false;
+
+  // Age check: wait a little before acting, for the same reasons as the
+  // escalation minOpenMs — a failure that resolves on its own saves a fix spend.
+  const completedAt = candidate.runStartedAt ? new Date(candidate.runStartedAt).getTime() : 0;
+  if (completedAt && now - completedAt < CONFIG.fixMinWaitMs) return false;
+
+  const dayAgo = now - 86_400_000;
+  const recentFixes = Object.values(ledger).filter((e) => (e?.lastTs ?? 0) > dayAgo).length;
+  if (recentFixes >= CONFIG.fixDailyCap) {
+    if (!ledger.__capped || ledger.__capped < dayAgo) {
+      log(`fix: daily cap reached (${recentFixes}/${CONFIG.fixDailyCap}) — not fixing ${scope}`);
+      ledger.__capped = now;
+      state[FIX_LEDGER] = ledger;
+      saveState(state);
+    }
+    return false;
+  }
+
+  // Record before spawning for the same reason as the repair path.
+  ledger[scope] = { lastTs: now, repo: candidate.repo, count: (ledger[scope]?.count ?? 0) + 1 };
+  delete ledger.__capped;
+  state[FIX_LEDGER] = ledger;
+  saveState(state);
+
+  if (CONFIG.dryRun) {
+    log(`DRY-RUN would fix ${scope} (${candidate.strategy}) run ${candidate.runId}`);
+    return true;
+  }
+
+  fixing = true;
+  log(`fix: '${candidate.strategy}' -> cloud agent for ${scope} (run ${candidate.runId})`);
+  execFile(join(HERE, 'fix.sh'),
+    [JSON.stringify({
+      repo: candidate.repo,
+      runId: candidate.runId,
+      runAttempt: candidate.runAttempt,
+      workflowName: candidate.workflowName,
+      workflowPath: candidate.workflowPath,
+      event: candidate.event,
+      branch: candidate.branch,
+      sha: candidate.sha,
+      prNumber: candidate.prNumber,
+      defaultBranch: candidate.defaultBranch,
+      url: candidate.url,
+      jobs: candidate.jobs,
+    })],
+    { cwd: HERE, timeout: CONFIG.fixTimeoutMs, maxBuffer: 8 << 20 },
+    (err, stdout, stderr) => {
+      fixing = false;
+      const out = `${stdout ?? ''}${stderr ?? ''}`.trim().replace(/\s+/g, ' ');
+      const l = state[FIX_LEDGER] ?? {};
+
+      if (err?.code === 69) {
+        log(`fix: disabled (${out.slice(0, 160)})`);
+      } else if (err?.code === 1) {
+        // Startup failure (auth, config, network).
+        l.__startupFailures = (l.__startupFailures ?? 0) + 1;
+        log(`fix: could not start (${l.__startupFailures}/3) — ${out.slice(0, 300)}`);
+        if (l.__startupFailures >= 3) {
+          l.__disabled = Date.now();
+          log('fix: DISABLED after 3 consecutive startup failures. Run '
+            + './autofix/fix.sh --verify to diagnose, then --login (or rewrite the key file) '
+            + 'to re-enable.');
+        }
+        state[FIX_LEDGER] = l;
+        saveState(state);
+      } else if (err) {
+        log(`fix: FAILED (${err.code ?? '?'}) — ${out.slice(0, 400)}`);
+      } else {
+        if (l.__startupFailures) { delete l.__startupFailures; state[FIX_LEDGER] = l; saveState(state); }
+        log(`fix: done — ${out.slice(0, 400)}`);
+      }
+    });
+  return true;
 }
 
 // The condition, not the instance. See the ESCALATE comment: a newly-failing
@@ -355,6 +530,72 @@ async function consider(alert, now, openCount) {
   saveState(state);
 }
 
+// Consider a rerun for an infra-failure candidate. Unlike the alert repair
+// path, the ledger key is stable for the lifetime of the run/attempt
+// combination — it is never deleted when the run's alert closes, so a restart
+// cannot cause a second rerun for the same failure.
+async function considerRerun(candidate, now, openCount) {
+  if (openCount >= CONFIG.stormThreshold) return; // systemic; per-run rerun is wrong
+
+  const ledger = state[RERUN_LEDGER] ?? {};
+  const key = `${candidate.repo}:${candidate.runId}:${candidate.runAttempt}`;
+  const entry = ledger[key] ?? { attempts: 0 };
+
+  if (entry.attempts >= CONFIG.rerunMaxAttempts) return; // hard limit: one auto-rerun ever
+
+  // Age-gate: wait for backfill to classify all jobs and for the failure to
+  // be confirmed rather than transient. The run_started_at is the closest
+  // proxy available without a separate completed_at fetch.
+  const startedAt = candidate.runStartedAt ? new Date(candidate.runStartedAt).getTime() : 0;
+  if (startedAt && now - startedAt < CONFIG.rerunMinWaitMs) return;
+
+  // Per-scope cooldown: the same repo/workflow pair should not trigger repeated
+  // reruns. Key on (repo, workflowName) rather than (repo, runId) so a workflow
+  // that keeps runner-losing doesn't consume the daily cap one run at a time.
+  const scope = `${candidate.repo}:${candidate.workflowName ?? 'unknown'}`;
+  const scopeEntry = ledger[`scope:${scope}`] ?? {};
+  if (scopeEntry.lastTs && now - scopeEntry.lastTs < CONFIG.rerunCooldownMs) return;
+
+  // Daily cap across all repos.
+  const dayAgo = now - 86_400_000;
+  const todayCount = Object.entries(ledger).filter(([k, e]) => !k.startsWith('scope:') && !k.startsWith('__') && (e?.lastTs ?? 0) > dayAgo).length;
+  if (todayCount >= CONFIG.rerunDailyCap) {
+    if (!ledger.__capLogged || ledger.__capLogged < dayAgo) {
+      log(`rerun: daily cap reached (${todayCount}/${CONFIG.rerunDailyCap}) — skipping ${key}`);
+      ledger.__capLogged = now;
+      state[RERUN_LEDGER] = ledger;
+      saveState(state);
+    }
+    return;
+  }
+
+  if (CONFIG.dryRun) {
+    log(`DRY-RUN would rerun ${key} (runner-lost, failedOnly)`);
+    return;
+  }
+
+  // Record before acting.
+  ledger[key] = { attempts: 1, lastTs: now, repo: candidate.repo };
+  ledger[`scope:${scope}`] = { lastTs: now };
+  delete ledger.__capLogged;
+  state[RERUN_LEDGER] = ledger;
+  saveState(state);
+
+  log(`rerun: run.rerun for ${key} (runner-lost on all failed jobs, failedOnly=true)`);
+  const result = await runAction('run.rerun', {
+    repo: candidate.repo,
+    runId: candidate.runId,
+    failedOnly: true,
+  });
+  log(`rerun: run.rerun ${result.ok ? 'ok' : `FAILED (${result.code})`} — ${result.output.slice(0, 300)}`);
+
+  ledger[key] = { ...ledger[key], lastOk: result.ok, lastOutput: result.output.slice(0, 400) };
+  state[RERUN_LEDGER] = ledger;
+  saveState(state);
+}
+
+// ---------------------------------------------------------------------------
+
 let reconciling = false;
 let pending = false;
 
@@ -362,7 +603,38 @@ async function reconcile(reason) {
   if (reconciling) { pending = true; return; }   // one at a time; coalesce the rest
   reconciling = true;
   try {
-    const { open = [] } = await getAlerts();
+    const now = Date.now();
+    let health;
+    try {
+      health = await getFleetHealth();
+    } catch (err) {
+      health = { ok: false, stale: true, lastError: err.message };
+    }
+
+    const wasStale = Boolean(state.__fleetStale);
+    const actionable = fleetActionable(health);
+    if (!actionable) {
+      recordFleetStale(state, health, now);
+      saveState(state);
+      log(`reconcile (${reason}): fleet stale — skipping repair/rerun/escalate/fix`
+        + (health.lastError ? ` (${health.lastError})` : ''));
+      return;
+    }
+    clearFleetStale(state);
+    if (wasStale) saveState(state);
+
+    // Both fetches are independent; a failure in one must not suppress the other.
+    const [alertsRes, candidatesRes] = await Promise.allSettled([
+      getAlerts(),
+      getRemediationCandidates(),
+    ]);
+
+    const { open = [] } = alertsRes.status === 'fulfilled' ? alertsRes.value : {};
+    const candidates = candidatesRes.status === 'fulfilled' ? candidatesRes.value : [];
+
+    if (alertsRes.status === 'rejected') log(`reconcile: alerts fetch failed — ${alertsRes.reason?.message}`);
+    if (candidatesRes.status === 'rejected') log(`reconcile: candidates fetch failed — ${candidatesRes.reason?.message}`);
+
     const openKeys = new Set(open.map((a) => a.key));
 
     // Forget anything that closed. A condition that recurs later is a new
@@ -374,27 +646,53 @@ async function reconcile(reason) {
       if (!openKeys.has(key)) { delete state[key]; dropped++; }
     }
 
-    // The ledger is pruned by age instead, since its whole purpose is to
-    // remember conditions whose alerts have already closed. A week is well past
-    // the longest cooldown, so nothing still in force is ever discarded.
-    const ledger = state[LEDGER];
-    if (ledger) {
+    // The escalation ledger is pruned by age instead, since its whole purpose is
+    // to remember conditions whose alerts have already closed. A week is well
+    // past the longest cooldown, so nothing still in force is ever discarded.
+    for (const ledgerKey of [LEDGER, RERUN_LEDGER, FIX_LEDGER]) {
+      const ledger = state[ledgerKey];
+      if (!ledger) continue;
       const cutoff = Date.now() - 7 * 86_400_000;
       for (const [scope, entry] of Object.entries(ledger)) {
-        // `__`-prefixed fields are scalars, not scope records. Ageing them out
-        // by a missing `lastTs` would silently reset the startup-failure count
-        // on every reconcile, which is exactly how the breaker would never trip.
         if (scope.startsWith('__')) continue;
+        if (scope.startsWith('scope:')) {
+          // Scope-level cooldown entries: prune when older than the cooldown.
+          if ((entry?.lastTs ?? 0) < cutoff) { delete ledger[scope]; dropped++; }
+          continue;
+        }
         if ((entry?.lastTs ?? 0) < cutoff) { delete ledger[scope]; dropped++; }
       }
     }
     if (dropped) saveState(state);
 
-    log(`reconcile (${reason}): ${open.length} open, ${dropped} cleared`);
+    // Dismissed conditions are ones the operator has waved away, so they do not
+    // make an event systemic. They are still repaired — the loop below walks
+    // every open alert, dismissed or not — and they keep their attempt budgets,
+    // because `openKeys` above is built from all of them. What they no longer do
+    // is push this bridge over its storm threshold and so disable remediation
+    // for everything else. Four dormant runners sit at 4 of 6 permanently; two
+    // real failures would then have stopped all autofix.
+    const openCount = open.filter((a) => !a.dismissed_at).length;
+    const dismissed = open.length - openCount;
 
-    // Sequential on purpose: health.sh --repair walks the whole fleet, so two
-    // of them racing would each be reading state the other is changing.
-    for (const alert of open) await consider(alert, Date.now(), open.length);
+    log(`reconcile (${reason}): ${open.length} alert(s)`
+      + (dismissed ? ` (${dismissed} dismissed)` : '')
+      + `, ${candidates.length} candidate(s), ${dropped} cleared`);
+
+    // Alert path: sequential on purpose — health.sh --repair walks the whole
+    // fleet, so two of them racing would each be reading state the other is
+    // changing.
+    for (const alert of open) await consider(alert, now, openCount);
+
+    // Candidate path: reruns are awaited (fast, just a GitHub API call).
+    // Fix invocations are fire-and-forget (can take minutes).
+    for (const candidate of candidates) {
+      if (candidate.strategy === 'infra-rerun') {
+        await considerRerun(candidate, now, openCount);
+      } else if (candidate.strategy === 'ai-fix') {
+        considerFix(candidate, now, openCount);
+      }
+    }
   } catch (e) {
     log(`reconcile failed: ${e.message}`);
   } finally {
@@ -421,9 +719,19 @@ const server = createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     const dayAgo = Date.now() - 86_400_000;
     const ledger = state[LEDGER] ?? {};
+    const rerunLedger = state[RERUN_LEDGER] ?? {};
+    const fixLedger = state[FIX_LEDGER] ?? {};
     res.end(JSON.stringify({
       ok: true,
       dryRun: CONFIG.dryRun,
+      fleet: state.__fleetStale ? {
+        actionable: false,
+        stale: true,
+        since: new Date(state.__fleetStale.since).toISOString(),
+        lastChecked: new Date(state.__fleetStale.lastChecked).toISOString(),
+        ageMs: state.__fleetStale.ageMs,
+        lastError: state.__fleetStale.lastError,
+      } : { actionable: true, stale: false },
       tracked: state,
       routes: ROUTES,
       escalation: {
@@ -435,8 +743,24 @@ const server = createServer((req, res) => {
         disabledAt: ledger.__disabled ? new Date(ledger.__disabled).toISOString() : null,
         consecutiveStartupFailures: ledger.__startupFailures ?? 0,
         usedLast24h: Object.entries(ledger)
-          .filter(([k, e]) => k !== '__capped' && (e?.lastTs ?? 0) > dayAgo).length,
+          .filter(([k, e]) => k !== '__capped' && !k.startsWith('__') && (e?.lastTs ?? 0) > dayAgo).length,
         dailyCap: CONFIG.escalateDailyCap,
+      },
+      reruns: {
+        enabled: true,
+        dailyCap: CONFIG.rerunDailyCap,
+        usedLast24h: Object.entries(rerunLedger)
+          .filter(([k, e]) => !k.startsWith('__') && !k.startsWith('scope:') && (e?.lastTs ?? 0) > dayAgo).length,
+      },
+      fixes: {
+        enabled: CONFIG.fixRepos.length > 0 && hasCredential() && !fixLedger.__disabled,
+        repos: CONFIG.fixRepos,
+        running: fixing,
+        disabledAt: fixLedger.__disabled ? new Date(fixLedger.__disabled).toISOString() : null,
+        consecutiveStartupFailures: fixLedger.__startupFailures ?? 0,
+        dailyCap: CONFIG.fixDailyCap,
+        usedLast24h: Object.entries(fixLedger)
+          .filter(([k, e]) => !k.startsWith('__') && (e?.lastTs ?? 0) > dayAgo).length,
       },
     }, null, 2));
     return;
@@ -444,8 +768,28 @@ const server = createServer((req, res) => {
   res.writeHead(404).end();
 });
 
-server.listen(CONFIG.port, '127.0.0.1', () => {
-  log(`autofix bridge on 127.0.0.1:${CONFIG.port} -> ${CONFIG.fleetUrl}${CONFIG.dryRun ? ' [DRY RUN]' : ''}`);
-  reconcile('startup');
-  setInterval(() => reconcile('sweep'), CONFIG.sweepMs);
-});
+const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+
+function replaceState(next) {
+  state = { ...(next ?? {}) };
+  return state;
+}
+
+export {
+  CONFIG,
+  fleetActionable,
+  recordFleetStale,
+  clearFleetStale,
+  saveState,
+  loadState,
+  replaceState,
+  reconcile,
+};
+
+if (isMain) {
+  server.listen(CONFIG.port, '127.0.0.1', () => {
+    log(`autofix bridge on 127.0.0.1:${CONFIG.port} -> ${CONFIG.fleetUrl}${CONFIG.dryRun ? ' [DRY RUN]' : ''}`);
+    reconcile('startup');
+    setInterval(() => reconcile('sweep'), CONFIG.sweepMs);
+  });
+}

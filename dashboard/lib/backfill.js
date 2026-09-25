@@ -64,12 +64,12 @@ export class Backfill {
     // Positive ids only: negative ones are the "(detail unavailable)" markers.
     this.unclassified = db.prepare(`
       SELECT id, repo FROM jobs
-      WHERE conclusion = 'failure' AND failure_class IS NULL AND id > 0
+      WHERE conclusion IN ('failure', 'timed_out') AND failure_class IS NULL AND id > 0
       ORDER BY started_at DESC
       LIMIT ?`);
     this.countUnclassified = db.prepare(`
       SELECT COUNT(*) AS n FROM jobs
-      WHERE conclusion = 'failure' AND failure_class IS NULL AND id > 0`);
+      WHERE conclusion IN ('failure', 'timed_out') AND failure_class IS NULL AND id > 0`);
     this.setFailureClass = db.prepare(
       'UPDATE jobs SET failure_class = ?, failure_detail = ? WHERE id = ?'
     );

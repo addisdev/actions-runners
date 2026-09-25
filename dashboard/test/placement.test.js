@@ -1,6 +1,11 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { choosePlacement, mergeHostSnapshots, STALE_HEARTBEAT_MS } from '../lib/placement.js';
+import {
+  choosePlacement,
+  mergeHostSnapshots,
+  requiredLabelsFromPlan,
+  STALE_HEARTBEAT_MS,
+} from '../lib/placement.js';
 
 const NOW = Date.UTC(2026, 0, 5, 12, 0, 0);
 const REPO = 'testowner/app-ios';
@@ -30,6 +35,7 @@ describe('choosePlacement — eligibility', () => {
   test('picks the only eligible host', () => {
     const out = choosePlacement({ hosts: [host('mac-1')], repo: REPO, now: NOW });
     assert.equal(out.chosen, 'mac-1');
+    assert.equal(out.chosenId, 'id-mac-1');
     assert.match(out.reason, /only eligible host/);
   });
 
@@ -47,6 +53,31 @@ describe('choosePlacement — eligibility', () => {
     assert.equal(out.chosen, null);
     assert.match(out.reason, /heartbeat/);
     assert.match(out.reason, /s ago/);
+  });
+
+  // Placing a repo's FIRST runner. The planner may act on an unserved repo
+  // regardless of headroom, so the placer has to agree or the exemption is
+  // unreachable and the decision dies here instead.
+  test('a saturated host still takes a first runner when headroom is waived', () => {
+    const saturated = host('mac-1', {
+      capacity: { ok: false, reasons: ['41 runners already exist, the fleet limit of 32'] },
+    });
+    assert.equal(choosePlacement({ hosts: [saturated], repo: REPO, now: NOW }).chosen, null);
+    const out = choosePlacement({ hosts: [saturated], repo: REPO, now: NOW, requireHeadroom: false });
+    assert.equal(out.chosen, 'mac-1');
+  });
+
+  // Waiving headroom waives "this host is busy", not "this host is unavailable".
+  test('waiving headroom does not revive a drained or stale host', () => {
+    const drained = host('mac-1', { drained: true, capacity: { ok: false, reasons: ['busy'] } });
+    const stale = host('mac-2', {
+      lastHeartbeat: NOW - STALE_HEARTBEAT_MS - 60_000,
+      capacity: { ok: false, reasons: ['busy'] },
+    });
+    const out = choosePlacement({ hosts: [drained, stale], repo: REPO, now: NOW, requireHeadroom: false });
+    assert.equal(out.chosen, null);
+    assert.match(out.reason, /drained/);
+    assert.match(out.reason, /heartbeat/);
   });
 
   test('a host that never sent a heartbeat is refused', () => {
@@ -378,5 +409,20 @@ describe('choosePlacement — capability labels in a federated fleet', () => {
     const names = out.considered.map((c) => c.host);
     assert.ok(names.includes('mac-1'), 'mac-1 should appear in considered');
     assert.ok(names.includes('mac-2'), 'mac-2 should appear in considered');
+  });
+
+  test('places using labels exported from an autoscale plan', () => {
+    const plan = { repo: REPO, extraLabels: ['ui-web'], role: 'ui-web' };
+    const required = requiredLabelsFromPlan(plan);
+    const out = choosePlacement({
+      hosts: [
+        capHost('mac-ci', ['ci']),
+        capHost('mac-ui', ['ui-web', 'macos-15']),
+      ],
+      repo: REPO,
+      requiredLabels: required,
+      now: NOW,
+    });
+    assert.equal(out.chosen, 'mac-ui');
   });
 });

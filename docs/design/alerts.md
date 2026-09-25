@@ -42,6 +42,13 @@ usually carries a token) for ntfy, Pushover or Slack. `FLEET_ALERTS=0` disables
 alerting entirely; it and `FLEET_ALERT_CONFIG` are in
 [Dashboard daemon variables](../configuration.md#dashboard-daemon-variables).
 
+Turning a rule's threshold up and turning alerting off are both blunt: one
+blinds a rule across the whole fleet, the other blinds everything. For the case
+where a single condition is correct, understood and not going to change —
+a runner attached to a repo that has gone quiet — there is an `×` on the row.
+See [Dismissing alerts](dismissing.md), which suppresses the noise without
+closing the interval or stopping the repair.
+
 ## Auto-remediation
 
 `autofix/` turns alert transitions into action. It is a separate process and a
@@ -64,16 +71,44 @@ alerts into one summary — so the bridge discards the body and re-reads
 means a missed webhook, a duplicate and a daemon restart all converge to the
 same place instead of each needing their own handling.
 
-**It fixes exactly three things**, and they all get the same fix:
-`launchd-dead`, `launchd-missing` and `offline` run `health.sh --repair`. That
-script is already the correct response to all three, so the bridge is a trigger
-for it rather than a second implementation of it.
+The bridge operates in three layers, each with a different blast radius:
 
-Everything else — `stuck-queue`, `newly-failing`, `label-mismatch`, `orphan`,
-`no-listener` — has no deterministic repair. Those need a workflow file read or
-a job log interpreted before anyone knows what the fix is, so nothing is ever
-*fixed* automatically for them. They are instead **escalated**: an agent does
-the reading and writes down what it found.
+**1. Infrastructure repair** (alert-driven): `launchd-dead`, `launchd-missing`
+and `offline` run `health.sh --repair`. The script is already the correct
+response to all three, so the bridge is a trigger for it rather than a second
+implementation. One rerun, bounded by `maxAttempts` per alert key.
+
+**2. Infra reruns** (candidate-driven): when a run fails with `runner-lost` on
+every job, the runner crashed under load and the code was fine. The bridge
+detects this via `GET /api/remediation-candidates` — which reads the failure
+classes backfill has recorded — and calls `run.rerun` with `failedOnly: true`.
+Exactly one auto-rerun per run/attempt combination, subject to a per-workflow
+cooldown and a daily cap (`AUTOFIX_RERUN_DAILY_CAP`, default 20). If the
+re-run also fails with a different class, it enters the normal alert path; it
+is never blindly re-run a second time.
+
+**3. AI fix PRs** (candidate-driven, opt-in): when a run fails with `job-failed`
+or `no-runner`, the failure is in the workflow or code. The bridge calls
+`fix.sh`, which launches a Cursor cloud agent against the failing repo. The
+agent clones the repo at the exact failing SHA, diagnoses the step failure, and
+opens a pull request with the minimal fix. This requires `AUTOFIX_FIX_REPOS`
+to be set to a comma-separated list of repos; the default (empty) disables it
+entirely.
+
+Each agent is archived once it finishes, so a fleet that fixes something every
+day does not bury the agent list under its own routine activity. The archive
+happens after the agent ID has been written to both the bridge log and the fix
+report, which is what keeps the run findable afterwards — archiving hides an
+agent from the default list, it does not delete it, and the PR is untouched
+either way. `FIX_ARCHIVE_AGENTS=0` turns this off while tuning a rollout.
+
+Everything else — `stuck-queue`, `label-mismatch`, `orphan`, `no-listener` —
+has no deterministic repair. Those need a workflow file read or a job log
+interpreted before anyone knows what the fix is. They are **escalated**: an
+agent does the reading and writes down what it found. The `newly-failing` alert
+rule is escalated for diagnosis even when the bridge reruns or fixes the
+underlying run, because the escalation and the rerun are independent paths that
+serve different audiences (the alert goes to the operator; the rerun goes to CI).
 
 ### Escalation: the alerts with no mechanical fix
 
@@ -170,7 +205,7 @@ is why it lives in `autofix/escalate/` behind its own `package.json`. The bridge
 imports nothing outside the Node standard library. If that subtree fails to
 load, dead runners still get repaired and the only thing lost is the
 explanation. The rest of the rule is in
-[Zero dependencies, on purpose](zero-dependencies.md).
+[Minimal dependencies, on purpose](zero-dependencies.md).
 
 **Nothing acts immediately.** Each rule carries a `minOpenMs`, and the value for
 `offline` is 5 minutes because that rule is measured to self-resolve: four
@@ -217,12 +252,40 @@ a few seconds, rather than something you reconstruct by following control flow:
   rather than a sandbox — what actually bounds it is that this path carries no
   fleet credential, leaving the destructive actions behind the allowlist above.
 
+- **`fix.sh` follows the same pattern for the cloud fix half.** It validates
+  the target repo against `AUTOFIX_FIX_REPOS` before spawning anything. The
+  cloud agent runs on a Cursor-hosted VM with a fresh clone; it has no route to
+  the local fleet dashboard and no fleet credential. It can push commits and
+  open pull requests on the target repo — and nothing else. The bridge never
+  auto-merges; all fix PRs require human review.
+
 Both allowlists are wider than the bridge uses — it only ever calls
-`fleet.healthRepair`, and it enables three of the five escalatable rules — so
-each doubles as the operator's safe manual entry point.
+`fleet.healthRepair` and `run.rerun`, and it enables three of the five
+escalatable rules — so each doubles as the operator's safe manual entry point.
 
 `AUTOFIX_DRY_RUN=1` decides everything and does nothing, which is the honest way
 to find out what it would have done before letting it.
+
+### Proactive fix policy matrix
+
+| Failure class | Strategy | Who acts |
+|---|---|---|
+| `account-blocked` / `account-quota` | diagnose | escalation |
+| `unknown` (expired annotations) | diagnose | escalation |
+| `runner-lost` (all failed jobs) | infra-rerun | bridge → `run.rerun` |
+| `job-failed` / `no-runner` | ai-fix | bridge → `fix.sh` (opt-in) |
+| mixed or unrecognised | diagnose | escalation |
+| any NULL class (backfill pending) | diagnose | wait for backfill |
+
+`no-runner` is classified as a config failure (blame = `config`) because the
+workflow's `runs-on:` label does not match any registered runner — a
+configuration problem, not a host problem. An AI agent can often fix this by
+correcting the label in the workflow file.
+
+Fork PRs are never the target of fix commits. `pull_request` events where the
+head repo differs from the base repo are skipped by `fix.sh`. Same-repo PRs are
+only updated when the PR carries the `fleet-autofix` label, giving the PR
+author explicit opt-in control.
 
 The allowlist a person with the control token works behind instead is in
 [The control plane](control-plane.md).

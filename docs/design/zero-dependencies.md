@@ -1,20 +1,24 @@
-# Zero dependencies, on purpose
+# Minimal dependencies, on purpose
 
-This page argues that having no dependencies is a reliability decision rather
+This page argues that minimizing dependencies is a reliability decision rather
 than a preference, and that the test suite is shaped by the same constraint.
 
-No npm packages, no build step, no framework. This machine's job is running CI;
-a monitoring daemon that breaks unattended because a transitive dependency
-changed is worse than no daemon.
+Single-host mode has no required installed npm package, build step, or
+framework. This machine's job is running CI; a monitoring daemon that breaks
+unattended because a transitive dependency changed is worse than no daemon.
 
 The charts are HTML and CSS rather than SVG, which for horizontal bars is the
 better tool and not a compromise: percentage widths are responsive for free, and
 text stays at its real size instead of being scaled by a viewBox — which is how
 SVG charts end up with 9px axis labels on one screen and 20px on another.
 
-The one exception is escalation, which lives behind its own `package.json` so
-that the rest of the daemon keeps the property — see
-[Alerts and auto-remediation](alerts.md#escalation-the-alerts-with-no-mechanical-fix).
+There are two isolated exceptions:
+
+- Optional PostgreSQL HA dynamically loads the locked `pg` driver. A normal
+  single-host start never imports it, and `fleetctl.sh install` installs it only
+  when a database URL file is configured.
+- Escalation lives behind its own `package.json`; see
+  [Alerts and auto-remediation](alerts.md#escalation-the-alerts-with-no-mechanical-fix).
 
 ## Tests
 

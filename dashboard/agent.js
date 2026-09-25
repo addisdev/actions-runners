@@ -30,7 +30,9 @@ import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { existsSync } from 'node:fs';
+import {
+  existsSync, statSync, readFileSync, writeFileSync, renameSync, chmodSync,
+} from 'node:fs';
 
 import { discoverRunnerDirs, launchdJobs, runnerProcesses, hostVitals, hostDrainState } from './lib/local.js';
 import { headroom } from './lib/capacity.js';
@@ -40,13 +42,22 @@ import { instanceOf } from './lib/state.js';
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 const CONFIG = {
-  coordinator: process.env.FLEET_COORDINATOR ?? '',
-  token: process.env.FLEET_AGENT_TOKEN ?? '',
+  coordinators: (process.env.FLEET_COORDINATORS ?? process.env.FLEET_COORDINATOR ?? '')
+    .split(',').map((s) => s.trim().replace(/\/$/, '')).filter(Boolean),
+  token: process.env.FLEET_AGENT_TOKEN
+    ?? (process.env.FLEET_AGENT_TOKEN_FILE && existsSync(process.env.FLEET_AGENT_TOKEN_FILE)
+      ? readFileSync(process.env.FLEET_AGENT_TOKEN_FILE, 'utf8').trim()
+      : ''),
   root: process.env.FLEET_ROOT ?? join(os.homedir(), 'actions-runners'),
   // Named so a fleet can distinguish two hosts with the same hostname, which
   // happens more often than it should.
   hostName: process.env.FLEET_HOST_NAME ?? os.hostname().replace(/\.local$/, ''),
+  hostId: process.env.FLEET_HOST_ID
+    ?? process.env.FLEET_HOST_NAME
+    ?? os.hostname().replace(/\.local$/, ''),
   heartbeatMs: Number(process.env.FLEET_HEARTBEAT_MS ?? 30_000),
+  commandResultsFile: process.env.FLEET_AGENT_RESULTS_FILE
+    ?? join(HERE, '.fleet-agent-command-results.json'),
   labels: (process.env.FLEET_HOST_LABELS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
   // Commands are OPT-IN. An agent that only reports is useful on its own, and it
   // is the right default: joining a fleet should not silently grant remote
@@ -56,6 +67,9 @@ const CONFIG = {
   // installs a LaunchAgent, and calls the GitHub runner registration API —
   // higher blast radius than drain or health. Set both flags to enable it.
   allowRegister: process.env.FLEET_AGENT_ALLOW_REGISTER === '1',
+  // Removal is deliberately separate from registration. It is destructive and
+  // should remain disabled on a reporting-only or scale-up-only host.
+  allowDeregister: process.env.FLEET_AGENT_ALLOW_DEREGISTER === '1',
   // Spelled exactly as headroom() reads them, because it merges this object over
   // CAPACITY_DEFAULTS and silently ignores anything it does not recognise. The
   // earlier names — maxRunners, maxLoadPerCore — were therefore dropped on the
@@ -73,6 +87,7 @@ const CONFIG = {
     ceiling: Number(process.env.FLEET_CEILING ?? 3),
     loadPerCore: Number(process.env.FLEET_LOAD_PER_CORE ?? 2),
     minFreeDiskGb: Number(process.env.FLEET_MIN_FREE_DISK_GB ?? 50),
+    maxInstancesPerRepo: Number(process.env.FLEET_MAX_INSTANCES_PER_REPO ?? 4),
   },
 };
 
@@ -98,7 +113,13 @@ const CONFIG = {
 const ALLOWED_COMMANDS = {
   'runner.drain': { script: 'scripts/drain-runner.sh', args: (a, resolve) => [resolve(a.name), '--drain'] },
   'runner.resume': { script: 'scripts/drain-runner.sh', args: (a, resolve) => [resolve(a.name), '--resume'] },
+  'runner.restart': { script: 'scripts/restart-runner.sh', args: (a, resolve) => [resolve(a.name)] },
+  'runner.deregisterPreview': { script: 'scripts/deregister.sh', args: (a, resolve) => [resolve(a.name)] },
   'health.check': { script: 'health.sh', args: () => [] },
+  'fleet.health': { script: 'health.sh', args: () => [] },
+  'fleet.healthRepair': { script: 'health.sh', args: () => ['--repair'] },
+  'host.drain': { script: 'scripts/host-drain.sh', args: () => ['--drain'] },
+  'host.resume': { script: 'scripts/host-drain.sh', args: () => ['--resume'] },
 };
 
 // runner.register is separate from ALLOWED_COMMANDS because it does not fit
@@ -112,12 +133,38 @@ const LABEL_RE = /^[a-zA-Z0-9_.-]{1,50}$/;
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const warn = (...a) => console.warn(new Date().toISOString(), 'warn:', ...a);
 
+function loadCommandResults() {
+  try {
+    const parsed = JSON.parse(readFileSync(CONFIG.commandResultsFile, 'utf8'));
+    return new Map(Object.entries(parsed && typeof parsed === 'object' ? parsed : {}));
+  } catch {
+    return new Map();
+  }
+}
+
+const commandResults = loadCommandResults();
+
+function commandCacheKey(command) {
+  return command.key
+    ? `key:${command.key}`
+    : `id:${command.id}:${command.action}`;
+}
+
+function rememberCommandResult(command, result) {
+  commandResults.set(commandCacheKey(command), result);
+  while (commandResults.size > 256) commandResults.delete(commandResults.keys().next().value);
+  const temp = `${CONFIG.commandResultsFile}.tmp-${process.pid}`;
+  writeFileSync(temp, `${JSON.stringify(Object.fromEntries(commandResults), null, 2)}\n`, { mode: 0o600 });
+  renameSync(temp, CONFIG.commandResultsFile);
+  chmodSync(CONFIG.commandResultsFile, 0o600);
+}
+
 function fail(message) {
   console.error(`fleet-agent: ${message}`);
   process.exit(1);
 }
 
-if (!CONFIG.coordinator) fail('FLEET_COORDINATOR is not set — nothing to report to.');
+if (!CONFIG.coordinators.length) fail('FLEET_COORDINATOR or FLEET_COORDINATORS is not set — nothing to report to.');
 if (!CONFIG.token) fail('FLEET_AGENT_TOKEN is not set. The coordinator will reject an unauthenticated agent.');
 if (!existsSync(CONFIG.root)) fail(`FLEET_ROOT does not exist: ${CONFIG.root}`);
 
@@ -161,6 +208,9 @@ async function collect() {
       workingLocally: procs.workers.has(d.dir),
       drainState: d.drainState ?? null,
       version: d.version ?? null,
+      createdAt: (() => {
+        try { return statSync(d.dir).birthtimeMs; } catch { return null; }
+      })(),
       // GitHub state is deliberately NOT collected here. The agent has no
       // guarantee of a working `gh`, and the coordinator already talks to the
       // GitHub API for every repo in the fleet — asking 20 hosts to make the
@@ -199,6 +249,7 @@ async function collect() {
   };
 
   return {
+    id: CONFIG.hostId,
     name: CONFIG.hostName,
     labels: CONFIG.labels,
     version: 1,
@@ -281,7 +332,7 @@ async function runRegister(cmd) {
   }
 
   // Per-repo cap, matching the coordinator's constraint.
-  const MAX_INSTANCES = 4;
+  const MAX_INSTANCES = CONFIG.limits.maxInstancesPerRepo;
   const existing = dirs.filter((d) => d.repo === repo);
   if (existing.length >= MAX_INSTANCES) {
     return { id: cmd.id, ok: false, error: `at per-repo cap of ${MAX_INSTANCES} runners` };
@@ -310,10 +361,45 @@ async function runRegister(cmd) {
   });
 }
 
+async function runDeregister(cmd) {
+  if (!CONFIG.allowCommands) {
+    return { id: cmd.id, ok: false, error: 'remote commands disabled (set FLEET_AGENT_ALLOW_COMMANDS=1)' };
+  }
+  if (!CONFIG.allowDeregister) {
+    return { id: cmd.id, ok: false, error: 'remote deregistration disabled (set FLEET_AGENT_ALLOW_DEREGISTER=1)' };
+  }
+
+  const a = cmd.args ?? {};
+  const token = String(a.token ?? '');
+  if (!token) return { id: cmd.id, ok: false, error: 'removal token is required' };
+
+  const dirs = discoverRunnerDirs(CONFIG.root);
+  const target = dirs.find((d) => d.name === a.name || d.dirName === a.name);
+  if (!target) return { id: cmd.id, ok: false, error: `no runner named ${a.name} on this host` };
+
+  const script = join(CONFIG.root, 'scripts', 'deregister.sh');
+  return new Promise((resolve) => {
+    execFile(script, [target.dirName, '--apply'], {
+      cwd: CONFIG.root,
+      timeout: 300_000,
+      maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, RUNNER_TOKEN: token },
+    }, (err, stdout, stderr) => {
+      resolve({
+        id: cmd.id,
+        ok: !err,
+        error: err ? (err.killed ? 'timed out' : err.message) : null,
+        output: String(stdout ?? '').slice(-4000) + String(stderr ?? '').slice(-2000),
+      });
+    });
+  });
+}
+
 async function runCommand(cmd) {
   // runner.register has its own handler because it needs custom validation,
   // idempotency, and env-var-based secret passing.
   if (cmd.action === 'runner.register') return runRegister(cmd);
+  if (cmd.action === 'runner.deregister') return runDeregister(cmd);
 
   const spec = ALLOWED_COMMANDS[cmd.action];
   if (!spec) {
@@ -371,6 +457,32 @@ async function runCommand(cmd) {
 }
 
 let consecutiveFailures = 0;
+let coordinatorCursor = 0;
+
+async function postToCoordinator(path, payload) {
+  let lastError = null;
+  for (let offset = 0; offset < CONFIG.coordinators.length; offset++) {
+    const index = (coordinatorCursor + offset) % CONFIG.coordinators.length;
+    const base = CONFIG.coordinators[index];
+    try {
+      const res = await fetch(`${base}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${CONFIG.token}` },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (res.ok) {
+        coordinatorCursor = index;
+        return { res, base };
+      }
+      lastError = new Error(`${base} returned ${res.status}`);
+      if (res.status === 401 || res.status === 403) continue;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError ?? new Error('no coordinator available');
+}
 
 async function heartbeat() {
   let payload;
@@ -382,18 +494,7 @@ async function heartbeat() {
   }
 
   try {
-    const res = await fetch(`${CONFIG.coordinator.replace(/\/$/, '')}/api/host/heartbeat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${CONFIG.token}` },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(15_000),
-    });
-
-    if (!res.ok) {
-      consecutiveFailures++;
-      warn(`coordinator returned ${res.status}${res.status === 401 ? ' — check FLEET_AGENT_TOKEN' : ''}`);
-      return;
-    }
+    const { res, base } = await postToCoordinator('/api/host/heartbeat', payload);
 
     if (consecutiveFailures > 0) {
       log(`reconnected to coordinator after ${consecutiveFailures} failed heartbeat(s)`);
@@ -412,17 +513,19 @@ async function heartbeat() {
     // two at once on one host is how a fleet ends up in a state nobody predicted.
     const results = [];
     for (const cmd of commands) {
-      const result = await runCommand(cmd);
+      const cached = commandResults.get(commandCacheKey(cmd));
+      const result = cached ?? await runCommand(cmd);
+      if (!cached) rememberCommandResult(cmd, result);
       log(`${cmd.action}: ${result.ok ? 'ok' : `failed — ${result.error}`}`);
       results.push(result);
     }
 
-    await fetch(`${CONFIG.coordinator.replace(/\/$/, '')}/api/host/results`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${CONFIG.token}` },
-      body: JSON.stringify({ host: CONFIG.hostName, results }),
-      signal: AbortSignal.timeout(15_000),
-    }).catch((err) => warn('could not report results:', err.message));
+    await postToCoordinator('/api/host/results', {
+      host: CONFIG.hostId,
+      name: CONFIG.hostName,
+      results,
+    })
+      .catch((err) => warn(`could not report results via ${base}:`, err.message));
   } catch (err) {
     consecutiveFailures++;
     // Deliberately not fatal, and deliberately not escalating. A coordinator
@@ -436,8 +539,8 @@ async function heartbeat() {
   }
 }
 
-log(`fleet-agent starting — host=${CONFIG.hostName} root=${CONFIG.root}`);
-log(`reporting to ${CONFIG.coordinator} every ${CONFIG.heartbeatMs / 1000}s`);
+log(`fleet-agent starting — host=${CONFIG.hostName} id=${CONFIG.hostId} root=${CONFIG.root}`);
+log(`reporting to ${CONFIG.coordinators.join(', ')} every ${CONFIG.heartbeatMs / 1000}s`);
 if (CONFIG.allowCommands) {
   const cmds = [...Object.keys(ALLOWED_COMMANDS)];
   if (CONFIG.allowRegister) cmds.push('runner.register');

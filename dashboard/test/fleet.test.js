@@ -127,6 +127,41 @@ describe('buildFleetRunners', () => {
     assert.equal(remote.hostId, 'id-mac2');
   });
 
+  test('keeps heartbeat-only remote runners visible while GitHub state is unknown', () => {
+    const hostState = new Map([
+      ['id-mac2', {
+        id: 'id-mac2',
+        name: 'mac2',
+        lastHeartbeat: Date.now(),
+        runners: [{
+          name: 'agent-only-runner',
+          repo: 'testowner/new-repo',
+          launchdState: 'running',
+        }],
+      }],
+    ]);
+    const remote = buildFleetRunners([], [], hostState)[0];
+    assert.equal(remote.name, 'agent-only-runner');
+    assert.equal(remote.ghUnknown, true);
+    assert.equal(remote.ghStatus, 'unknown');
+    assert.equal(remote.hostId, 'id-mac2');
+  });
+
+  test('propagates stale heartbeat state to remote runner tiles', () => {
+    const now = Date.UTC(2026, 0, 5, 12, 0, 0);
+    const hostState = new Map([
+      ['id-mac2', {
+        id: 'id-mac2',
+        name: 'mac2',
+        lastHeartbeat: now - STALE_MS,
+        runners: [{ name: 'mac2-app-ios', launchdState: 'running' }],
+      }],
+    ]);
+    const remote = buildFleetRunners([], [elsewhereRunner()], hostState, now)[0];
+    assert.equal(remote.hostStale, true);
+    assert.equal(remote.staleForMs, STALE_MS);
+  });
+
   test('fleet spans two repos and both runner counts are correct', () => {
     const fleet = buildFleetRunners(
       [localRunner({ name: 'local-app-ios', repo: 'o/app-ios' })],
@@ -151,6 +186,7 @@ describe('buildHostList', () => {
   test('always starts with the coordinator as the first host', () => {
     const hosts = buildHostList({ ts: NOW, runners: [], host: {}, capacity: { ok: true } }, new Map());
     assert.equal(hosts[0].id, LOCAL_HOST_ID);
+    assert.equal(hosts[0].local, true);
   });
 
   test('coordinator host uses local snapshot capacity', () => {

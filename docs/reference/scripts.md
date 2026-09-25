@@ -22,11 +22,14 @@ without `--repair` — have no `--apply` because there is nothing to guard.
 | `register.sh` | Register a runner for one repo | no — creating a runner is reversible |
 | `status.sh` | Every runner, its status, and what the fleet costs idle | read-only |
 | `health.sh` | launchd + GitHub state per runner; `--repair` restarts dead services | read-only without `--repair` |
+| `healthctl.sh` | Install a LaunchAgent that runs `health.sh --repair` on a timer | n/a — subcommands |
 | `runs.sh` | What is building across every repo, and on which machine | read-only |
 | `cleanup.sh` | Prune stale DerivedData, dead simulators, old `_diag` | **yes** |
 | `preflight.sh` | Check a host against what the workflows assume | read-only, installs nothing |
 | `scripts/deregister.sh` | Remove one named runner completely | **yes** |
 | `scripts/drain-runner.sh` | Stop a runner gracefully, or resume it | no — every state it writes is reversible |
+| `scripts/restart-runner.sh` | Restart one runner service by directory name | no |
+| `scripts/host-drain.sh` | Remove or return a host from new-runner placement | no — reversible |
 | `scripts/drain-stop-when-idle.sh` | Stop a drained runner once its job ends | internal; called by the completion hook |
 | `scripts/ephemeral-runner.sh` | One job in a fresh directory, then delete it | **yes** |
 | `scripts/reap-ephemeral.sh` | Remove ephemeral directories a crash left behind | **yes** |
@@ -36,7 +39,7 @@ without `--repair` — have no `--apply` because there is nothing to guard.
 | `scripts/test-drain.sh` | Shell tests for drain and resume | runs against a temporary fleet |
 | `scripts/test-ephemeral.sh` | Shell tests for the ephemeral reaper | runs against a temporary fleet |
 | `scripts/infer-checks.py` | Work out which preflight checks this fleet needs | read-only |
-| `dashboard/fleetctl.sh` | Install, run and inspect the dashboard daemon | n/a — subcommands |
+| `dashboard/fleetctl.sh` | Install, run, inspect, back up and restore the dashboard daemon | n/a — subcommands |
 | `dashboard/agentctl.sh` | Install, run and inspect the fleet agent on an agent Mac | n/a — subcommands |
 | `install.sh` | One-command setup for coordinator or agent role | n/a — runs preflight then fleetctl/agentctl |
 | `dashboard/watch/watchctl.sh` | Install, run and inspect the watchdog | n/a — subcommands |
@@ -119,7 +122,7 @@ Source: [`health.sh`](https://github.com/addisdev/actions-runners/blob/main/heal
 
 | Flag | Effect |
 |---|---|
-| `--repair` | Restart any service whose launchd state is not `running`. Recognised only as the first argument. |
+| `--repair` | Restart any service whose launchd state is not `running`, or whose live local listener is reported offline by GitHub. Recognised only as the first argument. |
 
 It exists because no runner LaunchAgent sets `KeepAlive`. `runsvc.sh` supervises
 `Runner.Listener`, so a crashed listener recovers on its own; a crashed or
@@ -136,6 +139,49 @@ What it refuses to do:
   under `--repair`. A repair that undoes a deliberate drain is worse than no
   repair, and it would also set a non-zero exit that reads as "the fleet is
   unhealthy" when nothing is wrong.
+
+### `healthctl.sh`
+
+Installs a LaunchAgent that runs `health.sh --repair` on a timer so a dead
+`RunnerService.js` is restarted within about a minute instead of whenever
+someone notices one repo queueing forever.
+Source: [`healthctl.sh`](https://github.com/addisdev/actions-runners/blob/main/healthctl.sh).
+
+```bash
+./healthctl.sh install     # write the LaunchAgent and load it
+./healthctl.sh status      # is it loaded, and what did the last sweep say
+./healthctl.sh logs [n]    # tail the repair log (default 60 lines)
+./healthctl.sh restart
+./healthctl.sh uninstall
+./healthctl.sh run         # one foreground sweep, for debugging
+```
+
+| Subcommand | What it does |
+|---|---|
+| `install` | Write the periodic health-repair LaunchAgent plist, load it, and report status. |
+| `uninstall` | Unload the agent and delete the plist. |
+| `start` / `stop` | Load or unload the agent. |
+| `restart` | Unload, load, and report status. |
+| `status` | **The default.** launchd state, interval, last log line, sweep count. |
+| `logs [n]` | Tail the repair log. Default 60 lines. |
+| `run` | Run one repair sweep in the foreground via the same wrapper launchd uses. |
+
+The plist uses `StartInterval` (default 60 seconds, from `FLEET_HEALTH_INTERVAL`
+in `fleet.env`) and `RunAtLoad`. It does **not** set `KeepAlive` — this job is
+periodic, not resident. `scripts/health-repair-launchd.sh` holds a lock so a slow
+sweep cannot overlap the next tick.
+
+What it refuses to do:
+
+- **It will not edit runner LaunchAgents.** Only `<FLEET_LABEL_PREFIX>.fleet-health`
+  is written under `~/Library/LaunchAgents/`. GitHub runner plists from
+  `register.sh` are untouched.
+- **It will not revive drained runners.** Repair behaviour is delegated entirely
+  to `health.sh --repair`, which skips any runner with a `.drain` file.
+
+Logs default to `logs/fleet-health-repair.log` under `FLEET_ROOT`. The wrapper
+resolves `gh` once at install time into the plist's `PATH`, because launchd gets
+a minimal environment.
 
 ### `runs.sh`
 
@@ -567,11 +613,14 @@ What it refuses to do:
   job before its first step, so an admission controller that errored would turn
   every build on the host red at once. There is no `set -e` and there is a
   `trap 'exit 0' EXIT`: every unexpected condition means "let the job run".
-- **It will not let a contended mutex stop CI.** If the lock cannot be taken the
-  job is admitted without counting, and the log line says so.
+- **Enforce mode keeps the limit under mutex contention.** A contended mutex
+  retries on the next poll tick instead of bypassing the concurrency count.
+  `observe` mode may still claim a slot without the lock so dry-run counts stay
+  useful during bursts.
 - **It will not ignore cancellation.** A sleeping hook may not receive the
-  runner's cancellation signal, so it polls the run and returns when GitHub
-  reports it complete.
+  runner's cancellation signal, so it polls the run — via `gh` when present, or
+  `curl` with `GITHUB_TOKEN` / `GH_TOKEN` — and returns when GitHub reports it
+  complete.
 - **Strict timeout is explicit.** The default remains fail-open for
   compatibility. Hosts where overload is worse than queueing can set
   `FLEET_ADMIT_TIMEOUT_ACTION=hold`; the job's own timeout still ends the run,
@@ -799,7 +848,7 @@ Source: [`dashboard/fleetctl.sh`](https://github.com/addisdev/actions-runners/bl
 
 | Subcommand | What it does |
 |---|---|
-| `install` | Write the LaunchAgent plist, load it, and report status. |
+| `install` | Install the locked PostgreSQL driver when HA is configured, write the LaunchAgent plist, load it, and report status. |
 | `uninstall` | Unload the agent and delete the plist. |
 | `start` / `stop` | Load or unload the agent. |
 | `restart` | Unload, load, and report status. |
@@ -807,9 +856,52 @@ Source: [`dashboard/fleetctl.sh`](https://github.com/addisdev/actions-runners/bl
 | `logs [n]` | Tail the daemon log. Default 60 lines. |
 | `run` | Run `fleetd.js` in the foreground, for debugging. |
 | `token` | Print the control token. Exits 1 if the daemon has not generated one yet. |
-| `agent-token` | Print (and create if missing) the agent heartbeat token. Used to set `FLEET_AGENT_TOKEN` on agent Macs. |
+| `label` | Print the launchd service label used by this host. |
+| `agent-token` | Print (and create if missing) the legacy shared agent token. |
+| `agent-token --host <id>` | Generate or rotate a host-scoped token; only its SHA-256 hash is retained. |
+| `leader` | Print this replica's HA role and the elected leader. |
+| `pair` | Create a single-use five-minute pairing code for a remote browser without exposing the master token. |
+| `devices` | List paired browser devices and their last-seen times. |
+| `revoke <key-or-name>` | Revoke one paired browser token. |
+| `remote status` | Show bind mode, reachable URLs, Tailscale Serve state, and firewall state. |
+| `remote lan on\|off` | Enable or disable LAN binding and restart the daemon when running. |
+| `remote tailscale on\|off` | Configure or reset Tailscale Serve for the dashboard. |
+| `backup` | Write a consistent SQLite backup with `sqlite3 .backup`. Safe while the daemon is running. |
+| `restore <path>` | Replace the live database from an explicit backup path. **Refuses while the daemon is running.** |
 
 Anything else prints the usage header and exits 1.
+
+#### Database backup and restore
+
+```bash
+cd dashboard
+./fleetctl.sh backup
+./fleetctl.sh stop
+./fleetctl.sh restore backups/fleet-20260322-143000.db
+./fleetctl.sh start
+```
+
+Backups land in `dashboard/backups/` by default (`FLEET_BACKUP_DIR`), are
+timestamped (`fleet-YYYYMMDD-HHMMSS.db`), and are written with mode `0600`.
+`backup` uses SQLite's online `.backup` command so the copy is consistent even
+while `fleetd` holds the database open in WAL mode. `restore` requires an explicit
+path — there is no "restore latest" shortcut — and copies the current database
+aside as `fleet.db.rollback-YYYYMMDD-HHMMSS` before overwriting it.
+
+What it refuses to do:
+
+- **`restore` while the daemon is running.** A live restore against an open WAL
+  database is how you get a corrupted store and a daemon that looks fine while
+  every query lies. Stop the daemon first.
+- **`restore` without a backup path.** Passing nothing prints usage and exits 1.
+
+Run a restore drill after upgrades: back up, stop, restore into a throwaway
+copy, verify `schema_migrations`, then start normally. See
+[Configuration](../configuration.md#database-backups-and-restore-drills).
+
+Dismissing an alert has no subcommand here: it is an `×` on the row in the
+dashboard's Alerts tab, which is where you are when an alert is annoying you.
+See [Dismissing alerts](../design/dismissing.md).
 
 The plist sets `KeepAlive`, unlike the runner plists — `health.sh` exists
 precisely because theirs do not, and a monitoring daemon that dies quietly is
@@ -844,10 +936,43 @@ it would be readable by any local user via `defaults read`.
 
 See [Federation](../federation.md) for the full multi-host setup guide.
 
+### `dashboard/host-token.mjs`
+
+Generates or rotates a host-scoped fleet-agent token and prints the plaintext
+token once. The token store keeps only its SHA-256 hash. `fleetctl.sh
+agent-token --host <id>` is the normal operator-facing wrapper.
+Source: [`dashboard/host-token.mjs`](https://github.com/addisdev/actions-runners/blob/main/dashboard/host-token.mjs).
+
+```bash
+node dashboard/host-token.mjs <stable-host-id>
+```
+
+### `dashboard/scripts/migrate-sqlite-to-pg.mjs`
+
+One-shot migration that streams every SQLite table into PostgreSQL as a
+checksummed JSONB archive. It reads `FLEET_DB` and requires
+`FLEET_DATABASE_URL`; the source database is opened read-only and rerunning the
+command replaces each table's archived rows transactionally.
+Source: [`dashboard/scripts/migrate-sqlite-to-pg.mjs`](https://github.com/addisdev/actions-runners/blob/main/dashboard/scripts/migrate-sqlite-to-pg.mjs).
+
+```bash
+cd dashboard
+FLEET_DATABASE_URL=postgres://... node scripts/migrate-sqlite-to-pg.mjs
+```
+
+### `dashboard/autofix/fix.sh`
+
+The allowlisted entry point used by the remediation bridge to launch a cloud
+agent for a failed run and open a fix pull request. An empty
+`AUTOFIX_FIX_REPOS` disables it. `--login` establishes the Cursor credential
+and `--verify` checks it without launching a fix.
+Source: [`dashboard/autofix/fix.sh`](https://github.com/addisdev/actions-runners/blob/main/dashboard/autofix/fix.sh).
+
 ### `install.sh`
 
-One-command setup for a coordinator or agent host. Runs preflight checks, installs
-npm dependencies, then delegates to `fleetctl.sh install` or `agentctl.sh install`.
+One-command setup for a coordinator or agent host. Runs preflight checks, then
+delegates to `fleetctl.sh install` or `agentctl.sh install`. When PostgreSQL HA
+is configured, `fleetctl.sh` installs the locked database driver.
 Source: [`install.sh`](https://github.com/addisdev/actions-runners/blob/main/install.sh).
 
 ```bash
@@ -855,7 +980,7 @@ Source: [`install.sh`](https://github.com/addisdev/actions-runners/blob/main/ins
 ./install.sh agent         # install the fleet agent on this machine
 ```
 
-Preflight checks: macOS 13+, arm64 (warns if not), Node.js 20+, git clone present,
+Built-in checks: macOS 14+, arm64 (warns if not), Node.js 22.5+, git clone present,
 `gh` authenticated (coordinator only), and required fleet.env variables set.
 
 ### `dashboard/watch/watchctl.sh`
@@ -884,6 +1009,10 @@ later, which is the failure mode a watchdog least wants.
 Its `ThrottleInterval` is 30 rather than 10: if it cannot start, retrying twice a
 minute only fills the log faster than anyone will read it.
 
+Set `WATCH_NOTIFY=1` in `fleet.env` before `install` to show local macOS
+notifications for sustained `FLEET_PROBLEM`/`FLEET_UNREACHABLE` transitions and
+their recovery. Logging remains enabled regardless.
+
 ### `dashboard/autofix/autofixctl.sh`
 
 Installs, runs and inspects the auto-remediation bridge.
@@ -905,6 +1034,15 @@ Source: [`dashboard/autofix/autofixctl.sh`](https://github.com/addisdev/actions-
 `AUTOFIX_PORT` defaults to `7879`; the bridge is given `FLEET_URL` pointing at
 `127.0.0.1:$FLEET_PORT`. It resolves a stable `node` path for the same reason
 `watchctl.sh` does.
+
+`install` also copies the auto-remediation settings out of `fleet.env` and into
+the plist's `EnvironmentVariables` — the rerun, fix, and escalation tuning
+variables listed in [configuration](../configuration.md), and only those with a
+value. This matters more than it looks: launchd gives a LaunchAgent no part of
+the installing shell's environment, so a variable set in `fleet.env` and not
+named in that list is simply absent at runtime. Changing any of them means
+re-running `install`, not `restart` — `restart` reloads the existing plist and
+so reuses the environment captured the last time it was written.
 
 ### `dashboard/autofix/fleet-action.sh`
 

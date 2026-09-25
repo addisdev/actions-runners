@@ -37,7 +37,7 @@ export const FAILURE_CLASSES = {
   },
   'no-runner': {
     label: 'No runner matched',
-    blame: 'host',
+    blame: 'config',
     hint: 'Nothing carrying the required labels picked the job up. See the Lint tab for '
       + 'unmatched runs-on labels.',
   },

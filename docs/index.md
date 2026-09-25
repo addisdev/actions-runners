@@ -4,9 +4,10 @@ Many self-hosted GitHub Actions runners on one Mac, and the page that says
 whether any of them is broken.
 
 One runner per repo, each its own directory and its own LaunchAgent. One Node
-daemon with no dependencies and no build step polls GitHub and the machine,
-keeps everything it learns in SQLite forever, and serves a single page: Fleet,
-Runs, Analytics, Lint, Alerts, Capacity, Hosts and Control.
+daemon per coordinator has no build step, polls GitHub and the machine, keeps
+local history in SQLite, and serves a single page: Fleet, Runs, Analytics, Lint,
+Alerts, Capacity, Hosts and Control. Optional two-replica HA adds managed
+PostgreSQL through one locked driver dependency.
 
 ![One macOS host running the runner LaunchAgents, the job hooks and local probes alongside the fleetd daemon, whose collector and server share one in-memory snapshot backed by SQLite; GitHub above it, and below it a browser dashboard reading over SSE and a second Mac's agent reporting inbound over a heartbeat](img/architecture.png)
 

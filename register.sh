@@ -142,6 +142,17 @@ LABELS="${LABEL_CSV:+--labels $LABEL_CSV}"
   --name "$RUNNER_NAME" $LABELS \
   --work _work --unattended --replace >/dev/null
 
+# Keep Spotlight out of the build tree. A runner's _work reaches about 2 GB of
+# node_modules, Gradle caches and DerivedData, all of it rewritten on every job,
+# and mdworker re-reads what changes: across 42 runners that was 84 GB of churn
+# holding mds_stores at 112% CPU on a 12-core host that CI was queueing for.
+#
+# Done here rather than as a one-off sweep because runners are now created
+# unattended — autoscale registers them when a repo has queued work and none, so
+# any exclusion that has to be remembered afterwards will not be.
+mkdir -p _work
+touch _work/.metadata_never_index
+
 ./svc.sh install >/dev/null
 ./svc.sh start >/dev/null
 # Reported by name rather than `head -1` of the online list: once a repo has two
