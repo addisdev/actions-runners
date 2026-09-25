@@ -12,37 +12,51 @@ Portable, mobile-first dashboard.
 
 ### Added
 
-- **LAN access.** `./fleetctl.sh remote lan on|off` binds the daemon to
-  `0.0.0.0` and restarts it. `./fleetctl.sh remote status` shows all reachable
-  URLs. `FLEET_HOST=0.0.0.0` in `fleet.env` also works.
+- **LAN access.** `./fleetctl.sh remote lan on|off` sets `FLEET_HOST` in
+  `fleet.env` and regenerates the LaunchAgent, which is where the bind address
+  actually lives. `./fleetctl.sh remote status` shows the running daemon's real
+  bind, every reachable URL, the Serve config, and the firewall state.
 - **Tailscale Serve integration.** `./fleetctl.sh remote tailscale on|off`
-  configures Tailscale Serve for HTTPS access on your tailnet. Never Funnel —
-  the dashboard is never exposed to the public internet.
-- **DNS-rebinding protection.** Every request is validated against the server's
-  own identity (hostname, `.local`, LAN IPs, Tailscale MagicDNS). Unknown
-  `Host` headers get 421 before any route logic runs.
+  configures Tailscale Serve for HTTPS access on your tailnet, finding the CLI
+  in Homebrew or the Mac App Store app bundle. `off` removes only the
+  dashboard's listener. Never Funnel — the dashboard is never exposed to the
+  public internet.
+- **DNS-rebinding protection.** Browser requests are validated against the
+  server's own identity (hostname, Bonjour name, LAN IPs, Tailscale MagicDNS,
+  coordinator URLs, `FLEET_ALLOWED_HOSTS`). Unknown `Host` headers get 421
+  before any route logic runs, and the refused name is logged. Agent routes are
+  exempt; they are token-authenticated.
 - **Per-device pairing.** `./fleetctl.sh pair` generates a 6-digit pairing code
-  (+ terminal QR if `qrencode` is installed). Remote devices exchange the code for
-  their own revokable bearer token; the master token never leaves the host. The
-  Control tab shows a QR code + pairing panel. `./fleetctl.sh devices` and
-  `./fleetctl.sh revoke <name>` manage them from the terminal.
+  (+ terminal QR if `qrencode` is installed) and a link on an address the phone
+  can reach. It warns if no such address exists. Remote devices scan, tap, or
+  type the code to get their own revocable bearer token; the master token never
+  leaves the host. Guessing is capped per client and globally. The Control tab
+  shows a QR code with a countdown, notices when pairing succeeds, and detects a
+  revoked token. `./fleetctl.sh devices` and `./fleetctl.sh revoke <name>`
+  manage devices from the terminal.
 - **Mobile bottom nav.** Below 640 px: fixed bottom bar (Fleet, Runs, Alerts,
   Hosts, More), More sheet for secondary tabs, collapsing top bar.
-- **Mobile glance card.** Busy / Idle / Queued counts at the top of Fleet —
-  sized for a quick check from the lock screen.
+- **Mobile glance card.** Busy / Idle / Queued / Alerts at the top of Fleet,
+  counted the same way as the KPI row, each tappable to its tab.
 - **Hash routing.** URLs like `#/runs`, `#/alerts`, `#/hosts` are bookmarkable,
-  restorable on refresh, and shareable. Back closes the drawer on mobile.
-- **Resilient SSE.** Exponential backoff on reconnect (1s → 30s cap). Reconnects
-  immediately on `visibilitychange`. Elapsed timers pause while the tab is hidden.
+  restorable on refresh, and shareable. The Back gesture closes an open drawer
+  before it leaves the tab.
+- **Resilient SSE.** Jittered exponential backoff on reconnect (1s → 30s cap).
+  On return to a suspended tab it reconnects only if the stream has gone quiet.
+  The last snapshot stays on screen through an outage. Elapsed timers pause
+  while the tab is hidden.
 - **PWA improvements.** `viewport-fit=cover` + safe-area padding for notches.
   `apple-touch-icon` PNG (180 px). Manifest shortcuts (Runs, Alerts). Service
   worker (`sw.js`) registered only on secure contexts (localhost / Tailscale
-  HTTPS); caches app shell + last `/api/state` for offline launch.
-- **Touch-friendly alerts.** Dismiss button always visible under
-  `@media (hover: none)`. `tip.js` tap-to-reveal popovers for `data-tip` attributes.
-- **Table-scroll containers** (`table-scroll`) for wide tables on narrow viewports.
-- **Three-state connection pill.** "Offline" (browser offline), "Can't reach
-  dashboard" (SSE down), "Collector stalled" (health check failed).
+  HTTPS). It fetches the shell network-first, so upgrades reach phones
+  immediately, and keeps the last `/api/state` for offline launch.
+- **Touch-friendly controls.** Dismiss buttons always visible and 44 px targets
+  under `@media (hover: none)`. `tip.js` shows `title` text on tap, which touch
+  browsers otherwise never display.
+- **Scrolling tables.** Every table is wrapped in a `table-scroll` container
+  with edge shadows, so wide tables scroll inside their panel on a phone.
+- **Connection pill states.** "Offline", "Reconnecting…" (stream down, last
+  data shown), "Stale" / "Collector stalled" (health check), "Live".
 - **Access banner.** Non-local viewers see their connection context (LAN /
   Tailscale user) and a link to the pairing flow.
 - **Alerts tab** now polls every 30 s while open, matching Hosts.

@@ -3323,8 +3323,11 @@ async function main() {
   // during exactly the window where someone is reloading it wondering why the
   // dashboard is down. The UI renders the `starting` snapshot meanwhile.
   // Host allowlist first, so the very first request is judged against it.
+  // The Tailscale/Bonjour lookup is not awaited: a hung tailscale CLI must not
+  // hold up startup, and a request that arrives by a name the lookup has not
+  // produced yet waits on it inside ensureHostAllowed anyway.
   initAllowedHosts(CONFIG.allowedHosts);
-  await refreshNetworkIdentity({ port: CONFIG.port, force: true }).catch(() => {});
+  const identity = refreshNetworkIdentity({ port: CONFIG.port, force: true }).catch(() => {});
   // Tailscale can come up, rename, or start serving after we did.
   setInterval(() => {
     refreshNetworkIdentity({ port: CONFIG.port, force: true }).catch(() => {});
@@ -3333,14 +3336,16 @@ async function main() {
   await new Promise((resolve) => {
     server.listen(CONFIG.port, CONFIG.host, () => {
       log(`listening on http://${CONFIG.host}:${CONFIG.port}`);
-      for (const { label, url } of reachableUrls(CONFIG.port, { bindHost: CONFIG.host })) {
-        log(`reachable via ${label}: ${url}`);
-      }
-      if (CONFIG.host === '127.0.0.1') {
-        log(`loopback only — for LAN access: ./fleetctl.sh remote lan on (or ssh -L ${CONFIG.port}:localhost:${CONFIG.port} your-runner-host)`);
-      }
       resolve();
     });
+  });
+  identity.then(() => {
+    for (const { label, url } of reachableUrls(CONFIG.port, { bindHost: CONFIG.host })) {
+      log(`reachable via ${label}: ${url}`);
+    }
+    if (CONFIG.host === '127.0.0.1') {
+      log(`loopback only — for LAN access: ./fleetctl.sh remote lan on (or ssh -L ${CONFIG.port}:localhost:${CONFIG.port} your-runner-host)`);
+    }
   });
 
   // Before the first tick, so the first page served already has sizing on it.

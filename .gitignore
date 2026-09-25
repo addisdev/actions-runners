@@ -99,6 +99,9 @@
 !dashboard/public/*.webmanifest
 !dashboard/public/assets/
 !dashboard/public/assets/*.svg
+!dashboard/public/assets/*.png
+!dashboard/public/vendor/
+!dashboard/public/vendor/*.js
 
 # The test suite. Un-ignored for the same reason the source is: a released
 # project whose tests are missing cannot be verified by whoever clones it, and

@@ -222,13 +222,25 @@ Update a live setting (capacity, autoscale, etc.). No restart required.
 
 ### Remote browser pairing
 
-- `GET /api/access` reports the connection path and reachable dashboard URLs.
+- `GET /api/access` reports how the viewer is connected
+  (`via`: `local`, `lan`, `tailscale`, or `proxy`), the Tailscale login when
+  proxied through Serve, the reachable dashboard URLs
+  (`[{ kind, label, url }]`), the bind `host` and `port`, and `readOnly`.
 - `POST /api/pair/start` requires an existing control or device token and
-  creates a single-use six-digit code valid for five minutes.
-- `POST /api/pair` exchanges that code for an individually revokable device
-  token. Failed exchanges are rate-limited by client address.
-- `GET /api/devices` lists paired devices; `POST /api/devices/revoke` revokes
-  one. Both require an existing control or device token.
+  creates a single-use six-digit code valid for five minutes. Response:
+  `{ code, url, alternatives, warning, expiresAt }`. `url` is the pairing
+  link on the best address another device can reach. `warning` is set when no
+  such address exists.
+- `POST /api/pair` with `{ code, name }` exchanges that code for an
+  individually revokable device token: `{ token, name }`. Needs no token, but
+  is subject to the Origin check. A wrong code returns `403`. Too many failures
+  returns `429`: more than 5 a minute from one client, or 20 a minute in total,
+  which also invalidates all pending codes. Duplicate names get a numeric
+  suffix rather than replacing the earlier device.
+- `GET /api/devices` lists paired devices; `POST /api/devices/revoke` with
+  `{ key }` revokes one. Both require an existing control or device token.
+
+Device tokens are refused when the daemon runs with `FLEET_READ_ONLY=1`.
 
 Only token hashes are stored in the mode-0600 device store. The master control
 token does not need to leave the coordinator.

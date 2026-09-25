@@ -282,4 +282,100 @@ describe('pairing UI contracts', () => {
     assert.match(control, /device-row/);
     assert.match(control, /\/api\/devices\/revoke/);
   });
+
+  // The vendored file is an ES module (it ends in `export default`). Loaded
+  // with a classic <script> tag it is a syntax error and window.qrcodegen is
+  // never defined, so the panel silently fell back to a bare URL.
+  test('the QR library is imported as a module, not a classic script', () => {
+    assert.match(control, /import qrcodegen from '\.\/vendor\/qrcodegen\.js'/);
+    assert.doesNotMatch(control, /window\.qrcodegen/);
+    assert.doesNotMatch(html, /<script[^>]+qrcodegen/);
+  });
+
+  test('a locked device can type a pairing code, not only scan one', () => {
+    assert.match(control, /Enter pairing code/);
+    assert.match(control, /promptForPairCode/);
+  });
+
+  test('a revoked or rotated token is detected rather than shown as unlocked', () => {
+    assert.match(control, /tokenRejected/);
+    assert.match(control, /bad token/);
+  });
+
+  test('copying the pairing link works on plain-http LAN, where clipboard is unavailable', () => {
+    assert.match(control, /navigator\.clipboard\.writeText[\s\S]{0,200}catch[\s\S]{0,80}window\.prompt/);
+  });
+
+  test('the pairing code counts down and notices a successful pairing', () => {
+    assert.match(control, /pair-countdown/);
+    assert.match(control, /pairingBaseline/);
+  });
+});
+
+describe('mobile reliability contracts', () => {
+  const sw = readFileSync(join(HERE, '..', 'public', 'sw.js'), 'utf8');
+  const tip = readFileSync(join(HERE, '..', 'public', 'tip.js'), 'utf8');
+
+  test('the access banner never injects proxy-supplied text as HTML', () => {
+    // tailscaleUser comes from a request header.
+    const banner = app.slice(app.indexOf('function renderAccessBanner'), app.indexOf('function renderHeader'));
+    assert.doesNotMatch(banner, /innerHTML/);
+  });
+
+  test('Back closes an open drawer before leaving the tab', () => {
+    assert.match(app, /history\.pushState\(\{[^\n]*drawer: true \}/);
+    assert.match(app, /addEventListener\('popstate'/);
+  });
+
+  test('navigation that came from history does not push a new entry', () => {
+    assert.match(app, /setView\(name, \{ fromHistory: true \}\)/);
+  });
+
+  test('a stream error keeps the last snapshot on screen', () => {
+    const onerror = app.slice(app.indexOf('es.onerror'), app.indexOf('es.onerror') + 400);
+    assert.doesNotMatch(onerror, /snap = null/);
+  });
+
+  test('returning to the tab reconnects only when the stream is suspect', () => {
+    assert.match(app, /function resumeIfStale/);
+  });
+
+  test('tables are wrapped in scroll containers', () => {
+    assert.match(app, /function wrapTables/);
+    assert.match(app, /MutationObserver/);
+  });
+
+  test('the more sheet is hidden outside the phone layout too', () => {
+    assert.match(css, /\.bottom-nav,\s*\.more-sheet\s*\{\s*display:\s*none/);
+  });
+
+  test('the service worker does not pin phones to a stale shell', () => {
+    assert.match(sw, /networkFirst\(request, CACHE_SHELL/);
+    assert.match(sw, /allSettled/);
+  });
+
+  test('tip popovers are positioned in viewport coordinates', () => {
+    // position: fixed plus scrollY put the popover off-screen on a scrolled page.
+    assert.doesNotMatch(tip, /scrollY/);
+    assert.doesNotMatch(tip, /preventDefault/);
+  });
+});
+
+describe('fleetctl remote-access contracts', () => {
+  const fleetctl = readFileSync(join(HERE, '..', 'fleetctl.sh'), 'utf8');
+
+  test('no python f-strings (Python 3.9 on the hosts rejects the escaping)', () => {
+    assert.doesNotMatch(fleetctl, /print\(f"/);
+  });
+
+  test('remote lan regenerates the LaunchAgent, since FLEET_HOST is baked into it', () => {
+    const lan = fleetctl.slice(fleetctl.indexOf('    lan)'), fleetctl.indexOf('    tailscale)'));
+    assert.match(lan, /apply_env_change/);
+    assert.match(fleetctl, /apply_env_change\(\) \{[\s\S]*?cmd_install/);
+  });
+
+  test('remote tailscale off removes only our listener, and Funnel is never used', () => {
+    assert.doesNotMatch(fleetctl, /"\$ts" serve reset|tailscale serve reset/);
+    assert.doesNotMatch(fleetctl, /"\$ts" funnel|tailscale funnel/);
+  });
 });
