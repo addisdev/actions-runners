@@ -145,15 +145,20 @@ cmd_status() {
   fi
   local endpoints="${FLEET_COORDINATORS:-${FLEET_COORDINATOR:-}}"
   local endpoint
-  IFS=',' read -r -a coordinator_list <<< "$endpoints"
-  for endpoint in "${coordinator_list[@]}"; do
-    [ -n "$endpoint" ] || continue
-    if curl -fsS --max-time 4 "${endpoint%/}/api/health" >/dev/null 2>&1; then
-      echo "coordinator: reachable at $endpoint"
-    else
-      echo "coordinator: NOT reachable at $endpoint"
-    fi
-  done
+  if [ -n "$endpoints" ]; then
+    local -a coordinator_list
+    IFS=',' read -r -a coordinator_list <<< "$endpoints"
+    for endpoint in "${coordinator_list[@]}"; do
+      [ -n "$endpoint" ] || continue
+      if curl -fsS --max-time 4 "${endpoint%/}/api/health" >/dev/null 2>&1; then
+        echo "coordinator: reachable at $endpoint"
+      else
+        echo "coordinator: NOT reachable at $endpoint"
+      fi
+    done
+  else
+    echo "coordinator: not configured"
+  fi
 }
 
 cmd_logs() { tail -n "${1:-60}" "$LOG_DIR/agent.log" 2>/dev/null || echo "no log yet — has the agent started?" ; }
