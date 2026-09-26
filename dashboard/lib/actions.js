@@ -181,6 +181,21 @@ export function buildActions({ root, gh, getSnapshot, getLimits = () => ({}) }) 
       exec: () => run('./health.sh', ['--repair'], { cwd: root, timeout: 300000, okCodes: [0, 1] }),
     },
 
+    'host.drain': {
+      label: 'Drain host',
+      danger: 'medium',
+      confirm: 'This prevents new runner placement on this host. Existing jobs continue.',
+      summary: () => './scripts/host-drain.sh --drain',
+      exec: () => run('./scripts/host-drain.sh', ['--drain'], { cwd: root }),
+    },
+
+    'host.resume': {
+      label: 'Resume host',
+      danger: 'medium',
+      summary: () => './scripts/host-drain.sh --resume',
+      exec: () => run('./scripts/host-drain.sh', ['--resume'], { cwd: root }),
+    },
+
     'fleet.status': {
       label: 'Fleet status',
       danger: 'none',
@@ -228,7 +243,8 @@ export function buildActions({ root, gh, getSnapshot, getLimits = () => ({}) }) 
           if (!LABEL_RE.test(l)) throw new ActionError('malformed label');
         }
         const inst = instance ? intArg(instance, 'instance') : 1;
-        if (inst > 4) throw new ActionError('instance must be 1–4');
+        const cap = getLimits().maxInstancesPerRepo ?? 4;
+        if (inst > cap) throw new ActionError(`instance must be 1–${cap}`);
 
         // The same-label rule, enforced here rather than left to memory: a
         // second runner that does not carry the first one's extra labels will

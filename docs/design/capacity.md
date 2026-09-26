@@ -113,10 +113,34 @@ Off by default, and dry-run by default when enabled. It makes **one decision per
 sweep**, every 60 seconds, and scale-up always wins over scale-down so a single
 tick can never both add and remove on contradictory evidence.
 
-To scale **up**, all of these must hold: a repo is under-provisioned, it has work
-that has been queued longer than `minQueuedMs`, its per-repo cooldown has
-elapsed, and the headroom gate passes. Automation cannot override headroom — a
-person can.
+To scale **up**, all of these must hold: a repo **and role** is under-provisioned,
+it has self-hosted work that has been queued long enough, its per-role cooldown
+has elapsed, and the headroom gate passes (except for a repo's first runner — see
+[Giving a repo its first runner](#giving-a-repo-its-first-runner)). Automation
+cannot override headroom — a person can.
+
+Sizing and scale-up are **per role** (`ci`, `ui-web`, or unroled). A repo with
+one `ci` runner and two queued `ui-web` jobs needs another `ui-web` runner, not a
+copy of `ci`. The planner picks a same-role sibling to duplicate, or derives
+labels from the queued job when that role does not exist yet.
+
+Two scale-up modes exist; **burst mode is off by default** so existing fleets
+keep the conservative policy until an operator enables it:
+
+| Mode | When it applies | Queue wait | Cooldown |
+|---|---|---|---|
+| **Sustained** | Default | `minQueuedMs` (10 minutes) | `scaleCooldownMs` (30 minutes) |
+| **Burst** | `burstScale` on and ≥ `burstMinQueuedJobs` jobs queued for one repo+role | `burstMinQueuedMs` (2 minutes) | `burstScaleCooldownMs` (5 minutes) |
+
+The planner returns **one action per sweep** plus a **deficit** count of how many
+runners are still wanted fleet-wide after that action. A bounded action list is
+available only when the executor sets `revalidate: true` and re-runs the planner
+between steps — otherwise stale batch decisions are unsafe.
+
+Complete queue discovery requires paginated GitHub queries. `GitHub.activeRuns()`
+and the pure helpers in `lib/github.js` (`filterActiveRuns`, `mergeRunPages`,
+`activeRunQueryPaths`) collect every queued and in-progress run instead of only
+the latest page of mixed-status results.
 
 To scale **down**, a runner must be instance 2 or higher, idle, its repo must
 have no active work, the runner must be older than `idleTtlMs`, and it must not
@@ -136,6 +160,71 @@ allowlist to include registration and removal, which it deliberately excludes.
 It cannot help a fan-out burst — a runner takes tens of seconds to create, and by
 then a 33-job fan-out is over. It is aimed at the sustained case: the repo that
 has queued for ten minutes because it owns one runner and wants two.
+
+## Giving a repo its first runner
+
+Everything above describes a **duplicate**: a second or third runner for a repo
+that already has one, created by copying a sibling's labels. A repo with *no*
+runner has no sibling to copy, so for a long time the fleet could diagnose that
+case — the queue classifier has always called it `unserved` and recommended
+"register a runner for this repo" — and could not act on it.
+
+`provisionUnserved` closes that gap, off by default like every other scaling
+switch. It exists so the fleet can be **trimmed**. The host limit is 32 runners
+and the fleet reached 42, but the runners over that line belong to real repos,
+so removing them otherwise means choosing which repos silently lose CI. With
+this on, a trimmed repo gets a runner back the next time it actually asks for
+one, and the steady state becomes "runners for repos building this week".
+
+Three things make it behave, and each exists because the obvious version is
+wrong:
+
+- **Only a live queue counts.** A repo is provisioned because it has work queued
+  right now, never because its history says it used to be busy. Every trimmed
+  repo still has months of job history, so sizing off history would ask for all
+  of them back in a single sweep and undo the trim.
+- **Only self-hosted work counts.** Most repos with no self-hosted runner are
+  meant to have none — of the ten unserved repos this fleet watches, every one
+  builds on GitHub-hosted runners. Provisioning for a queued `ubuntu-latest` job
+  would create a macOS runner labelled `ubuntu-latest` that no job can match,
+  which is the idle-runner mistake reached from the other direction. A job with
+  no readable labels is refused too, rather than guessed at.
+- **Headroom does not apply.** A first runner decides whether a repo can build
+  at all, not whether two of its jobs may run at once, and `runner.register`
+  already exempts instance 1 for that reason. Gating it on headroom would mean a
+  trimmed repo's CI returned only during the quiet hours. A registered runner is
+  not a running job in any case: admission control decides that separately, and
+  `FLEET_ADMIT_MAX_CONCURRENT` still caps how many ever execute at once.
+
+Everything else still applies — `minQueuedMs`, the per-repo cooldown, and the
+placer's drain and heartbeat checks. Only the headroom test is waived.
+
+Making this work end to end also required the collector to **poll repos that
+have no runner directory**, which it previously never did; see
+[Discovery](#discovery-what-the-collector-can-see) below.
+
+### Discovery: what the collector can see
+
+The repos polled on each fast tick come from the local runner directories. That
+is sufficient while every repo of interest has a runner, and actively wrong once
+one does not: a trimmed repo would never be polled, its queued runs would never
+enter the snapshot, and the classifier would never get to call it `unserved`.
+Trimming without fixing this would not degrade a repo's CI, it would **hide**
+it — the queue would grow on GitHub and the dashboard would show nothing.
+
+With `provisionUnserved` on, the poll list is the union of runner repos and the
+roster (every non-archived owned repo with workflows). The extra cost is one
+runs query per repo per tick, which is small for the reason the collector is
+already built around: requests are conditional, and an idle repo answers `304`
+without spending rate budget.
+
+The roster is also **loaded from the `repos` table at startup** rather than
+starting empty. It is refreshed by the slow loop, which may be fifteen minutes
+away, and everything that reads the roster for display tolerated that gap.
+Discovery does not: an empty roster means a trimmed repo's work is not merely
+late to appear, it is not collected at all. The first live test of provisioning
+missed its window for exactly this reason — the daemon restarted, the roster
+came back empty, and a run queued for four minutes stopped being visible.
 
 ## Checking its work
 
@@ -207,13 +296,36 @@ from "one Tuesday in March somebody ran a migration". Cron schedules parsed out
 of workflow files count immediately, because a cron expression is a statement of
 fact rather than a prediction.
 
-Nothing acts on any of it. The daemon predicts, waits for the hour to pass,
-scores the prediction against what actually happened, and writes the result to
-`forecast_evals`. Pre-warming stays locked until precision reaches 0.70 and
-recall 0.50 over at least 20 scored windows — and the gate, with its current
-numbers, is shown on the tab. Precision is weighted above recall deliberately: a
-missed burst costs a few minutes of queue wait, while a false positive spends
-disk and a concurrency slot on a runner that will idle out.
+Nothing acts on any of it until two independent switches agree. The daemon
+predicts, waits for the hour to pass, scores the prediction against what
+actually happened, and writes the result to `forecast_evals`. `evaluateGate()`
+must report precision ≥ 0.70 and recall ≥ 0.50 over at least 20 scored windows,
+and the gate numbers are shown on the Capacity tab. Even after the gate passes,
+the **Pre-warm** runtime setting defaults to off — turning it on is deliberate.
+
+When both are true, `planPrewarm()` in `lib/prewarm.js` may propose **one**
+duplicate per sweep. It refuses unless every guard passes:
+
+- the predicted window starts within the configured lead time (default one hour)
+  but has not started yet;
+- forecast confidence meets `prewarmMinConfidence` (`medium` accepts history or
+  schedule; `high` requires cron-backed or doubly-confirmed history);
+- the repo already has a non-draining runner to clone labels from;
+- expected peak strictly exceeds registered runners and the repo is below
+  `maxInstancesPerRepo`;
+- the repo has no queued or in-progress work (reactive autoscale owns that case);
+- the per-repo pre-warm cooldown has elapsed.
+
+The planner returns a single conservative `runner.duplicate` action — repo, source
+runner name, human-readable reason, and remaining deficit after the one addition.
+It does not register first runners, bypass headroom, or stack multiple pre-warms
+in one tick. Fleet integration lives in `autoscaleTick()` and is documented in
+the commit that wires it; until then the library and settings are ready but the
+daemon does not call the planner.
+
+Precision is weighted above recall deliberately: a missed burst costs a few
+minutes of queue wait, while a false positive spends disk and a concurrency slot
+on a runner that will idle out.
 
 There is deliberately no machine learning here. The failure mode is expensive and
 silent, and a forecast that cannot explain itself gives an operator no way to tell

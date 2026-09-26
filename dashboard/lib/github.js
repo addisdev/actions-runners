@@ -27,6 +27,68 @@ const TRANSIENT_STATUS = new Set([500, 502, 503, 504]);
 const RETRY_BACKOFF_MS = [300, 900];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Workflow-run statuses that mean work is still live on GitHub's side. Kept as
+// a set so fleetd can filter consistently and tests can assert without HTTP.
+export const ACTIVE_RUN_STATUSES = new Set([
+  'queued',
+  'in_progress',
+  'waiting',
+  'pending',
+  'requested',
+]);
+
+/** @param {string|null|undefined} status */
+export function isActiveRunStatus(status) {
+  return ACTIVE_RUN_STATUSES.has(String(status ?? '').toLowerCase());
+}
+
+/**
+ * @param {object[]} runs
+ * @returns {object[]}
+ */
+export function filterActiveRuns(runs) {
+  return (runs ?? []).filter((r) => isActiveRunStatus(r.status));
+}
+
+/**
+ * Merge paginated workflow-run pages, deduping by run id.
+ *
+ * @param {object[][]} pages
+ * @returns {object[]}
+ */
+export function mergeRunPages(pages) {
+  const byId = new Map();
+  for (const page of pages ?? []) {
+    for (const run of page ?? []) {
+      if (run?.id != null) byId.set(run.id, run);
+    }
+  }
+  return [...byId.values()];
+}
+
+/**
+ * Build the REST paths used to collect every queued and in-progress run for one
+ * repo. Split by status because GitHub paginates per query and a single
+ * `per_page=12` slice is how older collector ticks missed deep queues.
+ *
+ * @param {string} repo
+ * @param {{ perPage?: number, maxPages?: number, statuses?: string[] }} [opts]
+ * @returns {{ path: string, status: string }[]}
+ */
+export function activeRunQueryPaths(repo, { perPage = 100, maxPages = 5, statuses = null } = {}) {
+  const wanted = statuses ?? ['queued', 'in_progress', 'waiting'];
+  const paths = [];
+  for (const status of wanted) {
+    for (let page = 1; page <= maxPages; page++) {
+      paths.push({
+        status,
+        path: `repos/${repo}/actions/runs?status=${status}&per_page=${perPage}&page=${page}`,
+      });
+    }
+  }
+  return paths;
+}
+
 export class GitHub {
   constructor({ log }) {
     this.token = null;
@@ -34,6 +96,7 @@ export class GitHub {
     this.etags = new Map();
     this.cache = new Map();
     this.rate = { remaining: null, limit: null, resetAt: null };
+    this.backoffUntil = 0;
     // Counter only. There is deliberately no shared `lastError` field: the fast
     // loop fans out across every repo at once, so a single mutable "last error"
     // is written by whichever request happened to finish last. Errors are thrown
@@ -77,6 +140,12 @@ export class GitHub {
   // 429 and 403 are deliberately NOT retried: those are rate limiting, they need
   // backoff on a timescale of minutes, and retrying immediately makes it worse.
   async get(path, { etag = true, attempts = 3 } = {}) {
+    if (Date.now() < this.backoffUntil) {
+      throw Object.assign(
+        new Error(`${path}: GitHub rate-limit backoff until ${new Date(this.backoffUntil).toISOString()}`),
+        { status: 429, rateLimited: true }
+      );
+    }
     if (!this.token) await this.resolveToken();
 
     const url = path.startsWith('http') ? path : `${API}/${path.replace(/^\//, '')}`;
@@ -123,6 +192,19 @@ export class GitHub {
         // than every subsequent request failing identically until a restart.
         this.token = null;
         throw new Error(`${path}: 401 unauthorized (token dropped, will re-resolve)`);
+      }
+
+      if (res.status === 429 || (res.status === 403 && this.rate.remaining === 0)) {
+        const retryAfter = Number(res.headers.get('retry-after'));
+        const resetAt = this.rate.resetAt ?? 0;
+        this.backoffUntil = Number.isFinite(retryAfter) && retryAfter > 0
+          ? Date.now() + retryAfter * 1000
+          : Math.max(Date.now() + 60_000, resetAt);
+        const body = await res.text().catch(() => '');
+        throw Object.assign(
+          new Error(`${path}: ${res.status} rate limited; backing off until ${new Date(this.backoffUntil).toISOString()} ${body.slice(0, 120)}`),
+          { status: res.status, rateLimited: true, resetAt: this.backoffUntil }
+        );
       }
 
       if (TRANSIENT_STATUS.has(res.status)) {
@@ -184,11 +266,43 @@ export class GitHub {
     return data?.workflow_runs ?? [];
   }
 
+  /**
+   * Paginate one status query until a short page or maxPages.
+   *
+   * @returns {Promise<object[]>}
+   */
+  async runsPaginated(repo, { status = null, perPage = 100, maxPages = 5 } = {}) {
+    const out = [];
+    for (let page = 1; page <= maxPages; page++) {
+      const q = status ? `&status=${encodeURIComponent(status)}` : '';
+      const { data } = await this.get(
+        `repos/${repo}/actions/runs?per_page=${perPage}&page=${page}${q}`
+      );
+      const runs = data?.workflow_runs ?? [];
+      out.push(...runs);
+      if (runs.length < perPage) break;
+    }
+    return out;
+  }
+
+  /**
+   * Every queued and in-progress run for a repo, paginated and deduped.
+   * Suitable for fleetd's fast tick once it replaces the single-page `runs()`.
+   *
+   * @returns {Promise<object[]>}
+   */
+  async activeRuns(repo, { perPage = 100, maxPages = 5 } = {}) {
+    const pages = await Promise.all(['queued', 'in_progress', 'waiting'].map((status) =>
+      this.runsPaginated(repo, { status, perPage, maxPages })
+    ));
+    return mergeRunPages(pages);
+  }
+
   async jobsForRun(repo, runId) {
-    // No ETag: a run's jobs change constantly while it is in progress, and a
-    // cached 304 here would freeze the "which runner claimed it" answer, which
-    // is the only reason this call is made.
-    const { data } = await this.get(`repos/${repo}/actions/runs/${runId}/jobs`, { etag: false });
+    // Job lists change while a run is active, but GitHub changes their ETag with
+    // the representation. A 304 therefore means the cached body is still the
+    // current answer and saves the fleet's largest source of fast-loop calls.
+    const { data } = await this.get(`repos/${repo}/actions/runs/${runId}/jobs`);
     return data?.jobs ?? [];
   }
 
@@ -204,6 +318,12 @@ export class GitHub {
   async registrationToken(repo) {
     const data = await this.post(`repos/${repo}/actions/runners/registration-token`);
     if (!data?.token) throw new Error(`registrationToken: no token in response for ${repo}`);
+    return data.token;
+  }
+
+  async removalToken(repo) {
+    const data = await this.post(`repos/${repo}/actions/runners/remove-token`);
+    if (!data?.token) throw new Error(`removalToken: no token in response for ${repo}`);
     return data.token;
   }
 

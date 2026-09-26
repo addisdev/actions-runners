@@ -23,6 +23,22 @@ For installation, see [Get started → Install the dashboard](getting-started.md
 The main view. Shows every registered runner grouped by project, with live
 status badges.
 
+**Summary tiles** — the eight cards across the top are live operational
+snapshots. Each is a button: clicking (or pressing Enter/Space) navigates
+directly to the most relevant tab and scrolls to the related section. No URL
+changes — navigation is in-app only.
+
+| Tile | Navigates to |
+|---|---|
+| Runners online | Fleet → runner grid |
+| Building now | Runs → active jobs |
+| Queued | Fleet → queued jobs |
+| Open alerts | Alerts |
+| Drift | Fleet → drift section |
+| Memory pressure | Capacity |
+| Load | Capacity |
+| Disk free | Capacity |
+
 **Runner status badges:**
 | Badge | Meaning |
 |---|---|
@@ -51,10 +67,25 @@ offline, which usually means a registration that needs re-running.
 Live and recent runs across all repos. Job status, duration, and runner
 assignment. Click a run to open it on GitHub.
 
-**Queue diagnosis**: if a job has been queued for more than a moment, the
-dashboard classifies why. Hover the queued indicator to see the verdict
-(label mismatch, no runner, runner down, host saturated, etc.) and whether
-the autoscaler could help.
+**Queue diagnosis**: queued jobs on both the Fleet and Runs tabs show the
+classifier verdict inline — cause, confidence, recommended action, and an
+evidence list you can expand. The same diagnosis drives autoscale eligibility
+(`autoscale eligible` chip when adding a runner would help).
+
+**Long-running jobs**: when the snapshot marks an in-progress run with
+duration hints (`expectedDurationMs`, `p95DurationMs`, or a `longRunning`
+flag), the Runs tab shows an orange chip once elapsed time exceeds the
+expected duration.
+
+**Remediation panel**: the Fleet and Runs tabs list recent failure candidates
+from `GET /api/remediation-candidates` — what the autofix bridge may rerun or
+escalate. An empty list means nothing is pending; a fetch failure hides the
+panel gracefully.
+
+**Live connection**: the header dot reads `Live` only while the collector is
+fresh. Once the snapshot age exceeds the collector staleness threshold (four
+minutes by default, same as `GET /api/health`), the dot turns amber and the
+label reads `Stale` or `Collector stalled` instead of green `Live`.
 
 ### Analytics
 
@@ -116,16 +147,29 @@ action.
 
 ![The Hosts tab: this machine live, and a second Mac marked stale after six minutes without a heartbeat, its runners greyed rather than removed](img/hosts-tab.png)
 
-Federated host view (when agents are configured). Shows each remote Mac's
-runners, load, disk, and drain state. A host whose heartbeat is stale (>2
-minutes old) is flagged in orange.
+Federated host view (when agents are configured). Shows every Mac's runners,
+load, memory, disk, labels, headroom, drain state, and host-level repair/drain
+controls. A host whose heartbeat is stale (>2 minutes old) is flagged in
+orange. While the tab is open it refreshes every 30 seconds.
+
+Above the host cards, a **fleet-wide capacity** summary names which hosts
+currently have headroom for another runner. **Recent placements** lists the
+last autoscale placement decisions (chosen host or refusal reason). **Pending
+commands** shows registration, restart, drain, repair, and removal commands
+waiting for a host. In PostgreSQL HA mode the global strip also names this
+replica's leader/standby role.
+
+When more than one host is connected, the Fleet tab becomes host-first: runners
+are grouped by Mac and then by project. Capacity separates **this host** from
+**fleet-wide** headroom, and Runs attributes assigned runners to their host.
 
 ## Queue diagnosis causes
 
 | Cause | Meaning | Autoscale eligible? |
 |---|---|---|
 | `telemetry-unavailable` | GitHub or the local probes failed, so nothing here is trustworthy | No |
-| `unserved` | No runner registered for this repo | No |
+| `github-hosted` | The job's `runs-on:` names a GitHub-hosted image, so nothing on this fleet applies | No |
+| `unserved` | No runner registered for this repo | Only with `provisionUnserved` |
 | `label-mismatch` | No runner has all required labels | No |
 | `runner-down` | All runners for this repo are offline/drained | No |
 | `concurrency-block` | Another job from this run is using the only runner | No |
@@ -133,8 +177,16 @@ minutes old) is flagged in orange.
 | `repo-capacity` | More jobs than runners for this repo | **Yes** |
 | `github-delay` | Runner is ready but GitHub has not dispatched | No |
 
-Only `repo-capacity` with high confidence triggers autoscale. A label mismatch
-would only be made worse by cloning the existing runner.
+`repo-capacity` with high confidence triggers autoscale, and `unserved` does too
+once `provisionUnserved` is on — the one other case where adding a runner is the
+remedy rather than a way to make things worse. A label mismatch would only be
+made worse by cloning the existing runner.
+
+`github-hosted` is checked before the repo's own runners are considered, because
+the answer does not depend on them. It exists because a `ubuntu-latest` job was
+being reported as a **critical** label mismatch against runners carrying
+`self-hosted, macOS, ARM64` — accurate, and an instruction to go and fix a
+workflow that was behaving correctly.
 
 [Why a job is queued](concepts.md#why-a-job-is-queued) explains what each cause
 rules out, and [Honest analytics](design/analytics.md) explains how they are

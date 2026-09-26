@@ -6,20 +6,20 @@ vulnerability — use private reporting, not a public issue.
 
 ## Scope
 
-This is deliberately small tooling for **one macOS host** with many runners on
-it. Things that fit: better host checks, more accurate drift detection,
-clearer reporting, macOS version compatibility, bug fixes.
+This is deliberately small tooling for **a few macOS hosts** with many runners.
+Things that fit: better host checks, more accurate drift detection, clearer
+reporting, macOS version compatibility, federation and HA fixes.
 
 Things that do not fit, and why:
 
 - **Cloud autoscaling or Kubernetes.**
   [actions-runner-controller](https://github.com/actions/actions-runner-controller)
   already does that well, and this exists for the case where it is overkill.
-- **Runtime dependencies in the dashboard.** `dashboard/package.json` has none,
-  on purpose: it is an unattended daemon, and every dependency is a thing that
-  can break on a Tuesday. `node:sqlite` is why Node >= 22.5.0 is required. The
-  one exception is `autofix/escalate/`, which is opt-in and has its lock file
-  committed for exactly this reason.
+- **Unbounded runtime dependencies in the dashboard.** Single-host mode uses
+  Node built-ins; optional PostgreSQL HA has one locked `pg` dependency that is
+  dynamically loaded only in HA mode. Additional packages need a concrete
+  reliability justification. `autofix/escalate/` remains opt-in and isolated
+  behind its own lock file.
 
   **Accepted-risk note:** `autofix/escalate/` wraps a third-party agent binary
   whose supply-chain provenance and telemetry/network behaviour have not been

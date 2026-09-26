@@ -22,20 +22,40 @@ no repair.
 
 ## Scheduled maintenance
 
-Add two LaunchAgents on a real fleet:
+### Automatic health repair (recommended)
 
-```xml
-<!-- ~/Library/LaunchAgents/com.runner-fleet.health.plist -->
-<!-- health.sh --repair every 30 minutes -->
+Runner LaunchAgents do not set `KeepAlive`. When `RunnerService.js` dies,
+launchd leaves the job loaded but dead — one repo's jobs queue forever while
+every other repo looks fine. Run repair on a timer so silent deaths close within
+a minute rather than whenever someone notices:
+
+```bash
+./healthctl.sh install     # health.sh --repair every 60s (configurable)
+./healthctl.sh status
+./healthctl.sh logs
 ```
+
+`healthctl.sh` generates its own LaunchAgent plist with absolute paths, a
+launchd-safe `PATH`/`HOME`, and a lock so a slow sweep cannot overlap the next
+tick. It never touches the GitHub runner plists that `register.sh` creates.
+Drained runners stay skipped — repair behaviour is inherited from `health.sh`.
+
+Set `FLEET_HEALTH_INTERVAL` in `fleet.env` before install (default `60`), then
+reinstall if you change it later. See
+[Configuration → Health repair](configuration.md#health-repair).
+
+### Weekly cleanup
+
+Add a LaunchAgent for disk cleanup:
 
 ```xml
 <!-- ~/Library/LaunchAgents/com.runner-fleet.cleanup.plist -->
 <!-- cleanup.sh --apply weekly (e.g. Sunday 02:00) -->
 ```
 
-See `examples/launchd-health.plist` and `examples/launchd-cleanup.plist` for
-ready-to-install templates.
+See `examples/launchd-cleanup.plist` for a ready-to-install template. For
+health repair without `healthctl.sh`, `examples/launchd-health.plist` is a
+manual fallback — prefer `./healthctl.sh install` on production hosts.
 
 ## Draining a runner for maintenance
 
@@ -118,8 +138,8 @@ interactive Xcode simulators are preserved.
 ## Backup
 
 ```bash
-# Stop the daemon while copying, or use SQLite's online backup:
-sqlite3 dashboard/fleet.db ".backup dashboard/fleet.db.bak"
+cd dashboard
+./fleetctl.sh backup
 ```
 
 The only thing worth backing up is `fleet.db` — it holds every run and job ever
@@ -127,6 +147,30 @@ recorded, and GitHub discards run detail after 90 days. The scripts are in git.
 The runner registrations are in `actions-runners/*/. runner` but can be
 re-registered; the database history cannot be recovered once GitHub's copy ages
 out.
+
+In PostgreSQL HA mode, managed backups cover current shared control state and
+`npm run migrate:postgres` archives every SQLite table with row counts and
+checksums before cutover. Continue `fleetctl.sh backup` on each Mac because its
+SQLite file remains the low-overhead local analytics cache.
+
+## Coordinator failover drill
+
+Run this before enabling live autoscaling on the second Mac:
+
+1. Confirm both `/api/health` responses name the same `leaderId`, with exactly
+   one `role: leader`.
+2. Stop the leader: `dashboard/fleetctl.sh stop`.
+3. Within 30 seconds, confirm the peer reports `role: leader` and `/api/state`
+   has a fresh timestamp.
+4. Trigger an autoscale dry-run and verify one placement row and no duplicate
+   command.
+5. Restart the old leader; it must return as `standby`.
+6. Temporarily deny one replica access to PostgreSQL. It must stop leading and
+   must not issue actions, while existing runners continue taking GitHub jobs.
+
+Also test PostgreSQL unavailability. Both dashboards should report degraded
+control state, but runner listeners and in-flight builds must continue because
+they communicate directly with GitHub.
 
 ## Logs
 

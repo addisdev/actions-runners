@@ -13,7 +13,9 @@
         <string>cd "$HOME/actions-runners" &amp;&amp; ./health.sh --repair &gt;&gt; "$HOME/Library/Logs/fleet-health.log" 2&gt;&amp;1</string>
     </array>
 
-    <!-- Run every 30 minutes -->
+    <!-- Run every 30 minutes. Prefer ./healthctl.sh install on production hosts:
+         it generates absolute paths, a launchd-safe PATH, overlap protection,
+         and defaults to a 60s interval (FLEET_HEALTH_INTERVAL in fleet.env). -->
     <key>StartInterval</key>
     <integer>1800</integer>
 

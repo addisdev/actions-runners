@@ -97,8 +97,9 @@ core, repo locality, and host drain state.
 
 **Queue cause**  
 The classifier verdict for a queued job: why is it waiting? One of
-`telemetry-unavailable`, `unserved`, `label-mismatch`, `runner-down`,
-`concurrency-block`, `host-saturation`, `repo-capacity`, `github-delay`.
+`telemetry-unavailable`, `github-hosted`, `unserved`, `role-unserved`, `label-mismatch`,
+`runner-down`, `concurrency-block`, `host-saturation`, `repo-capacity`,
+`github-delay`.
 
 **Runner instance**  
 When a repo has more than one runner, they are distinguished by instance number

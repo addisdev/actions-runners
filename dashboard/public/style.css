@@ -107,6 +107,18 @@ body {
 }
 body.drawer-open { overflow: hidden; }
 
+.skip-link {
+  position: absolute; left: -9999px; top: auto; width: 1px; height: 1px; overflow: hidden;
+}
+.skip-link:focus {
+  position: fixed; left: 12px; top: 12px; z-index: 100;
+  width: auto; height: auto; overflow: visible;
+  padding: 8px 12px; border-radius: 8px;
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--hairline); box-shadow: var(--shadow-md);
+  font-weight: 600; text-decoration: none;
+}
+
 h1, h2, h3 { margin: 0; font-weight: 600; }
 
 a { color: inherit; }
@@ -174,6 +186,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
   transition: background 200ms, box-shadow 200ms;
 }
 .dot.is-live { background: var(--good); box-shadow: 0 0 0 3px var(--good-wash); }
+.dot.is-stale { background: var(--warning); box-shadow: 0 0 0 3px var(--warning-wash); }
 .dot.is-dead { background: var(--critical); box-shadow: 0 0 0 3px var(--critical-wash); }
 .dot.is-live::after {
   content: ""; position: absolute; inset: -5px; border: 1px solid var(--good);
@@ -281,6 +294,13 @@ section { margin-bottom: 26px; }
   box-shadow: var(--shadow-sm);
   transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
 }
+/* Reset browser button chrome while keeping all .kpi layout and visual rules. */
+button.kpi {
+  cursor: pointer; text-align: left;
+  font: inherit; color: inherit;
+  appearance: none; -webkit-appearance: none;
+  width: 100%;
+}
 .kpi::before {
   content: ""; position: absolute; inset: 0 0 auto; height: 2px;
   background: linear-gradient(90deg, transparent, var(--busy), transparent);
@@ -352,6 +372,30 @@ section { margin-bottom: 26px; }
 .drift-subject { font-family: var(--mono); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
 .drift-detail { font-size: 13px; }
 .drift-hint { display: block; font-size: 12px; color: var(--ink-2); margin-top: 2px; }
+
+/* Alert rows carry a dismiss control. The three-column grid above has nowhere
+   to put a fourth child, so it wraps into the 62px severity column and arrives
+   underneath the text. */
+.drift-item.actionable { grid-template-columns: 62px 210px 1fr auto; }
+.row-x {
+  align-self: center; justify-self: end;
+  width: 26px; height: 26px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; line-height: 1;
+  color: var(--muted); background: none; cursor: pointer;
+  border: 1px solid transparent; border-radius: var(--radius);
+}
+/* Invisible until the row is under the pointer. The control belongs to a row
+   someone is already looking at, and a column of × down an alerts page reads as
+   an invitation to clear the page rather than as a per-alert decision. */
+.drift-item:hover .row-x, .row-x:focus-visible { color: var(--ink-2); border-color: var(--border); }
+.row-x:hover { color: var(--ink); background: var(--surface); border-color: var(--border); }
+
+/* A dismissed condition is still open and is still being repaired, so it keeps
+   the row shape and loses only the emphasis. Greying it away completely would
+   make it read as resolved, which is the one thing it is not. */
+.drift-item.dismissed { border-left-color: var(--muted); background: var(--surface); opacity: 0.72; }
+.drift-item.dismissed .drift-sev { color: var(--muted); }
 
 .all-clear {
   position: relative; overflow: hidden;
@@ -448,6 +492,48 @@ section { margin-bottom: 26px; }
 
 /* Hosts view. A stale host is dimmed and struck through at the name, because the
    one mistake this view must not allow is reading old state as current. */
+.federation-summary {
+  margin: 0 22px; padding: 8px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface-glass);
+}
+.federation-summary.is-hidden { display: none; }
+.federation-summary-inner {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px;
+  font-size: 12.5px;
+}
+.federation-summary .fed-sep { color: var(--muted); }
+.federation-summary .fed-cap.good { color: var(--good); font-weight: 600; }
+.federation-summary .fed-cap.warn { color: var(--warning); font-weight: 600; }
+.federation-summary .fed-stale { margin-left: auto; }
+
+.host-block {
+  margin-bottom: 18px; padding: 12px 14px 4px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+.host-block-head {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--hairline);
+}
+.host-block-head.is-stale { border-left: 3px solid var(--critical); padding-left: 10px; }
+.host-block-name { font-size: 14px; margin: 0; }
+.host-block-meta { font-size: 12px; }
+.chip.host-attrib { background: var(--busy-wash); border-color: rgba(37, 99, 217, 0.22); color: var(--busy); }
+.chip.host-attrib.is-stale-host { background: var(--critical-wash); border-color: rgba(201, 54, 54, 0.25); color: var(--critical); }
+.runner.is-stale-host { opacity: 0.88; }
+.host-attrib-line { margin-top: -4px; }
+
+.headroom-block {
+  padding: 10px 0 6px; border-bottom: 1px solid var(--hairline);
+}
+.headroom-block:last-of-type { border-bottom: none; }
+.headroom-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.headroom-head h3 { font-size: 13px; font-weight: 600; margin: 0; }
+
+.host-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--hairline); }
+
 .host-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
 .host-card {
   border: 1px solid var(--hairline); border-radius: 6px; padding: 12px 14px;
@@ -532,6 +618,36 @@ section { margin-bottom: 26px; }
 .row .where { color: var(--muted); font-size: 11px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row a { text-decoration: none; }
 .row a:hover { text-decoration: underline; }
+
+.row-stack { display: flex; flex-direction: column; gap: 0; }
+.row-stack .row { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.row-stack .queue-diagnosis {
+  padding: 8px 13px 10px; margin-top: -1px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-top: 1px dashed var(--hairline); border-radius: 0 0 9px 9px;
+  font-size: 12px;
+}
+.queue-diagnosis-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 4px; }
+.queue-cause {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+  padding: 2px 7px; border-radius: 999px; background: var(--warning-wash); color: var(--warning);
+}
+.queue-cause.cause-repo-capacity { background: var(--good-wash); color: var(--good); }
+.queue-cause.cause-label-mismatch,
+.queue-cause.cause-telemetry-unavailable { background: var(--critical-wash); color: var(--critical); }
+.queue-confidence { font-size: 11px; color: var(--muted); font-style: italic; }
+.queue-confidence.high { color: var(--ink-2); font-style: normal; font-weight: 600; }
+.queue-recommend { margin: 4px 0 0; color: var(--ink-2); line-height: 1.45; }
+.queue-evidence { margin-top: 6px; font-size: 11.5px; color: var(--ink-2); }
+.queue-evidence summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+.queue-evidence ul { margin: 4px 0 0; padding-left: 16px; }
+.chip.long-running { color: var(--serious); background: var(--serious-wash); border-color: color-mix(in srgb, var(--serious) 25%, transparent); }
+.strategy.infra-rerun { color: var(--good); }
+.strategy.ai-fix { color: var(--busy); }
+.strategy.diagnose { color: var(--warning); }
+.fleet-cap-list { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12.5px; }
+.fleet-cap-list li { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-top: 1px solid var(--hairline); }
+.fleet-cap-list li:first-child { border-top: 0; }
 
 .empty {
   color: var(--muted); font-size: 13px; padding: 14px 16px;
@@ -794,6 +910,7 @@ pre.diag {
   .row { grid-template-columns: 76px 1fr 60px; }
   .row .branch, .row .where { display: none; }
   .drift-item { grid-template-columns: 62px 1fr; }
+  .drift-item.actionable { grid-template-columns: 62px 1fr auto; }
   .drift-item .drift-detail { grid-column: 1 / -1; }
   .chart-row { grid-template-columns: minmax(90px, 130px) 1fr 52px; }
   .chart-note { grid-column: 2 / -1; }
@@ -839,6 +956,18 @@ table.grid th { color: var(--muted); font-weight: 500; font-size: 11.5px; text-t
 table.grid tr.is-warn td:first-child { box-shadow: inset 2px 0 0 var(--warning); }
 table.grid td.muted { color: var(--muted); }
 table.grid td.good { color: var(--good); }
+
+.callout {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+  background: var(--plane);
+}
+.callout.warn { border-color: color-mix(in srgb, var(--warning) 55%, var(--hairline)); color: var(--warning); }
+.callout.good { border-color: color-mix(in srgb, var(--good) 45%, var(--hairline)); color: var(--good); }
 
 .set-row { display: grid; grid-template-columns: 1fr 90px 130px; align-items: center; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--hairline); font-size: 12.5px; }
 .set-row label { color: var(--ink); }
@@ -911,5 +1040,274 @@ table.grid td.good { color: var(--good); }
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+}
+
+/* ==========================================================================
+   Mobile & remote-access additions
+   ========================================================================== */
+
+/* --- viewport safe areas -------------------------------------------------- */
+/* Applied when device declares viewport-fit=cover (updated in index.html)    */
+main  { padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
+footer { padding-bottom: env(safe-area-inset-bottom); }
+
+/* --- bottom nav (≤ 640 px) ------------------------------------------------ */
+/* On narrow screens we replace the top tabs with a fixed bottom bar so the
+   most-used tabs are within thumb reach. Desktop keeps the top tabs. */
+
+.bottom-nav,
+.more-sheet {
+  display: none; /* hidden on desktop, including a sheet left open when the window widens */
+}
+
+@media (max-width: 640px) {
+  /* Hide the top-tab strip on small screens */
+  .tabs { display: none; }
+
+  /* Collapse topbar to just brand + connection pill */
+  .topbar { min-height: 52px; padding: 8px 14px; }
+  .topbar-right { gap: 6px; }
+  .brand-eyebrow { display: none; }
+
+  /* Bottom nav becomes the primary navigation */
+  .bottom-nav {
+    display: flex;
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 30;
+    background: var(--topbar-bg);
+    border-top: 1px solid var(--hairline);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .bnav-btn {
+    flex: 1;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 2px;
+    min-height: 54px;
+    padding: 6px 4px;
+    font: inherit; font-size: 10px; font-weight: 600;
+    color: var(--ink-2); background: none; border: 0; cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: color 120ms;
+  }
+  .bnav-btn:hover, .bnav-btn.is-active { color: var(--busy); }
+  .bnav-icon {
+    width: 22px; height: 22px;
+    display: flex; align-items: center; justify-content: center;
+    position: relative;
+  }
+  .bnav-badge {
+    position: absolute; top: -3px; right: -4px;
+    min-width: 14px; height: 14px; padding: 0 3px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--busy); color: #fff;
+    border-radius: 999px; font-size: 9px; font-weight: 700;
+  }
+  .bnav-badge.is-warning { background: var(--warning); }
+  .bnav-badge[hidden] { display: none; }
+
+  /* More sheet: slides up from behind the bottom nav (z 30), which stays
+     visible and tappable so "More" can also close it. */
+  .more-sheet {
+    position: fixed; inset: 0; z-index: 29;
+  }
+  .more-sheet.is-open { display: block; }
+  .more-sheet-scrim {
+    position: absolute; inset: 0;
+    background: rgba(0, 0, 0, 0.36);
+  }
+  .more-sheet-panel {
+    position: absolute; left: 0; right: 0;
+    bottom: calc(54px + env(safe-area-inset-bottom));
+    background: var(--surface);
+    border-radius: var(--radius) var(--radius) 0 0;
+    padding: 20px 18px 20px;
+    box-shadow: var(--shadow-md);
+    animation: sheet-up 180ms ease-out;
+  }
+  @keyframes sheet-up { from { transform: translateY(16px); opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .more-sheet-panel { animation: none; } }
+  .more-sheet-grid {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 10px; margin-top: 12px;
+  }
+  .more-sheet-btn {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 10px; font: inherit; font-size: 13px; font-weight: 600;
+    color: var(--ink); cursor: pointer; -webkit-tap-highlight-color: transparent;
+  }
+  .more-sheet-btn.is-active { background: var(--busy-wash); border-color: color-mix(in srgb, var(--busy) 30%, transparent); color: var(--busy); }
+
+  /* Account for the bottom nav height in main content */
+  main { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+  footer { margin-bottom: calc(54px + env(safe-area-inset-bottom)); }
+
+  /* Full-screen drawer on small phones */
+  .drawer-panel {
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 100dvh;
+    border-radius: 0;
+  }
+}
+
+/* --- table horizontal scroll containers ----------------------------------- */
+/* app.js wraps every table in one of these. Shadows appear only on an edge
+   that actually has more content past it: the "local" covers scroll with the
+   content and hide the fixed shadows when there is nothing to scroll to. */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  background:
+    linear-gradient(to right, var(--surface) 30%, transparent) left center / 28px 100% no-repeat local,
+    linear-gradient(to left, var(--surface) 30%, transparent) right center / 28px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, rgba(0, 0, 0, 0.16), transparent) left center / 10px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, 0.16), transparent) right center / 10px 100% no-repeat scroll;
+}
+@media (max-width: 640px) {
+  .table-scroll > table th { white-space: nowrap; }
+}
+
+/* --- run rows as stacked cards on very small phones ----------------------- */
+@media (max-width: 420px) {
+  .row {
+    grid-template-columns: 1fr;
+    gap: 2px;
+    padding: 8px 10px;
+  }
+  .row .repo, .row .branch, .row .where, .row .dur { font-size: 12px; }
+}
+
+/* --- access banner -------------------------------------------------------- */
+/* Shown to non-local viewers; dismisses once they have a device token */
+.access-banner {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px;
+  background: var(--busy-wash);
+  border: 1px solid color-mix(in srgb, var(--busy) 30%, transparent);
+  border-radius: var(--radius);
+  font-size: 12.5px; color: var(--busy);
+  margin-bottom: 12px;
+}
+.access-banner b { font-weight: 650; }
+.access-banner a { color: inherit; font-weight: 600; }
+.access-banner .access-dismiss {
+  margin-left: auto; background: none; border: 0; color: var(--busy);
+  cursor: pointer; font-size: 18px; line-height: 1;
+  min-width: 32px; min-height: 32px;
+}
+
+/* --- pairing panel (Control tab) ------------------------------------------ */
+.pair-code-block {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 10px;
+  padding: 14px 0;
+}
+.pair-qr {
+  display: block;
+  width: min(240px, 70vw); height: auto;
+  border-radius: 8px;
+  /* Scanners need a light quiet zone even in dark mode. */
+  background: #fff;
+}
+.pair-code-digits {
+  font: 700 32px/1 var(--mono);
+  letter-spacing: 0.12em;
+  color: var(--ink);
+  user-select: all;
+}
+.pair-code-url { font: 12px/1.4 var(--mono); color: var(--muted); word-break: break-all; }
+.pair-alts { font-size: 12px; color: var(--muted); }
+.pair-alts summary { cursor: pointer; }
+.pair-alts ul { margin: 6px 0 0; padding-left: 18px; }
+.pair-alts code { font-size: 11.5px; word-break: break-all; }
+.pair-notice {
+  padding: 8px 12px; margin: 8px 0;
+  border-radius: 8px; font-size: 12.5px;
+  border: 1px solid var(--border);
+}
+.pair-notice.ok   { color: var(--good);     background: color-mix(in srgb, var(--good) 10%, transparent);     border-color: color-mix(in srgb, var(--good) 30%, transparent); }
+.pair-notice.err  { color: var(--critical); background: color-mix(in srgb, var(--critical) 10%, transparent); border-color: color-mix(in srgb, var(--critical) 30%, transparent); }
+.pair-notice.warn { color: var(--warning);  background: color-mix(in srgb, var(--warning) 10%, transparent);  border-color: color-mix(in srgb, var(--warning) 30%, transparent); }
+.panel.panel-warn { border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); }
+.device-list { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.device-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+  padding: 8px 10px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.device-name { font-weight: 600; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.device-meta { font-size: 11.5px; color: var(--muted); }
+.btn.small { font-size: 11.5px; padding: 3px 9px; min-height: 28px; }
+
+/* --- mobile glance card --------------------------------------------------- */
+.glance-card {
+  display: none;
+}
+@media (max-width: 640px) {
+  .glance-card {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    padding: 12px 0 4px;
+  }
+  .glance-item {
+    display: flex; flex-direction: column; align-items: center;
+    padding: 12px 4px; gap: 4px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow-sm);
+    text-align: center;
+    font: inherit; color: var(--ink); cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .glance-item:active { transform: scale(0.97); }
+  .glance-value { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .glance-label { font-size: 10px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .glance-item.is-busy .glance-value { color: var(--busy); }
+  .glance-item.is-warn .glance-value  { color: var(--warning); }
+  .glance-item.is-good .glance-value  { color: var(--good); }
+  .glance-item.is-bad .glance-value   { color: var(--critical); }
+}
+
+/* --- tip popovers (replaces title= tooltips on touch) --------------------- */
+[data-tip-popover] {
+  position: fixed; z-index: 999;
+  max-width: 280px; padding: 6px 9px;
+  background: var(--ink); color: var(--surface);
+  border-radius: 7px; font-size: 12px; line-height: 1.4;
+  pointer-events: none;
+  box-shadow: var(--shadow-md);
+  opacity: 0;
+  transition: opacity 150ms;
+}
+[data-tip-popover].is-visible { opacity: 1; }
+
+/* --- connection state pill enhancements ----------------------------------- */
+.conn-offline { color: var(--critical); }
+.conn-stale   { color: var(--warning); }
+.conn-live    { color: var(--good); }
+
+/* --- touch targets -------------------------------------------------------- */
+/* Last in the file on purpose: these must beat .btn.small and the hover-only
+   reveal of .row-x declared earlier. */
+@media (hover: none) {
+  .btn, .btn.small, .tab, .bnav-btn, .more-sheet-btn { min-height: 44px; }
+  .drift-item .row-x {
+    color: var(--muted);
+    border-color: var(--border);
+    opacity: 1;
+    min-width: 36px; min-height: 36px;
+  }
+  /* 16px stops iOS Safari zooming into a focused field. Checkboxes and
+     radios are left alone — a 44px-tall checkbox is not a bigger target. */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  select,
+  textarea {
+    font-size: 16px !important;
+    min-height: 44px;
   }
 }

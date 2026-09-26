@@ -273,6 +273,23 @@ CREATE TABLE IF NOT EXISTS alerts (
 CREATE INDEX IF NOT EXISTS idx_alerts_open ON alerts(closed_at, opened_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_key_open ON alerts(key) WHERE closed_at IS NULL;
 
+-- Dismissing an alert stops it notifying. It cannot close the interval instead,
+-- because the condition is still true and the next tick would re-open it and
+-- notify again — a dismissal that closes an alert is a notification loop.
+--
+-- A dismissal lasts until its condition clears and is then deleted, which is
+-- what keeps this to two columns: there is no expiry to store, because the
+-- condition going away IS the expiry. A condition that recurs after clearing is
+-- new news and is allowed to say so.
+--
+-- Keyed by scope rather than by alert key. A newly-failing key carries the run
+-- id, so every push mints a new one and a dismissal made against one push would
+-- be undone by the next. See alertScope() in lib/alerts.js.
+CREATE TABLE IF NOT EXISTS dismissals (
+  scope        TEXT PRIMARY KEY,
+  dismissed_at INTEGER NOT NULL
+);
+
 ${WORKFLOW_FILES_DDL}
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -524,10 +541,12 @@ export function openDb(path) {
       started_at      INTEGER,
       completed_at    INTEGER,
       result          TEXT,
+      attempts        INTEGER NOT NULL DEFAULT 0,
       idempotency_key TEXT UNIQUE
     );
     CREATE INDEX IF NOT EXISTS idx_host_commands_host ON host_commands(host_id, status, ts);
   `);
+  addColumn(db, 'host_commands', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
 
   return db;
 }

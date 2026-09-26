@@ -21,7 +21,10 @@
 // offering an edit that will not take.
 
 export const ENV_ONLY = ['FLEET_PORT', 'FLEET_HOST', 'FLEET_DB', 'FLEET_TOKEN_FILE',
-  'FLEET_ADMISSION_LOG'];
+  'FLEET_ADMISSION_LOG', 'FLEET_COLLECTOR_STALE_MS', 'FLEET_AUTOFIX_STATUS_URL',
+  'FLEET_DATABASE_URL', 'FLEET_DATABASE_URL_FILE', 'FLEET_REPLICA_ID',
+  'FLEET_AGENT_TOKENS_FILE', 'FLEET_ALLOWED_HOSTS', 'FLEET_DEVICE_TOKENS_FILE',
+  'FLEET_TAILSCALE', 'FLEET_TAILSCALE_BIN'];
 
 // type drives both parsing and validation. Anything rejected leaves the previous
 // value in place — a settings screen that can brick the daemon with a typo is
@@ -65,6 +68,18 @@ export const SCHEMA = {
     label: 'How long work must be queued before scaling up (ms)' },
   scaleCooldownMs: { type: 'int', default: 1800000, min: 60000, max: 86400000,
     label: 'Minimum gap between scale-ups for one repo (ms)' },
+  // Burst mode is off by default so existing fleets keep the conservative ten-
+  // minute sustained policy until an operator turns it on deliberately.
+  burstScale: { type: 'bool', default: false,
+    label: 'Use shorter thresholds when several jobs queue at once (burst mode)' },
+  burstMinQueuedJobs: { type: 'int', default: 2, min: 2, max: 32,
+    label: 'Jobs queued for one repo+role before burst thresholds apply' },
+  burstMinQueuedMs: { type: 'int', default: 120000, min: 30000, max: 600000,
+    label: 'How long burst-mode work must be queued before scaling up (ms)' },
+  burstScaleCooldownMs: { type: 'int', default: 300000, min: 60000, max: 3600000,
+    label: 'Minimum gap between burst scale-ups for one repo+role (ms)' },
+  burstMaxAdditionsPerRepo: { type: 'int', default: 2, min: 1, max: 4,
+    label: 'Most runners to add in one revalidated batch (burst mode only)' },
   // Three days, not the six hours this started at. A dry run with a 6h TTL
   // immediately proposed removing a duplicate that had run 103 jobs and last
   // worked that morning — 6h does not mean "unused", it means "overnight", and
@@ -75,6 +90,39 @@ export const SCHEMA = {
     label: 'Remove a duplicate idle for this long (ms)' },
   scaleDown: { type: 'bool', default: false,
     label: 'Remove idle duplicates automatically' },
+  // Registering a repo's FIRST runner, which every other scaling path refuses to
+  // do: planScaleUp clones an existing sibling for its labels, and a repo with no
+  // runner has no sibling to clone. That left "repo has queued work and nowhere
+  // to run it" as the one queue cause the fleet could diagnose (classifyQueueCause
+  // has returned `unserved` all along) and not fix.
+  //
+  // It exists so the fleet can be trimmed. The host limit is 32 runners and the
+  // fleet reached 42, but the runners over that line belong to real repos —
+  // one example repo ran 31 jobs in 30 days and another 65, so removing them meant
+  // choosing which repos silently lose CI. With this on, a trimmed repo gets a
+  // runner back the next time it actually asks for one, and the steady state is
+  // "runners for repos building this week" rather than "runners for every repo
+  // that ever built".
+  //
+  // Off by default, like every other scaling switch here, and it obeys
+  // autoscaleDryRun. Turning it on widens what the daemon polls — see
+  // reposToPoll() in fleetd.js, which otherwise only ever looks at repos that
+  // already have a runner directory, and so cannot see a trimmed repo's queue.
+  provisionUnserved: { type: 'bool', default: false,
+    label: 'Register a first runner when a repo has queued work and none' },
+
+  // ---- pre-warming (forecast-driven) --------------------------------------
+  // Off by default. Shadow evaluation must pass before fleetd may call
+  // planPrewarm with enabled=true; the planner itself also refuses when the
+  // gate has not passed.
+  prewarm: { type: 'bool', default: false,
+    label: 'Add a duplicate runner ahead of forecast bursts (requires gate pass)' },
+  prewarmLeadMs: { type: 'int', default: 3600000, min: 300000, max: 86400000,
+    label: 'Act when a predicted burst window starts within this lead time (ms)' },
+  prewarmCooldownMs: { type: 'int', default: 3600000, min: 600000, max: 86400000,
+    label: 'Minimum gap between pre-warms for one repo (ms)' },
+  prewarmMinConfidence: { type: 'string', default: 'medium',
+    label: 'Minimum forecast confidence to pre-warm (medium or high)' },
 
   // ---- billing (optional) -------------------------------------------------
   // Leave this blank to disable billing queries. Set to your GitHub org or
@@ -177,6 +225,11 @@ export function createSettings(db) {
       }
     }
     if (spec.type === 'string' && String(parsed).length > 200) throw new Error(`${key}: too long`);
+    if (key === 'prewarmMinConfidence') {
+      const v = String(parsed).toLowerCase();
+      if (v !== 'medium' && v !== 'high') throw new Error(`${key}: must be medium or high`);
+      return v;
+    }
     return parsed;
   }
 
@@ -213,6 +266,34 @@ export function createSettings(db) {
         minFreeDiskGb: v.minFreeDiskGb,
         maxSwapinsPerSec: v.maxSwapinsPerSec,
         blockOnPressure: v.blockOnPressure,
+        maxInstancesPerRepo: v.maxInstancesPerRepo,
+      };
+    },
+
+    // Thresholds lib/autoscale.js reads. Kept separate from limits() so capacity
+    // headroom and scaling policy can evolve independently.
+    autoscaleLimits() {
+      const v = load().values;
+      return {
+        minQueuedMs: v.minQueuedMs,
+        scaleCooldownMs: v.scaleCooldownMs,
+        idleTtlMs: v.idleTtlMs,
+        maxInstancesPerRepo: v.maxInstancesPerRepo,
+        burstScale: v.burstScale,
+        burstMinQueuedJobs: v.burstMinQueuedJobs,
+        burstMinQueuedMs: v.burstMinQueuedMs,
+        burstScaleCooldownMs: v.burstScaleCooldownMs,
+        burstMaxAdditionsPerRepo: v.burstMaxAdditionsPerRepo,
+      };
+    },
+
+    prewarmLimits() {
+      const v = load().values;
+      return {
+        prewarm: v.prewarm,
+        prewarmLeadMs: v.prewarmLeadMs,
+        prewarmCooldownMs: v.prewarmCooldownMs,
+        prewarmMinConfidence: v.prewarmMinConfidence,
         maxInstancesPerRepo: v.maxInstancesPerRepo,
       };
     },

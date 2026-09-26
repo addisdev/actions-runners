@@ -35,12 +35,35 @@ export const STALE_HEARTBEAT_MS = 120_000;
  * @param {number}   [opts.now]
  * @returns {{ chosen: string|null, reason: string, considered: object[] }}
  */
-export function choosePlacement({ hosts = [], repo, requiredLabels = [], now = Date.now() } = {}) {
+/**
+ * @param [requireHeadroom] Whether a host must have spare capacity to be chosen.
+ *   True for every duplicate, because a duplicate exists to run a job alongside
+ *   another one and headroom is exactly the question of whether it may.
+ *
+ *   False when placing a repo's FIRST runner, which is not that: it decides
+ *   whether the repo can build at all, and lib/actions.js already exempts it
+ *   inside runner.register for the same reason. Without matching the exemption
+ *   here, the exemption there is unreachable through autoscale — the planner
+ *   agrees to register, and the placer then refuses every host on the headroom
+ *   it was told not to consider. That is what this fleet did on its first live
+ *   attempt: "no eligible host: mac-main — no headroom: 41 runners already
+ *   exist, the fleet limit of 32", for a repo that had no runner at all.
+ *
+ *   Drain state and heartbeat age still apply either way. Those say the host
+ *   cannot take work at all, which is a different claim from being busy.
+ */
+export function choosePlacement({ hosts = [], repo, requiredLabels = [], now = Date.now(), requireHeadroom = true } = {}) {
   const considered = [];
 
   for (const host of hosts) {
     const age = now - (host.lastHeartbeat ?? 0);
-    const record = { host: host.name ?? host.id, eligible: false, reason: null, score: null };
+    const record = {
+      id: host.id ?? host.name,
+      host: host.name ?? host.id,
+      eligible: false,
+      reason: null,
+      score: null,
+    };
 
     if (host.drained) {
       record.reason = 'host is drained';
@@ -51,7 +74,7 @@ export function choosePlacement({ hosts = [], repo, requiredLabels = [], now = D
       record.reason = host.lastHeartbeat
         ? `last heartbeat ${Math.round(age / 1000)}s ago (stale over ${STALE_HEARTBEAT_MS / 1000}s)`
         : 'never sent a heartbeat';
-    } else if (!(host.capacity?.ok ?? false)) {
+    } else if (requireHeadroom && !(host.capacity?.ok ?? false)) {
       record.reason = `no headroom: ${(host.capacity?.reasons ?? ['unknown']).join('; ')}`;
     } else if (requiredLabels.length && !hasLabels(host, requiredLabels)) {
       const missing = requiredLabels.filter(
@@ -92,6 +115,7 @@ export function choosePlacement({ hosts = [], repo, requiredLabels = [], now = D
 
   return {
     chosen: winner.host,
+    chosenId: winner.id,
     reason: `${winner.host}: ${winner.reason}`
       + (eligible.length > 1
         ? ` — preferred over ${eligible.slice(1).map((c) => c.host).join(', ')}`
@@ -147,6 +171,17 @@ function hasLabels(host, required) {
 }
 
 /**
+ * Labels a federated placement must honour from an autoscale plan.
+ *
+ * @param {object} plan - planScaleUp() result
+ * @param {object|null} [sourceRunner]
+ * @returns {string[]}
+ */
+export function requiredLabelsFromPlan(plan, sourceRunner = null) {
+  return plan?.extraLabels ?? sourceRunner?.extraLabels ?? [];
+}
+
+/**
  * Merge per-host snapshots into one fleet view.
  *
  * Every runner carries the host it came from, and a stale host's runners are
@@ -183,9 +218,12 @@ export function mergeHostSnapshots({ hosts = [], now = Date.now() } = {}) {
       runnerCount: (host.runners ?? []).length,
       busyCount: (host.runners ?? []).filter((r) => r.ghBusy || r.workingLocally).length,
       capacity: host.capacity ?? null,
+      host: host.host ?? {},
+      repos: host.repos ?? [],
       labels: host.labels ?? [],
       drained: Boolean(host.drained),
       version: host.version ?? null,
+      local: Boolean(host.local),
     });
   }
 

@@ -2,7 +2,7 @@
   "name": "fleet-dashboard",
   "version": "0.1.0",
   "private": true,
-  "description": "Actions Runners: the fleet dashboard. Zero runtime dependencies on purpose.",
+  "description": "Actions Runners fleet dashboard, with optional PostgreSQL HA support.",
   "type": "module",
   "main": "fleetd.js",
   "engines": {
@@ -11,6 +11,10 @@
   "scripts": {
     "start": "node fleetd.js",
     "test": "node --test \"test/*.test.js\"",
-    "test:watch": "node --test --watch \"test/*.test.js\""
+    "test:watch": "node --test --watch \"test/*.test.js\"",
+    "migrate:postgres": "node scripts/migrate-sqlite-to-pg.mjs"
+  },
+  "dependencies": {
+    "pg": "^8.23.0"
   }
 }

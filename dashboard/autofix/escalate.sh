@@ -168,7 +168,13 @@ if [ "$LOGIN" = true ]; then
         execFile("open", [url], () => {});   // best effort; the URL above is the fallback
       },
     });
-    console.log("signed in" + (r && typeof r === "object" ? ": " + JSON.stringify(r).slice(0, 200) : ""));
+    // Name only the fields that are safe to see. The login result carries the
+    // live API key, and this output is read over someones shoulder, pasted into
+    // an issue, and captured in whatever log the caller is redirecting to.
+    const email = r && typeof r === "object" ? r.email : null;
+    const expMs = r && typeof r === "object" ? r.apiKeyExpiresAtMs : null;
+    console.log("signed in" + (email ? " as " + email : ""));
+    if (expMs) console.log("Key valid until " + new Date(expMs).toISOString() + ".");
     console.log("\nCredential written to ~/.cursor/sdk/auth.json (valid 90 days).");
     console.log("Now run: ./autofix/escalate.sh --verify");
   '

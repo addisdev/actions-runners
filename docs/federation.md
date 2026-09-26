@@ -37,6 +37,9 @@ Start conservatively and expand permissions as trust builds:
 | 2. Drain/resume | 1 | 0 | Coordinator can drain or resume runners remotely |
 | 3. Remote provisioning | 1 | 1 | Coordinator can register new runners via autoscaling |
 
+Remote deregistration is a fourth, separately destructive opt-in:
+`FLEET_AGENT_ALLOW_DEREGISTER=1`.
+
 ## Quick start
 
 ### 1. Coordinator: open the bind address
@@ -57,8 +60,9 @@ cd ~/actions-runners/dashboard && ./fleetctl.sh restart
 ### 2. Coordinator: generate an agent token
 
 ```bash
-cd ~/actions-runners/dashboard && ./fleetctl.sh agent-token
-# Copy the token it prints — you will need it on each agent Mac
+cd ~/actions-runners/dashboard
+./fleetctl.sh agent-token --host mac-studio-1
+# Copy the token it prints to that host's fleet.env.
 ```
 
 ### 3. Agent Mac: clone and configure
@@ -67,15 +71,20 @@ cd ~/actions-runners/dashboard && ./fleetctl.sh agent-token
 git clone https://github.com/your-org/actions-runners.git ~/actions-runners
 cd ~/actions-runners
 cp examples/fleet.env.federated-agent fleet.env
-# Edit fleet.env — set FLEET_COORDINATOR, FLEET_AGENT_TOKEN, FLEET_HOST_NAME
+# Edit fleet.env — set coordinator(s), token, stable host ID, and display name
 ```
 
 ```bash
 # Minimum required in fleet.env:
 FLEET_COORDINATOR=http://coordinator-mac:7878
 FLEET_AGENT_TOKEN=<token from step 2>
+FLEET_HOST_ID=mac-studio-1
 FLEET_HOST_NAME=mac-studio-1
 ```
+
+`FLEET_HOST_ID` is the stable command-routing and token-scope key. It must match
+the value passed to `agent-token --host` and should not change when you rename
+the display-only `FLEET_HOST_NAME`.
 
 ### 4. Agent Mac: install and start
 
@@ -172,13 +181,11 @@ rm ~/actions-runners/.drain                 # back in rotation
 ```bash
 # On the coordinator:
 cd ~/actions-runners/dashboard
-./fleetctl.sh agent-token    # prints the current token (creates if missing)
-# To rotate: delete the token file, regenerate, update each agent's fleet.env
-rm .fleet-agent-token
-./fleetctl.sh agent-token
-# Distribute the new token to each agent, then:
-./dashboard/agentctl.sh restart  # on each agent Mac
+./fleetctl.sh agent-token --host mac-studio-1
+# Running it again rotates only that host.
 ```
+Then, on that agent Mac, update `FLEET_AGENT_TOKEN` in `fleet.env` and run
+`./dashboard/agentctl.sh install` so the mode-0600 local token file is replaced.
 
 **Control (browser) token:**
 ```bash
@@ -196,19 +203,21 @@ directly from GitHub and do not need the coordinator to be running.
 
 **Network loss** between coordinator and agents leaves agents in their last
 known state. They keep accepting jobs normally. The coordinator marks their
-heartbeats stale after `STALE_HEARTBEAT_MS` (default 5 min) and excludes
+heartbeats stale after `STALE_HEARTBEAT_MS` (default 2 min) and excludes
 them from placement.
 
 **Command delivery failure:** if an agent processes a command but crashes
 before posting the result, the coordinator marks the command `sent`. After
 5 minutes with no acknowledgement, the command is reset to `pending` and
-re-sent on the agent's next heartbeat. The agent's idempotency check (runner
-directory already present) prevents a duplicate runner from being created.
+re-sent on the agent's next heartbeat. Delivery stops after three attempts and
+the command is marked failed. Delivery is at-least-once, but the agent keeps an
+atomic mode-0600 journal of the last 256 command results and replays a prior
+result instead of executing the same command key twice.
 
-**Retries never create duplicates:** `runner.register` is idempotent — the
-agent checks whether the runner directory already exists and returns success
-if it does. The coordinator's idempotency key (repo + instance + minute)
-prevents the same command from being queued twice in rapid succession.
+**Retries never create duplicates:** the result journal covers every command;
+`runner.register` also checks whether the runner directory already exists. The
+coordinator's idempotency key prevents the same command from being queued twice
+in rapid succession.
 
 ## Security
 
@@ -227,6 +236,27 @@ prevents the same command from being queued twice in rapid succession.
   delivery and command acknowledgement only, not the control-plane actions
   available in the browser. Separate them so a compromised agent does not
   grant browser-level access.
+
+## Automatic coordinator failover
+
+For two Macs that should both run CI and either should be able to host the
+dashboard, run `fleetd` on both with the same managed PostgreSQL database and a
+different `FLEET_REPLICA_ID`.
+
+- Both Macs remain active GitHub runner hosts.
+- Both serve the dashboard and shared fleet snapshot.
+- PostgreSQL advisory locking allows exactly one fleetd to poll GitHub,
+  autoscale, backfill, and reconcile alerts.
+- The standby reports its local health, executes commands addressed to it, and
+  promotes when the leader's PostgreSQL session disappears.
+- Additional agents may set
+  `FLEET_COORDINATORS=http://mac-a:7878,http://mac-b:7878` for endpoint failover.
+
+This is not two independent coordinators. Independent SQLite writers would
+duplicate polling and commands and split historical state. See
+[Configuration](configuration.md#two-replica-high-availability) for cutover.
+Do not run `agent.js` on either Mac that is already an HA `fleetd` replica;
+`fleetd` performs that host-reporting and command-execution role itself.
 
 ## Troubleshooting
 

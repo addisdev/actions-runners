@@ -17,13 +17,15 @@
 // CAUSE PRECEDENCE (conservative order: most definitive first)
 //
 // 1. telemetry-unavailable  — GitHub or local probes failed; cannot diagnose
-// 2. unserved               — no runner registered for this repo at all
-// 3. label-mismatch         — no runner matches the job's runs-on labels
-// 4. runner-down            — the repo's runner exists but is offline/dead/draining
-// 5. concurrency-block      — workflow concurrency group limit reached, or account blocked
-// 6. host-saturation        — the headroom gate is refusing additions
-// 7. repo-capacity          — all matching runners are busy; adding one would help
-// 8. github-delay           — eligible idle runner exists; probable GitHub dispatch lag
+// 2. github-hosted          — the job asked for a GitHub-hosted runner, not this fleet
+// 3. unserved               — no runner registered for this repo at all
+// 4. role-unserved          — repo has runners, but not for this known job role
+// 5. label-mismatch         — no runner matches the job's runs-on labels
+// 6. runner-down            — the repo's runner exists but is offline/dead/draining
+// 7. concurrency-block      — workflow concurrency group limit reached, or account blocked
+// 8. host-saturation        — the headroom gate is refusing additions
+// 9. repo-capacity          — all matching runners are busy; adding one would help
+// 10. github-delay          — eligible idle runner exists; probable GitHub dispatch lag
 //
 // "probable" for github-delay because the API does not expose a dispatch-reason
 // field — an idle runner that should have accepted a job is strong circumstantial
@@ -34,9 +36,13 @@
 // medium — corroborated but not definitive (busy + no capacity issues)
 // low    — indirect evidence only (everything looks fine, still queued)
 
+import { roleLabel } from './state.js';
+
 export const CAUSES = {
   TELEMETRY_UNAVAILABLE: 'telemetry-unavailable',
+  GITHUB_HOSTED: 'github-hosted',
   UNSERVED: 'unserved',
+  ROLE_UNSERVED: 'role-unserved',
   LABEL_MISMATCH: 'label-mismatch',
   RUNNER_DOWN: 'runner-down',
   CONCURRENCY_BLOCK: 'concurrency-block',
@@ -47,11 +53,13 @@ export const CAUSES = {
 
 export const RECOMMENDED = {
   [CAUSES.TELEMETRY_UNAVAILABLE]: 'Wait for the next collector tick; act only once telemetry is restored.',
+  [CAUSES.GITHUB_HOSTED]: 'Nothing to do here — this job runs on GitHub-hosted runners. If it is not starting, check GitHub Actions minutes, spending limits and the service status page.',
   [CAUSES.UNSERVED]: 'Register a runner for this repo.',
+  [CAUSES.ROLE_UNSERVED]: 'Register a runner carrying this job role and its required labels.',
   [CAUSES.LABEL_MISMATCH]: 'Check that runs-on labels match a runner\'s labels. Do NOT add a runner — it will share the mismatch.',
   [CAUSES.RUNNER_DOWN]: 'Run health.sh --repair or restart the runner from the dashboard.',
-  [CAUSES.CONCURRENCY_BLOCK]: 'Review the concurrency group for this workflow. Another job from the same group may be running.',
-  [CAUSES.HOST_SATURATION]: 'Wait for running jobs to finish. Check the headroom panel before adding any runners.',
+  [CAUSES.CONCURRENCY_BLOCK]: 'GitHub is holding this run before dispatch. Check workflow concurrency, required approvals, billing, and GitHub Actions status.',
+  [CAUSES.HOST_SATURATION]: 'Do not add another runner on this host. Let running jobs finish, reduce workflow fan-out, or add capacity on another host.',
   [CAUSES.REPO_CAPACITY]: 'Add a runner for this repo. The Capacity tab shows whether the host can take one.',
   [CAUSES.GITHUB_DELAY]: 'Probably fine — GitHub dispatch takes a few seconds. If the job is still queued in 2 minutes, check for GitHub API errors.',
 };
@@ -73,20 +81,60 @@ export function classifyQueueCause({ run, runners, capacity, api = {}, collector
   const evidence = [];
 
   // ---- telemetry availability -------------------------------------------
-  const apiFailure = collector?.lastError || (api.remaining != null && api.remaining < 10);
+  // `lastError` is the fleet-wide collector summary shown in the footer. It
+  // must not poison every queued run when one unrelated repository fails. New
+  // snapshots carry the underlying errors keyed by repository; retain the
+  // summary fallback only for older snapshots and direct callers.
+  const hasScopedErrors = collector?.repoErrors
+    && typeof collector.repoErrors === 'object'
+    && !Array.isArray(collector.repoErrors);
+  const collectorError = hasScopedErrors
+    ? collector.repoErrors[run?.repo] ?? null
+    : collector?.lastError;
+  const apiFailure = collectorError || (api.remaining != null && api.remaining < 10);
   const repoRunners = runners.filter((r) => r.repo === run.repo);
   const anyGhUnknown = repoRunners.some((r) => r.ghUnknown);
 
   if (apiFailure || anyGhUnknown) {
-    if (apiFailure) evidence.push(`GitHub API: ${collector.lastError ?? `only ${api.remaining} requests remaining`}`);
+    if (apiFailure) evidence.push(`GitHub API: ${collectorError ?? `only ${api.remaining} requests remaining`}`);
     if (anyGhUnknown) evidence.push('GitHub runner status unavailable for this repo this tick');
     return result(CAUSES.TELEMETRY_UNAVAILABLE, 'low', evidence, false);
+  }
+
+  // ---- the job was never going to run here -------------------------------
+  // A `runs-on:` without `self-hosted` names a GitHub-hosted image, and no fact
+  // about this fleet explains or changes why it is queued. Checked before the
+  // repo's own runners are considered, because the answer does not depend on
+  // them: a repo with no runner is not `unserved` if its work does not want one.
+  //
+  // Without this the fleet reported `label-mismatch` at CRITICAL for a
+  // example Android job asking for `ubuntu-latest` — evidence reading "Job
+  // needs labels [ubuntu-latest] / Runners carry [self-hosted, macOS, ARM64]",
+  // which is true, and a recommendation to go and reconcile those labels, which
+  // would mean editing a workflow that is behaving correctly. A job queued on
+  // GitHub's side is usually minutes, a spending limit or an incident, and all
+  // three are somewhere this dashboard cannot see.
+  if (runLabels && runLabels.length > 0 && !runLabels.some((l) => l.toLowerCase() === 'self-hosted')) {
+    evidence.push(`Job asked for [${runLabels.join(', ')}], which is a GitHub-hosted runner`);
+    evidence.push('No self-hosted runner can take this job, and none should');
+    return result(CAUSES.GITHUB_HOSTED, 'high', evidence, false);
   }
 
   // ---- no runners at all -------------------------------------------------
   if (repoRunners.length === 0) {
     evidence.push('No runner is registered for this repo');
-    return result(CAUSES.UNSERVED, 'high', evidence, false);
+    // Action-eligible, unlike every other non-capacity cause here. The field
+    // means "adding a runner would help", and for the six causes marked false it
+    // genuinely would not — a second runner shares a label mismatch, and another
+    // runner on a saturated host makes the saturation worse. A repo with no
+    // runner is the opposite case: one runner is the entire remedy, and
+    // RECOMMENDED has said so all along.
+    //
+    // This was false only because nothing could carry the recommendation out.
+    // planScaleUp now registers a first runner for this cause; whether it may is
+    // decided by the provisionUnserved setting, which gates the sizing row that
+    // reaches the planner, not by pretending here that the remedy is unknown.
+    return result(CAUSES.UNSERVED, 'high', evidence, true);
   }
 
   // ---- label mismatch ----------------------------------------------------
@@ -101,6 +149,13 @@ export function classifyQueueCause({ run, runners, capacity, api = {}, collector
       if (!anyMatch && registered.length > 0) {
         evidence.push(`Job needs labels [${needsLabels.join(', ')}]`);
         evidence.push(`Runners carry [${[...new Set(registered.flatMap((r) => r.labels))].join(', ')}]`);
+        const role = roleLabel(needsLabels);
+        const roleExists = role
+          && registered.some((r) => roleLabel(r.extraLabels ?? r.labels) === role);
+        if (role && !roleExists) {
+          evidence.push(`No ${role} runner is registered for this repo`);
+          return result(CAUSES.ROLE_UNSERVED, 'high', evidence, true);
+        }
         return result(CAUSES.LABEL_MISMATCH, 'high', evidence, false);
       }
     }
@@ -147,7 +202,27 @@ export function classifyQueueCause({ run, runners, capacity, api = {}, collector
     if (waitMs > 3 * 60 * 1000) {
       evidence.push(`${idleOnline.length} idle online runner(s) exist but the run is not dispatched`);
       evidence.push(`Queued ${Math.round(waitMs / 60000)}m — longer than typical GitHub dispatch latency`);
-      return result(CAUSES.CONCURRENCY_BLOCK, 'medium', evidence, false);
+      // GitHub exposes the queued state, but not the reason it has not created
+      // or dispatched a job. Calling this a definite concurrency block was
+      // false precision: approvals, billing and a GitHub-side incident look
+      // identical from here. An unchanged run with no jobs for an hour is,
+      // however, safe to identify as stale and offer for explicit cancellation.
+      const jobs = Array.isArray(run.jobs) ? run.jobs : [];
+      const updatedAt = new Date(run.updatedAt ?? run.createdAt).getTime();
+      const unchangedMs = Date.now() - updatedAt;
+      const stale = jobs.length === 0
+        && Number.isFinite(unchangedMs)
+        && waitMs > 60 * 60 * 1000
+        && unchangedMs > 60 * 60 * 1000;
+      if (jobs.length === 0) evidence.push('GitHub has not created any jobs for this workflow run');
+      if (stale) {
+        evidence.push(`Run state has not changed for ${Math.round(unchangedMs / 60000)}m`);
+        return result(CAUSES.CONCURRENCY_BLOCK, 'low', evidence, false, {
+          recommended: 'This run is stale on GitHub. Cancel it, then rerun the workflow if the work is still needed.',
+          remediation: { action: 'run.cancel', label: 'Cancel stale run' },
+        });
+      }
+      return result(CAUSES.CONCURRENCY_BLOCK, 'low', evidence, false);
     }
 
     evidence.push(`${idleOnline.length} idle online runner(s) exist`);
@@ -177,14 +252,48 @@ export function classifyQueueCause({ run, runners, capacity, api = {}, collector
   return result(CAUSES.GITHUB_DELAY, 'low', evidence, false);
 }
 
-function result(cause, confidence, evidence, actionEligible) {
+function result(cause, confidence, evidence, actionEligible, { recommended, remediation } = {}) {
   return {
     cause,
     confidence,
     evidence,
-    recommended: RECOMMENDED[cause] ?? 'Investigate manually.',
+    recommended: recommended ?? RECOMMENDED[cause] ?? 'Investigate manually.',
     actionEligible,
+    remediation: remediation ?? null,
   };
+}
+
+/**
+ * The labels to diagnose a queued run against.
+ *
+ * A run's jobs each carry their own `runs-on:`, so their label sets must never
+ * be merged. An example Android repo had a branch whose `build` ran on
+ * `ubuntu-latest` and whose `instrumentation` ran on `[self-hosted, macOS]`;
+ * merging them produced `[self-hosted, macOS, ubuntu-latest]`, a set no machine
+ * can ever carry. That set cleared the GitHub-hosted check (it contains
+ * `self-hosted`) and then failed the label check, so a correct workflow was
+ * reported as a critical label-mismatch, and autoscale, reading the same merged
+ * set, would have registered a runner advertising `ubuntu-latest`.
+ *
+ * Only jobs that are themselves queued explain why a run is queued — a sibling
+ * that is running or finished has by definition already found a runner. Among
+ * those, a self-hosted job wins, because it is the only kind this fleet can do
+ * anything about; a GitHub-hosted sibling is waiting somewhere we cannot see.
+ *
+ * @param {object} run - A shaped run, with `jobs` from shapeJob
+ * @returns {string[]|null} One job's labels, or null when there is nothing to go on
+ */
+export function queuedJobLabels(run) {
+  const jobs = run?.jobs;
+  if (!Array.isArray(jobs) || jobs.length === 0) return null;
+
+  const waiting = jobs.filter((j) => j.status === 'queued');
+  const pool = waiting.length ? waiting : jobs;
+
+  const chosen =
+    pool.find((j) => (j.labels ?? []).some((l) => String(l).toLowerCase() === 'self-hosted')) ?? pool[0];
+
+  return chosen?.labels?.length ? [...chosen.labels] : null;
 }
 
 /**
@@ -209,7 +318,7 @@ export function classifyQueuedRuns(snap, lintByRepo = new Set()) {
       // run.labels here meant this path never saw any labels at all and so
       // could never reach label-mismatch, while the daemon's own call site
       // could. Same derivation as fleetd.js now.
-      runLabels: run.jobs?.flatMap((j) => j.labels ?? []) ?? null,
+      runLabels: queuedJobLabels(run),
       hasLintFindings: lintByRepo.has(run.repo),
     });
     results.set(run.id, classification);

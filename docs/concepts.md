@@ -115,7 +115,7 @@ either alone.
 ## Why a job is queued
 
 A queued job used to produce one drift row — "stuck in the queue" — with a
-single question behind it: is a runner idle? That separated two of the seven
+single question behind it: is a runner idle? That separated two of the ten
 reasons a job can wait, and it separated the wrong pair. "Every runner is busy"
 and "the host is saturated" both look like *no runner is idle*, and only the
 first is fixed by adding a runner. Duplicating a runner into the second case
@@ -125,12 +125,14 @@ adds a runner the headroom gate would have refused.
 classifies each queued run instead, with the evidence it used and a confidence
 level.
 
-![The eight causes as a decision path from one queued job, grouped by whose problem each is: the workflow's, this host's, GitHub's, or unknowable. Only repo-capacity is marked as one that adding a runner would fix](img/queue-causes.png)
+![Queue causes as a decision path from one queued job, grouped by whose problem each is: the workflow's, this host's, GitHub's, the repo's, or unknowable](img/queue-causes.png)
 
 | Cause | What it means | Adding a runner helps? |
 |---|---|---|
 | `telemetry-unavailable` | A GitHub call failed or the rate limit is nearly spent, so nothing here is trustworthy | Unknown — refuses to guess |
+| `github-hosted` | The job asked for a GitHub-hosted image, so it was never going to run here | No — nothing on this fleet applies |
 | `unserved` | No runner exists for the repo at all | Register one |
+| `role-unserved` | The repo has runners, but none for a known role such as `ci` or `ui-web` | Register that role with the queued job's labels |
 | `label-mismatch` | The job's `runs-on:` matches no runner's labels | **No** — a copy has the same labels |
 | `runner-down` | Every runner for the repo is offline, dead or draining | No — repair it |
 | `concurrency-block` | An idle runner exists and the run is still not dispatched; a workflow `concurrency:` group is holding it | No |
@@ -153,10 +155,9 @@ elimination: an idle online runner exists and the run has waited longer than
 dispatch normally takes. And the API exposes no dispatch-reason field, so
 `github-delay` is strong circumstantial evidence rather than a verdict.
 
-**Only `repo-capacity` at high confidence lets the autoscaler act**, and only
-that combination shows an **Add a runner** button. This is the concrete failure
-it prevents: cloning a runner whose labels do not match produces a second
-runner that also never matches, which is how one idle runner became two.
+Only `repo-capacity`, `unserved`, and `role-unserved` at high confidence let the
+autoscaler act. The distinction prevents cloning a runner whose labels do not
+match while still allowing a deliberate `ci` or `ui-web` pool to be created.
 
 Causes are persisted as *transitions* in `queue_events`, not once per tick, so
 "how long was this a label mismatch before anyone noticed" is answerable

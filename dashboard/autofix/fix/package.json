@@ -1,0 +1,12 @@
+{
+  "name": "fleet-fix",
+  "private": true,
+  "type": "module",
+  "description": "Cloud-agent fix PR authoring for CI failures. Isolated here so the dashboard core and the bridge stay dependency-free.",
+  "dependencies": {
+    "@cursor/sdk": "^1.0.28"
+  },
+  "overrides": {
+    "undici": "^6.28.1"
+  }
+}

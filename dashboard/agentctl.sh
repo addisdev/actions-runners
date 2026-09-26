@@ -12,7 +12,8 @@
 # repo root (copy from examples/fleet.env.federated-agent):
 #
 #   FLEET_COORDINATOR=http://coordinator-mac:7878
-#   FLEET_AGENT_TOKEN=<token from coordinator: ./fleetctl.sh agent-token>
+#   FLEET_AGENT_TOKEN=<token from coordinator: ./fleetctl.sh agent-token --host mac-studio>
+#   FLEET_HOST_ID=mac-studio
 #   FLEET_HOST_NAME=mac-studio
 #
 # Optional variables read from fleet.env:
@@ -47,11 +48,11 @@ node_bin() {
 
 check_required() {
   local missing=0
-  if [ -z "${FLEET_COORDINATOR:-}" ]; then
-    echo "FLEET_COORDINATOR is not set — add it to fleet.env" >&2; missing=1
+  if [ -z "${FLEET_COORDINATOR:-}" ] && [ -z "${FLEET_COORDINATORS:-}" ]; then
+    echo "FLEET_COORDINATOR or FLEET_COORDINATORS is not set — add it to fleet.env" >&2; missing=1
   fi
   if [ -z "${FLEET_AGENT_TOKEN:-}" ]; then
-    echo "FLEET_AGENT_TOKEN is not set — run ./fleetctl.sh agent-token on the coordinator and add it to fleet.env" >&2; missing=1
+    echo "FLEET_AGENT_TOKEN is not set — run ./fleetctl.sh agent-token --host <FLEET_HOST_ID> on the coordinator" >&2; missing=1
   fi
   if [ -z "${FLEET_HOST_NAME:-}" ]; then
     echo "FLEET_HOST_NAME is not set — add it to fleet.env (shown in the Hosts tab)" >&2; missing=1
@@ -87,17 +88,21 @@ cmd_install() {
   <dict>
     <key>HOME</key><string>$HOME</string>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-    <key>FLEET_COORDINATOR</key><string>${FLEET_COORDINATOR}</string>
+    <key>FLEET_COORDINATOR</key><string>${FLEET_COORDINATOR:-}</string>
+    <key>FLEET_COORDINATORS</key><string>${FLEET_COORDINATORS:-}</string>
     <key>FLEET_AGENT_TOKEN_FILE</key><string>${token_file}</string>
     <key>FLEET_HOST_NAME</key><string>${FLEET_HOST_NAME}</string>
+    <key>FLEET_HOST_ID</key><string>${FLEET_HOST_ID:-${FLEET_HOST_NAME}}</string>
     <key>FLEET_ROOT</key><string>${ROOT}</string>
     <key>FLEET_HOST_LABELS</key><string>${FLEET_HOST_LABELS:-}</string>
     <key>FLEET_AGENT_ALLOW_COMMANDS</key><string>${FLEET_AGENT_ALLOW_COMMANDS:-0}</string>
     <key>FLEET_AGENT_ALLOW_REGISTER</key><string>${FLEET_AGENT_ALLOW_REGISTER:-0}</string>
+    <key>FLEET_AGENT_ALLOW_DEREGISTER</key><string>${FLEET_AGENT_ALLOW_DEREGISTER:-0}</string>
     <key>FLEET_MAX_TOTAL_RUNNERS</key><string>${FLEET_MAX_TOTAL_RUNNERS:-8}</string>
     <key>FLEET_CEILING</key><string>${FLEET_CEILING:-3}</string>
     <key>FLEET_LOAD_PER_CORE</key><string>${FLEET_LOAD_PER_CORE:-2}</string>
     <key>FLEET_MIN_FREE_DISK_GB</key><string>${FLEET_MIN_FREE_DISK_GB:-50}</string>
+    <key>FLEET_MAX_INSTANCES_PER_REPO</key><string>${FLEET_MAX_INSTANCES_PER_REPO:-4}</string>
     <key>FLEET_HEARTBEAT_MS</key><string>${FLEET_HEARTBEAT_MS:-30000}</string>
   </dict>
   <key>KeepAlive</key><true/>
@@ -114,7 +119,8 @@ PLIST_EOF
   echo "loaded $LABEL"
   echo "node:  $node"
   echo "host:  $FLEET_HOST_NAME"
-  echo "coordinator: $FLEET_COORDINATOR"
+  echo "id:    ${FLEET_HOST_ID:-${FLEET_HOST_NAME}}"
+  echo "coordinator(s): ${FLEET_COORDINATORS:-${FLEET_COORDINATOR:-}}"
   sleep 2
   cmd_status
 }
@@ -137,13 +143,21 @@ cmd_status() {
   else
     echo "launchd: not loaded"
   fi
-  if [ -n "${FLEET_COORDINATOR:-}" ]; then
-    if curl -fsS --max-time 4 "${FLEET_COORDINATOR%/}/api/health" >/dev/null 2>&1; then
-      echo "coordinator: reachable at $FLEET_COORDINATOR"
-    else
-      echo "coordinator: NOT reachable at $FLEET_COORDINATOR"
-      echo "             check FLEET_COORDINATOR in $ROOT/fleet.env"
-    fi
+  local endpoints="${FLEET_COORDINATORS:-${FLEET_COORDINATOR:-}}"
+  local endpoint
+  if [ -n "$endpoints" ]; then
+    local -a coordinator_list
+    IFS=',' read -r -a coordinator_list <<< "$endpoints"
+    for endpoint in "${coordinator_list[@]}"; do
+      [ -n "$endpoint" ] || continue
+      if curl -fsS --max-time 4 "${endpoint%/}/api/health" >/dev/null 2>&1; then
+        echo "coordinator: reachable at $endpoint"
+      else
+        echo "coordinator: NOT reachable at $endpoint"
+      fi
+    done
+  else
+    echo "coordinator: not configured"
   fi
 }
 

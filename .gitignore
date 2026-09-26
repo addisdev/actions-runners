@@ -87,15 +87,21 @@
 !dashboard/lib/
 !dashboard/public/
 !dashboard/*.js
+!dashboard/*.mjs
 !dashboard/*.json
 !dashboard/*.md
 !dashboard/lib/*.js
+!dashboard/scripts/
+!dashboard/scripts/*.mjs
 !dashboard/public/*.js
 !dashboard/public/*.css
 !dashboard/public/*.html
 !dashboard/public/*.webmanifest
 !dashboard/public/assets/
 !dashboard/public/assets/*.svg
+!dashboard/public/assets/*.png
+!dashboard/public/vendor/
+!dashboard/public/vendor/*.js
 
 # The test suite. Un-ignored for the same reason the source is: a released
 # project whose tests are missing cannot be verified by whoever clones it, and
@@ -110,6 +116,10 @@
 # there — and a webhook URL usually carries a token in the path. The example
 # file stays tracked; the real one does not.
 dashboard/alerts.config.json
+dashboard/.fleet-agent-tokens.json
+dashboard/.fleet-device-tokens.json
+dashboard/.fleet-agent-command-results.json
+dashboard/.fleet-agent-command-results.json.tmp-*
 
 # The auto-remediation bridge. Source in, runtime state out: state.json holds
 # per-alert attempt counts, runs/ holds agent transcripts, and repos/ holds
@@ -131,6 +141,17 @@ dashboard/alerts.config.json
 !dashboard/autofix/escalate/*.mjs
 !dashboard/autofix/escalate/package.json
 !dashboard/autofix/escalate/package-lock.json
+
+# Cloud-agent fixes, same shape as escalation above and tracked for the same
+# reasons. Worth stating why this block has to exist at all: fix.sh matches the
+# `!dashboard/autofix/*.sh` rule and so appeared in git status straight away,
+# while everything under fix/ did not, because `*` stops git descending into a
+# directory that was never un-ignored. The wrapper looked tracked, the agent it
+# wraps was not, and only `git check-ignore` said so.
+!dashboard/autofix/fix/
+!dashboard/autofix/fix/*.mjs
+!dashboard/autofix/fix/package.json
+!dashboard/autofix/fix/package-lock.json
 
 # The watchdog. Un-ignoring the directory is what makes the difference here:
 # without it `*` kept git from ever descending, so the `!*.sh` rule at the top
