@@ -29,6 +29,7 @@ const SHELL_URLS = [
   '/hosts.js',
   '/lint.js',
   '/analytics.js',
+  '/notifications.js',
   '/vendor/qrcodegen.js',
   '/site.webmanifest',
   '/assets/favicon.svg',
@@ -103,4 +104,45 @@ self.addEventListener('fetch', (event) => {
   // Every navigation is the one-page shell; the hash picks the tab.
   const key = request.mode === 'navigate' ? '/' : url.pathname;
   event.respondWith(networkFirst(request, CACHE_SHELL, key, NETWORK_TIMEOUT_MS));
+});
+
+// Web push (lib/push.js on the daemon). The payload is JSON:
+//   { title, body, severity, tag, url, resolved, open? }
+// A resolution carries the same tag as the alert it resolves, so it replaces
+// that notification instead of stacking beside it.
+self.addEventListener('push', (event) => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch { data = { title: 'Fleet', body: event.data?.text() ?? '' }; }
+  const title = data.title || 'Fleet';
+  const options = {
+    body: data.body || '',
+    tag: data.tag || undefined,
+    // Re-alert for a new problem under an existing tag; a resolution updates quietly.
+    renotify: Boolean(data.tag) && !data.resolved,
+    silent: Boolean(data.resolved),
+    requireInteraction: data.severity === 'critical' && !data.resolved,
+    icon: '/assets/icon-192.png',
+    badge: '/assets/icon-192.png',
+    data: { url: data.url || '/#/alerts' },
+    timestamp: Date.now(),
+  };
+  const badge = Number.isFinite(data.open) && 'setAppBadge' in self.navigator
+    ? (data.open > 0 ? self.navigator.setAppBadge(data.open) : self.navigator.clearAppBadge()).catch(() => {})
+    : Promise.resolve();
+  event.waitUntil(Promise.all([self.registration.showNotification(title, options), badge]));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = new URL(event.notification.data?.url || '/#/alerts', self.location.origin).href;
+  event.waitUntil((async () => {
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const existing = windows.find((c) => new URL(c.url).origin === self.location.origin);
+    if (existing) {
+      await existing.focus();
+      if ('navigate' in existing) await existing.navigate(target).catch(() => {});
+      return;
+    }
+    await self.clients.openWindow(target);
+  })());
 });

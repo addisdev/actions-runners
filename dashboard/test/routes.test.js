@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { rmSync } from 'node:fs';
+import { createECDH, randomBytes } from 'node:crypto';
 import { createHostToken } from '../lib/host-auth.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -806,6 +807,128 @@ describe('pairing routes', () => {
   test('GET /api/devices requires auth', async () => {
     const r = await fetch(`http://127.0.0.1:${d.port}/api/devices`);
     assert.equal(r.status, 401);
+  });
+});
+
+// ------------------------------------------------------------------ web push
+
+describe('push routes', () => {
+  let d;
+  let pushDir;
+  const at = (path) => `http://127.0.0.1:${d.port}${path}`;
+  const call = (path, { method = 'POST', body, token = d.token } = {}) => fetch(at(path), {
+    method,
+    headers: {
+      ...(body ? { 'content-type': 'application/json' } : {}),
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const subscription = () => {
+    const ecdh = createECDH('prime256v1');
+    ecdh.generateKeys();
+    return {
+      endpoint: `https://fcm.googleapis.com/fcm/send/${randomBytes(8).toString('hex')}`,
+      keys: { p256dh: ecdh.getPublicKey().toString('base64url'), auth: randomBytes(16).toString('base64url') },
+    };
+  };
+  const status = async (endpoint, token = d.token) =>
+    (await call(`/api/push/status?endpoint=${encodeURIComponent(endpoint)}`, { method: 'GET', token })).json();
+  async function pairDevice(name) {
+    const { code } = await (await call('/api/pair/start')).json();
+    const res = await call('/api/pair', { body: { code, name }, token: null });
+    return (await res.json()).token;
+  }
+
+  before(async () => {
+    pushDir = mkdtempSync(join(tmpdir(), 'fleetd-push-'));
+    const alertConfig = join(pushDir, 'alerts.config.json');
+    // No macOS banners from a test daemon.
+    writeFileSync(alertConfig, JSON.stringify({ macos: false }));
+    d = await startDaemon({
+      FLEET_ALERTS: '1',
+      FLEET_ALERT_CONFIG: alertConfig,
+      FLEET_VAPID_FILE: join(pushDir, 'vapid.json'),
+    });
+  });
+  after(() => {
+    d?.kill();
+    rmSync(pushDir, { recursive: true, force: true });
+  });
+
+  test('GET /api/push/key is public and returns a P-256 public key', async () => {
+    const r = await fetch(at('/api/push/key'));
+    assert.equal(r.status, 200);
+    const raw = Buffer.from((await r.json()).publicKey, 'base64url');
+    assert.equal(raw.length, 65);
+  });
+
+  test('subscribing needs a token', async () => {
+    const r = await call('/api/push/subscribe', { body: { subscription: subscription() }, token: null });
+    assert.equal(r.status, 401);
+  });
+
+  test('an endpoint outside the push services is refused', async () => {
+    const sub = { ...subscription(), endpoint: 'https://169.254.169.254/latest/meta-data' };
+    const r = await call('/api/push/subscribe', { body: { subscription: sub } });
+    assert.equal(r.status, 400);
+    assert.match((await r.json()).error, /not a known push service/);
+  });
+
+  test('subscribe, check, and unsubscribe round-trip', async () => {
+    const sub = subscription();
+    const r = await call('/api/push/subscribe', { body: { subscription: sub, minSeverity: 'critical' } });
+    assert.equal(r.status, 200);
+    assert.equal((await r.json()).minSeverity, 'critical');
+    assert.deepEqual(
+      { subscribed: true, minSeverity: 'critical' },
+      (({ subscribed, minSeverity }) => ({ subscribed, minSeverity }))(await status(sub.endpoint)),
+    );
+    const channels = (await (await fetch(at('/api/alerts'))).json()).channels;
+    assert.ok(channels.push >= 1);
+
+    const un = await call('/api/push/unsubscribe', { body: { endpoint: sub.endpoint } });
+    assert.equal((await un.json()).removed, true);
+    assert.equal((await status(sub.endpoint)).subscribed, false);
+  });
+
+  test('an unknown severity falls back to warnings and up', async () => {
+    const r = await call('/api/push/subscribe', { body: { subscription: subscription(), minSeverity: 'everything!' } });
+    assert.equal((await r.json()).minSeverity, 'warning');
+  });
+
+  test('a test push to a device that is not subscribed is a 404', async () => {
+    const r = await call('/api/push/test', { body: { endpoint: subscription().endpoint } });
+    assert.equal(r.status, 404);
+  });
+
+  test('a device cannot remove another device\'s subscription', async () => {
+    const phone = await pairDevice('push-phone');
+    const laptop = await pairDevice('push-laptop');
+    const sub = subscription();
+    await call('/api/push/subscribe', { body: { subscription: sub }, token: phone });
+    const r = await call('/api/push/unsubscribe', { body: { endpoint: sub.endpoint }, token: laptop });
+    assert.equal(r.status, 403);
+    assert.equal((await status(sub.endpoint)).subscribed, true);
+  });
+
+  test('revoking a device removes its subscriptions', async () => {
+    const phone = await pairDevice('revoked-phone');
+    const sub = subscription();
+    await call('/api/push/subscribe', { body: { subscription: sub }, token: phone });
+    const { devices } = await (await call('/api/devices', { method: 'GET' })).json();
+    const key = devices.find((dev) => dev.name === 'revoked-phone').key;
+    assert.equal((await call('/api/devices/revoke', { body: { key } })).status, 200);
+    assert.equal((await status(sub.endpoint)).subscribed, false);
+  });
+
+  test('push routes are unavailable when alerting is off', async () => {
+    const off = await startDaemon();
+    try {
+      assert.equal((await fetch(`http://127.0.0.1:${off.port}/api/push/key`)).status, 404);
+    } finally {
+      off.kill();
+    }
   });
 });
 

@@ -245,6 +245,40 @@ Device tokens are refused when the daemon runs with `FLEET_READ_ONLY=1`.
 Only token hashes are stored in the mode-0600 device store. The master control
 token does not need to leave the coordinator.
 
+### Web push
+
+Used by the Control tab's **Notifications on this device** panel. See
+[Notifications on your phone](remote-access.md#notifications-on-your-phone).
+All of these return `404` from `/api/push/key` and `409` from the others when
+alerting is off (`FLEET_ALERTS=0`), push is off (`"push": false`), or the
+daemon is read-only.
+
+- `GET /api/push/key` returns `{ publicKey }`, the VAPID public key to pass to
+  `PushManager.subscribe()`. Needs no token. In HA mode a standby answers `503`
+  until the leader has created the shared key.
+- `POST /api/push/subscribe` with `{ subscription, minSeverity }` registers
+  the object `PushSubscription.toJSON()` produced. `minSeverity` is
+  `critical`, `warning` (the default) or `info`. The subscription is tied to
+  the calling device, so revoking the device removes it. The endpoint must be
+  `https` on a known push service (Apple, Google, Mozilla, Microsoft, plus
+  `FLEET_PUSH_ALLOWED_HOSTS`); anything else is `400`. Re-posting the same
+  endpoint updates it.
+- `POST /api/push/unsubscribe` with `{ endpoint }` returns `{ ok, removed }`.
+- `GET /api/push/status?endpoint=` returns
+  `{ enabled, subscribed, minSeverity, lastOkAt }`. The page uses it to
+  re-subscribe after the daemon pruned or forgot a subscription.
+- `POST /api/push/test` with `{ endpoint }` sends a test notification to that
+  subscription only. `404` if it is not subscribed; `502` with the reason if
+  the push service refused it.
+
+All except `/api/push/key` need a control or device token. A device may
+unsubscribe or test only its own subscriptions (`403` otherwise); the master
+token may act on any.
+
+Delivery itself is not an endpoint. Alerts reach subscriptions through the same
+transitions and storm guard as the macOS and webhook channels.
+`GET /api/alerts` reports the subscription count as `channels.push`.
+
 ### `POST /api/alerts/dismiss`
 
 Stop a condition notifying, without closing its interval or stopping autofix

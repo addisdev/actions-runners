@@ -207,6 +207,19 @@ export function deviceTokenMatches(path, token) {
   return false;
 }
 
+// Which paired device a token belongs to, or null (including for the master
+// token, which is not a device). Push subscriptions are keyed by this so that
+// revoking a device also stops its notifications.
+export function deviceKeyForToken(path, token) {
+  if (!token || typeof token !== 'string') return null;
+  const actual = Buffer.from(DIGEST(token));
+  for (const [key, entry] of Object.entries(readStore(path))) {
+    const expected = Buffer.from(String(entry.hash ?? ''));
+    if (actual.length === expected.length && timingSafeEqual(actual, expected)) return key;
+  }
+  return null;
+}
+
 // ---- device list ------------------------------------------------------------
 
 export function listDevices(path) {

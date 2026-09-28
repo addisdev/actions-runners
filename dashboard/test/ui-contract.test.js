@@ -354,10 +354,45 @@ describe('mobile reliability contracts', () => {
     assert.match(sw, /allSettled/);
   });
 
+  test('the service worker shows pushed alerts and opens the dashboard on tap', () => {
+    assert.match(sw, /addEventListener\('push'/);
+    assert.match(sw, /showNotification/);
+    assert.match(sw, /addEventListener\('notificationclick'/);
+    assert.match(sw, /'\/notifications\.js'/);
+  });
+
   test('tip popovers are positioned in viewport coordinates', () => {
     // position: fixed plus scrollY put the popover off-screen on a scrolled page.
     assert.doesNotMatch(tip, /scrollY/);
     assert.doesNotMatch(tip, /preventDefault/);
+  });
+});
+
+describe('notification UI contracts', () => {
+  const notifications = readFileSync(join(HERE, '..', 'public', 'notifications.js'), 'utf8');
+  const control = readFileSync(join(HERE, '..', 'public', 'control.js'), 'utf8');
+
+  test('the Control tab renders the notifications panel', () => {
+    assert.match(control, /notificationsPanel\(\)/);
+  });
+
+  // Safari only shows the permission prompt while the tap still counts as a
+  // user gesture, so nothing may be awaited before asking.
+  test('permission is requested before the first await', () => {
+    const enable = notifications.slice(notifications.indexOf('function enable(')).replace(/\/\/.*$/gm, '');
+    assert.ok(enable.indexOf('Notification.requestPermission()') < enable.indexOf('await'));
+  });
+
+  test('every reason push cannot work is named rather than hidden', () => {
+    assert.match(notifications, /isSecureContext/);
+    assert.match(notifications, /Add to Home Screen/);
+    assert.match(notifications, /Notification\.permission === 'denied'/);
+    assert.match(notifications, /Pair this device first/);
+  });
+
+  test('a stale subscription is repaired against the daemon', () => {
+    assert.match(notifications, /\/api\/push\/status/);
+    assert.match(notifications, /applicationServerKey/);
   });
 });
 

@@ -155,6 +155,86 @@ accepted** and offers to forget it, rather than showing controls that fail.
 
 Device tokens can also be revoked from the Control tab → Remote devices panel.
 
+## Notifications on your phone
+
+A paired phone can receive alerts as ordinary lock-screen notifications, even
+when the dashboard is closed and the phone is off your tailnet. This uses
+standard web push: the daemon signs each message with its own key and sends it
+to the push service run by the phone's browser vendor (Apple, Google, Mozilla,
+Microsoft), which delivers it. There is no app to install and no relay server.
+
+**Requirements**
+
+- The dashboard opened over **HTTPS**, which in practice means the Tailscale
+  Serve address. Plain `http://` LAN addresses cannot use service workers, and
+  web push needs a service worker.
+- **iPhone and iPad:** iOS or iPadOS 16.4 or later, with the dashboard added to
+  the Home Screen and opened from there. Safari in a normal tab does not offer
+  push.
+- **Android:** Chrome, Edge, Firefox or Samsung Internet. Installing to the Home
+  Screen is optional but recommended.
+- The device must be **paired** (see above). Each subscription belongs to a
+  paired device, so revoking the device also stops its notifications.
+- The runner host needs outbound HTTPS to the push services.
+
+**Turning it on**
+
+1. On the phone, open the dashboard's Tailscale address. On iOS, tap
+   **Share → Add to Home Screen**, then open it from the new icon.
+2. Pair the phone if you have not already.
+3. Open **Control → Notifications on this device**, choose which alerts you
+   want (critical only, warnings and critical, or everything) and tap
+   **Turn on notifications**. Allow the permission prompt.
+4. Tap **Send test**. It should arrive within a few seconds.
+
+If something stops push from working, the panel names the reason instead of
+showing a dead button: plain HTTP, iOS outside the Home Screen app, a blocked
+permission, an unpaired device, or push turned off on the daemon.
+
+**What you receive**
+
+The notifications are the same messages the macOS and webhook channels send.
+They follow the same transitions, so each condition notifies once when it
+opens and once when it closes, and the same storm guard summarises a reboot as
+one message. Critical alerts stay on screen until you dismiss them. A
+resolution replaces the alert it resolves rather than adding a second
+notification. Someone who chose *critical only* still hears when a critical
+alert resolves. Tapping a notification opens the Alerts tab. The Home Screen
+icon shows the number of open alerts, where the platform supports app badges.
+
+Alerts you dismissed on the dashboard are not pushed, the same as for the other
+channels.
+
+**Privacy**
+
+Each message is end-to-end encrypted to the receiving device
+([RFC 8291](https://www.rfc-editor.org/rfc/rfc8291)). The push service relays
+ciphertext and cannot read the alert. It does see when a message is sent and to
+which subscription. Every request also carries the contact URL from
+`FLEET_PUSH_CONTACT`, which defaults to this project's repository.
+
+**Turning it off**
+
+- For one device: **Control → Notifications on this device → Turn off**, or
+  revoke the device.
+- For the whole daemon: set `"push": false` in `dashboard/alerts.config.json`
+  and restart.
+
+The daemon deletes a subscription as soon as the push service reports it gone
+(`404` or `410`), and after five consecutive failed deliveries. If the page
+later finds its subscription missing, or signed with an old key, it
+re-subscribes the next time you open it.
+
+**Troubleshooting**
+
+| Symptom | Cause and fix |
+|---|---|
+| Panel says notifications need HTTPS | You opened a `http://` LAN address. Use the Tailscale URL from `./fleetctl.sh remote status`. |
+| Panel says to add to Home Screen, on an iPhone | Safari tabs cannot use push. Add the dashboard to the Home Screen and open it from the icon. |
+| Permission is blocked | You declined the prompt once. Re-enable notifications for the site or Home Screen app in system settings, then reload. |
+| Test fails with "push service refused the message" | The daemon log has the push service's answer. A `403` from Apple usually means `FLEET_PUSH_CONTACT` is invalid. |
+| Notifications stopped after the key file was deleted | Open the dashboard on the phone once; it re-subscribes against the new key. |
+
 ## Security model
 
 ### What is open
@@ -254,3 +334,6 @@ on screen, labelled **Reconnecting…**, until fresh data arrives.
 | `FLEET_DEVICE_TOKENS_FILE` | `.fleet-device-tokens.json` | Paired device token store. |
 | `FLEET_TAILSCALE` | `auto` | `off` stops the daemon from calling the Tailscale CLI. |
 | `FLEET_TAILSCALE_BIN` | auto-detected | Path to the Tailscale CLI when it is not in a standard place. |
+| `FLEET_VAPID_FILE` | `.fleet-vapid.json` | Key pair that signs web push messages (mode 0600). |
+| `FLEET_PUSH_CONTACT` | project repository URL | `https:` or `mailto:` contact sent with every push. Apple rejects `localhost`. |
+| `FLEET_PUSH_ALLOWED_HOSTS` | _(empty)_ | Extra push-service hosts a subscription may use. |

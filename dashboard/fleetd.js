@@ -39,9 +39,14 @@ import {
 } from './lib/remote.js';
 import { hasHostToken, hostTokenMatches } from './lib/host-auth.js';
 import {
-  createPairingCode, exchangeCode, deviceTokenMatches, listDevices, revokeDevice, PAIRING_CODE_TTL_MS,
+  createPairingCode, exchangeCode, deviceTokenMatches, deviceKeyForToken, listDevices, revokeDevice,
+  PAIRING_CODE_TTL_MS,
 } from './lib/devices.js';
 import { Alerts, loadConfig as loadAlertConfig } from './lib/alerts.js';
+import {
+  PushChannel, SqlitePushStore, SharedPushStore, loadOrCreateVapidFile, loadSharedVapid,
+  allowedPushHosts, parseSubscription, contactError, DEFAULT_CONTACT, MIN_SEVERITIES, DEFAULT_MIN_SEVERITY,
+} from './lib/push.js';
 import { lintAll } from './lib/lint.js';
 import { adviseAll } from './lib/concurrency-advisor.js';
 import { classifyQueuedRuns, classifyQueueCause, queuedJobLabels } from './lib/queue-cause.js';
@@ -145,6 +150,12 @@ const CONFIG = {
       .map((u) => { try { return new URL(String(u).trim()).hostname; } catch { return ''; } }),
   ].map((s) => s.trim()).filter(Boolean),
   deviceTokensFile: process.env.FLEET_DEVICE_TOKENS_FILE ?? join(HERE, '.fleet-device-tokens.json'),
+  // Web push (lib/push.js). The VAPID private key signs every push; in HA mode
+  // it lives in shared meta instead of this file.
+  vapidFile: process.env.FLEET_VAPID_FILE ?? join(HERE, '.fleet-vapid.json'),
+  // `||`, not `??`: the generated plist always sets the key, empty when unset.
+  pushContact: process.env.FLEET_PUSH_CONTACT || DEFAULT_CONTACT,
+  pushAllowedHosts: process.env.FLEET_PUSH_ALLOWED_HOSTS ?? '',
 };
 
 // Grouping, capacity and autoscaling settings do NOT live in CONFIG. They are
@@ -215,9 +226,32 @@ const ACTIONS = buildActions({
   // very next action, not actions taken after the next restart.
   getLimits: () => settings.limits(),
 });
+const pushHosts = allowedPushHosts(CONFIG.pushAllowedHosts);
+const pushContact = (() => {
+  const problem = contactError(CONFIG.pushContact);
+  if (!problem) return CONFIG.pushContact;
+  warn(`FLEET_PUSH_CONTACT ${problem} — using ${DEFAULT_CONTACT}`);
+  return DEFAULT_CONTACT;
+})();
+const pushStore = CONFIG.databaseUrl ? new SharedPushStore(ha) : new SqlitePushStore(db);
+let vapidKeys = null;
+async function getVapidKeys() {
+  if (!vapidKeys) {
+    vapidKeys = CONFIG.databaseUrl
+      ? await loadSharedVapid(ha, { create: ha.isLeader })
+      : loadOrCreateVapidFile(CONFIG.vapidFile, log);
+  }
+  return vapidKeys;
+}
+// Read-only mode has no device tokens, so nothing could ever subscribe.
+const pushChannel = CONFIG.readOnly ? null : new PushChannel({
+  store: pushStore, getKeys: getVapidKeys, contact: pushContact, log, warn,
+});
 const alerts = CONFIG.alertsEnabled
-  ? new Alerts({ db, config: loadAlertConfig(CONFIG.alertConfig, log), log, warn })
+  ? new Alerts({ db, config: loadAlertConfig(CONFIG.alertConfig, log), log, warn, push: pushChannel })
   : null;
+alerts?.refreshPushCount();
+const webPush = alerts?.push ?? null;
 // Notifications can take longer than the fast cadence. Chain evaluations so two
 // snapshots never reconcile the same in-memory open-alert map concurrently.
 let alertRun = Promise.resolve();
@@ -2215,6 +2249,21 @@ function json(res, body, status = 200) {
   res.end(text);
 }
 
+// Returns { value } or { error, status }.
+async function readJsonBody(req, limit) {
+  let body = '';
+  for await (const chunk of req) {
+    body += chunk;
+    if (body.length > limit) return { error: 'body too large', status: 413 };
+  }
+  try {
+    const value = JSON.parse(body || '{}');
+    return value && typeof value === 'object' ? { value } : { error: 'body must be a JSON object', status: 400 };
+  } catch {
+    return { error: 'malformed JSON', status: 400 };
+  }
+}
+
 async function serveStatic(res, urlPath) {
   const rel = normalize(urlPath === '/' ? '/index.html' : urlPath).replace(/^(\.\.[/\\])+/, '');
   const file = join(PUBLIC, rel);
@@ -3179,7 +3228,93 @@ const server = http.createServer(async (req, res) => {
     const revoked = revokeDevice(CONFIG.deviceTokensFile, parsed.key);
     if (!revoked) return json(res, { error: 'device not found' }, 404);
     log(`device revoked: key=${parsed.key}`);
+    const silenced = await pushStore.removeForDevice(parsed.key).catch((err) => {
+      warn('push: removing revoked device subscriptions:', err.message);
+      return 0;
+    });
+    if (silenced) {
+      log(`push: removed ${silenced} subscription(s) for revoked device ${parsed.key}`);
+      await alerts?.refreshPushCount();
+    }
     return json(res, { ok: true });
+  }
+
+  // ------------------------------------------------------------------ web push
+  // GET /api/push/key — the VAPID public key the page subscribes with. Public
+  // by definition; it is also in every Authorization header we send.
+  if (url.pathname === '/api/push/key' && req.method === 'GET') {
+    if (!webPush) return json(res, { error: 'push notifications are disabled on this daemon' }, 404);
+    const keys = await getVapidKeys().catch((err) => { warn('push key:', err.message); return null; });
+    if (!keys) return json(res, { error: 'the push key is not ready yet — try again shortly' }, 503);
+    return json(res, { publicKey: keys.publicKey });
+  }
+
+  if (url.pathname.startsWith('/api/push/')) {
+    const route = url.pathname.slice('/api/push/'.length);
+    if (!['subscribe', 'unsubscribe', 'status', 'test'].includes(route)) {
+      return json(res, { error: 'not found' }, 404);
+    }
+    const wantMethod = route === 'status' ? 'GET' : 'POST';
+    if (req.method !== wantMethod) return json(res, { error: `use ${wantMethod}` }, 405);
+    if (!webPush) return json(res, { error: 'push notifications are disabled on this daemon' }, 409);
+    const pushAuth = authorizeRequest(req);
+    if (!pushAuth.ok) return json(res, { error: pushAuth.error }, pushAuth.status);
+    const callerDevice = deviceKeyForToken(CONFIG.deviceTokensFile, bearerToken(req)) ?? 'master';
+
+    if (route === 'status') {
+      const endpoint = url.searchParams.get('endpoint') ?? '';
+      const sub = endpoint ? await pushStore.get(endpoint) : null;
+      return json(res, {
+        enabled: true,
+        subscribed: Boolean(sub),
+        minSeverity: sub?.minSeverity ?? null,
+        lastOkAt: sub?.lastOkAt ?? null,
+      });
+    }
+
+    const parsed = await readJsonBody(req, 4096);
+    if (parsed.error) return json(res, { error: parsed.error }, parsed.status);
+    const body = parsed.value;
+
+    if (route === 'subscribe') {
+      const checked = parseSubscription(body.subscription, pushHosts);
+      if (checked.error) return json(res, { error: checked.error }, 400);
+      const minSeverity = MIN_SEVERITIES.includes(body.minSeverity) ? body.minSeverity : DEFAULT_MIN_SEVERITY;
+      await pushStore.upsert({ ...checked.sub, deviceKey: callerDevice, minSeverity });
+      await alerts.refreshPushCount();
+      log(`push: subscribed ${new URL(checked.sub.endpoint).host} for device ${callerDevice} (${minSeverity} and up)`);
+      return json(res, { ok: true, minSeverity });
+    }
+
+    const endpoint = typeof body.endpoint === 'string' ? body.endpoint : '';
+    if (!endpoint) return json(res, { error: 'endpoint is required' }, 400);
+    const sub = await pushStore.get(endpoint);
+    // A device may manage only its own subscriptions; the master token may manage any.
+    if (sub && callerDevice !== 'master' && sub.deviceKey !== callerDevice) {
+      return json(res, { error: 'that subscription belongs to another device' }, 403);
+    }
+
+    if (route === 'unsubscribe') {
+      const removed = sub ? await pushStore.remove(endpoint) : false;
+      await alerts.refreshPushCount();
+      if (removed) log(`push: unsubscribed ${new URL(endpoint).host} for device ${callerDevice}`);
+      return json(res, { ok: true, removed });
+    }
+
+    if (!sub) return json(res, { error: 'this device is not subscribed' }, 404);
+    const result = await webPush.send({
+      severity: 'info',
+      title: 'Test notification',
+      body: `Alerts from ${CONFIG.hostName} will arrive like this.`,
+      scope: 'test',
+    }, { only: (s) => s.endpoint === endpoint });
+    if (result.sent) return json(res, { ok: true, ...result });
+    return json(res, {
+      error: result.removed
+        ? 'the push service no longer recognises this subscription — turn notifications off and on again'
+        : 'the push service refused the message; the daemon log has the reason',
+      ...result,
+    }, 502);
   }
 
   if (url.pathname === '/api/alerts') {

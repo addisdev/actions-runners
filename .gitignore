@@ -118,6 +118,8 @@
 dashboard/alerts.config.json
 dashboard/.fleet-agent-tokens.json
 dashboard/.fleet-device-tokens.json
+dashboard/.fleet-vapid.json
+dashboard/.fleet-vapid.json.tmp-*
 dashboard/.fleet-agent-command-results.json
 dashboard/.fleet-agent-command-results.json.tmp-*
 

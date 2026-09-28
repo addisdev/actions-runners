@@ -548,6 +548,24 @@ export function openDb(path) {
   `);
   addColumn(db, 'host_commands', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
 
+  // Web push subscriptions (lib/push.js). One row per browser subscription, tied
+  // to the paired device that made it so revoking the device silences it too.
+  // `failures` counts consecutive delivery errors; a 404/410 from the push
+  // service deletes the row outright, because that subscription is gone for good.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      endpoint     TEXT PRIMARY KEY,
+      p256dh       TEXT NOT NULL,
+      auth         TEXT NOT NULL,
+      device_key   TEXT,
+      min_severity TEXT NOT NULL DEFAULT 'warning',
+      created_at   INTEGER NOT NULL,
+      last_ok_at   INTEGER,
+      failures     INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_push_device ON push_subscriptions(device_key);
+  `);
+
   return db;
 }
 

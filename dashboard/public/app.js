@@ -8,6 +8,7 @@ import * as lint from './lint.js';
 import * as capacity from './capacity.js';
 import * as hosts from './hosts.js';
 import { barChart, fmtMs } from './charts.js';
+import { updateAppBadge } from './notifications.js';
 import './tip.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -1800,6 +1801,7 @@ function acceptSnapshot(next) {
   if (snap?.ts && next.ts && next.ts < snap.ts) return;
   snap = next;
   render();
+  updateAppBadge(snap.collector?.alerts?.open);
 }
 
 function refreshState() {

@@ -106,6 +106,9 @@ cmd_install() {
     <key>FLEET_DEVICE_TOKENS_FILE</key><string>${FLEET_DEVICE_TOKENS_FILE:-$HERE/.fleet-device-tokens.json}</string>
     <key>FLEET_TAILSCALE</key><string>${FLEET_TAILSCALE:-auto}</string>
     <key>FLEET_TAILSCALE_BIN</key><string>${FLEET_TAILSCALE_BIN:-}</string>
+    <key>FLEET_VAPID_FILE</key><string>${FLEET_VAPID_FILE:-$HERE/.fleet-vapid.json}</string>
+    <key>FLEET_PUSH_CONTACT</key><string>${FLEET_PUSH_CONTACT:-}</string>
+    <key>FLEET_PUSH_ALLOWED_HOSTS</key><string>${FLEET_PUSH_ALLOWED_HOSTS:-}</string>
     <key>FLEET_AGENT_TOKEN_FILE</key><string>${agent_token_file}</string>
     <key>FLEET_AGENT_TOKENS_FILE</key><string>${agent_tokens_file}</string>
     <key>FLEET_DATABASE_URL_FILE</key><string>${database_url_file}</string>

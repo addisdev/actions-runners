@@ -11,6 +11,7 @@
 
 import { chartEl as h } from './charts.js';
 import qrcodegen from './vendor/qrcodegen.js';
+import { configureNotifications, notificationsPanel, refreshNotifications } from './notifications.js';
 
 const mount = (el, ...kids) =>
   el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
@@ -46,6 +47,8 @@ export const authHeaders = () => {
   const token = localStorage.getItem(TOKEN_KEY);
   return token ? { authorization: `Bearer ${token}` } : {};
 };
+
+configureNotifications({ hasToken, authHeaders, rerender: () => render() });
 
 export async function act(action, args = {}) {
   const token = localStorage.getItem(TOKEN_KEY);
@@ -93,6 +96,7 @@ export async function loadCatalogue() {
     getJson('/api/actions'), getJson('/api/settings'), getJson('/api/autoscale'),
   ]);
   await loadPairedDevices();
+  await refreshNotifications();
 }
 
 // -------------------------------------------------------------------------- pairing
@@ -725,6 +729,7 @@ export function render() {
     ),
     tokenPanel(),
     pairingPanel(),
+    notificationsPanel(),
     autoscalePanel(),
     settingsPanel(),
     fleetPanel(),

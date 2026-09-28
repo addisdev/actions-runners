@@ -59,6 +59,21 @@ Portable, mobile-first dashboard.
   data shown), "Stale" / "Collector stalled" (health check), "Live".
 - **Access banner.** Non-local viewers see their connection context (LAN /
   Tailscale user) and a link to the pairing flow.
+- **Web push notifications.** Paired phones can subscribe from
+  **Control → Notifications on this device** and get alerts on the lock screen
+  with the dashboard closed and off the tailnet. Works on iOS 16.4+ from the
+  Home Screen and on Android browsers. There is no native app and no relay: the
+  daemon mints its own VAPID key and sends RFC 8291-encrypted messages straight
+  to the browser vendor's push service, using only `node:crypto`. Push is a
+  third channel in `Alerts.notify()`, so the transitions, storm guard and
+  dismissals apply as they do elsewhere. Each device chooses a minimum severity.
+  A resolution replaces the notification it resolves, and the Home Screen icon
+  shows the open-alert count. Endpoints are limited to known push services to
+  prevent request forgery. Revoking a device removes its subscriptions.
+  Subscriptions are pruned on `404`/`410` or after five consecutive failures.
+  New routes are under `/api/push/*`. New settings are `FLEET_VAPID_FILE`,
+  `FLEET_PUSH_CONTACT`, `FLEET_PUSH_ALLOWED_HOSTS`, and `"push"` in
+  `alerts.config.json`.
 - **Alerts tab** now polls every 30 s while open, matching Hosts.
 - **`/api/access`** endpoint returns viewer context (via, tailscale user, URLs).
 - **`lib/remote.js`** — host allowlist, proxy-aware origin/sameOrigin, reachable

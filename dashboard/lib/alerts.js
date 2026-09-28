@@ -60,6 +60,10 @@ export const DEFAULTS = {
   // for the operator, not a default.
   macos: true,
   webhook: null, // { url, method?, headers?, template? }
+  // Web push to paired phones. On by default because it sends nothing until a
+  // person subscribes a device from the Control tab, and what it does send is
+  // end-to-end encrypted to that device (RFC 8291).
+  push: true,
 };
 
 export function loadConfig(path, log) {
@@ -123,11 +127,13 @@ export function alertScope(alert) {
 }
 
 export class Alerts {
-  constructor({ db, config, log, warn }) {
+  constructor({ db, config, log, warn, push = null }) {
     this.db = db;
     this.config = config;
     this.log = log;
     this.warn = warn;
+    this.push = config.push === false ? null : push;
+    this.pushCount = 0;
     this.open = new Map(); // key -> alert
     this.pending = new Map(); // key -> first time the condition was seen
     this.ticks = 0;
@@ -503,34 +509,53 @@ export class Alerts {
   // sixteen times as useful as one that says sixteen.
   summarise(opened, closed) {
     const messages = [];
+    const worstOf = (list) => (list.some((a) => a.severity === 'critical') ? 'critical'
+      : list.some((a) => a.severity === 'warning') ? 'warning' : 'info');
+    // scope, storm, resolves and was are for push, which uses them to replace a
+    // notification with its resolution and to filter by what was resolved. The
+    // other channels read only severity, title and body.
     if (opened.length >= this.config.stormThreshold) {
-      const worst = opened.some((a) => a.severity === 'critical') ? 'critical' : 'warning';
       messages.push({
-        severity: worst,
+        severity: opened.some((a) => a.severity === 'critical') ? 'critical' : 'warning',
         title: `${opened.length} alerts opened`,
         body: opened.slice(0, 6).map((a) => `• ${a.title}`).join('\n') +
           (opened.length > 6 ? `\n…and ${opened.length - 6} more` : ''),
+        storm: true,
       });
     } else {
-      messages.push(...opened);
+      messages.push(...opened.map((a) => ({ ...a, scope: alertScope(a) })));
     }
     if (closed.length >= this.config.stormThreshold) {
-      messages.push({ severity: 'info', title: `${closed.length} alerts resolved`, body: '' });
+      messages.push({
+        severity: 'info', title: `${closed.length} alerts resolved`, body: '',
+        storm: true, resolves: true, was: worstOf(closed),
+      });
     } else {
-      messages.push(...closed.map((a) => ({ severity: 'info', title: `Resolved: ${a.title}`, body: '' })));
+      messages.push(...closed.map((a) => ({
+        severity: 'info', title: `Resolved: ${a.title}`, body: '',
+        key: a.key, scope: alertScope(a), resolves: true, was: a.severity,
+      })));
     }
     return messages;
   }
 
   async notify(messages) {
+    const openCount = this.push ? this.counts().open : undefined;
     for (const m of messages) {
       this.log(`ALERT [${m.severity}] ${m.title}`);
       if (this.config.macos) await this.notifyMacos(m).catch((e) => this.warn('macos notify:', e.message));
       if (this.config.webhook?.url) await this.notifyWebhook(m).catch((e) => this.warn('webhook:', e.message));
+      if (this.push) await this.push.send(m, { openCount }).catch((e) => this.warn('push:', e.message));
     }
+    if (this.push) await this.refreshPushCount();
     if (messages.length) {
       this.db.prepare('UPDATE alerts SET notified = 1 WHERE closed_at IS NULL AND notified = 0').run();
     }
+  }
+
+  async refreshPushCount() {
+    if (this.push) this.pushCount = await this.push.count().catch(() => this.pushCount);
+    return this.pushCount;
   }
 
   // The title and body are passed as ARGUMENTS to the script, never interpolated
@@ -631,6 +656,7 @@ export class Alerts {
       channels: {
         macos: Boolean(this.config.macos),
         webhook: Boolean(this.config.webhook?.url),
+        push: this.push ? this.pushCount : false,
       },
       recent: this.db.prepare(
         'SELECT key, rule, severity, title, body, opened_at, closed_at FROM alerts ORDER BY opened_at DESC LIMIT 40'

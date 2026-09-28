@@ -20,7 +20,11 @@
     "Slack:    url https://hooks.slack.com/services/…",
     "          template { \"text\": \"*{title}*\\n{body}\" }",
     "",
-    "Nothing is sent anywhere until 'webhook.url' is filled in."
+    "Nothing is sent anywhere until 'webhook.url' is filled in.",
+    "",
+    "'push' sends web push notifications to phones subscribed from the Control",
+    "tab (docs/remote-access.md). It sends nothing until a device subscribes,",
+    "and every message is encrypted to that device. Set false to disable it."
   ],
 
   "diskWarnGb": 40,
@@ -32,5 +36,6 @@
   "stormThreshold": 5,
 
   "macos": true,
-  "webhook": null
+  "webhook": null,
+  "push": true
 }
