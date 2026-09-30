@@ -10,6 +10,8 @@ says about the fleet comes from [`GET /api/glance`](api.md#get-apiglance); the
 only thing it works out for itself is what no process on the runner host can
 report — that host's own absence.
 
+![The popover during a disk-floor freeze, in dark mode](img/cockpit-disk-floor.png)
+
 ## What it shows
 
 **The menu bar** carries one mark for the verdict, and optionally the number of
@@ -86,6 +88,9 @@ These verdicts notify once when they open and once when they clear, with how
 long they lasted.
 
 ## Why, and the brief
+
+![The Why ladder during the saturated-host incident: rung 5 lit with the two lost jobs and the load as evidence](img/cockpit-why.png)
+
 
 **Why?** under the verdict opens the whole ladder with the verdict's rung lit,
 the evidence under it, and every other rung that is currently true.
@@ -173,6 +178,39 @@ hours during which only critical alerts notify, and mute rules by name.
 
 The web dashboard shows the same verdict as a banner above its KPI row, with the
 next move as a button and the evidence under **Why**.
+
+## From another machine: the host sentinel
+
+The cockpit can only watch while this Mac is awake. `scripts/host-sentinel.sh`
+runs on a second machine in the same house (a Mac mini, say) every minute and
+posts to [ntfy](https://ntfy.sh) when the runner host stops answering — asleep,
+off, or rebooted with nobody logged in — and again when it is back. With a
+userspace tailscaled it probes with `tailscale ping`; otherwise with a TCP check
+of port 22. Messages carry the host's name and nothing else.
+
+```bash
+# on the other machine
+printf '%s\n' 'SENTINEL_NAME=runner-host' 'SENTINEL_TARGET=runner' \
+  "SENTINEL_NTFY=https://ntfy.sh/fleet-$(openssl rand -hex 12)" > ~/.config/fleet-sentinel.env
+chmod 600 ~/.config/fleet-sentinel.env
+scripts/host-sentinel.sh --test-notify   # subscribe to the topic in the ntfy app first
+scripts/host-sentinel.sh --install
+```
+
+## Agent sessions
+
+- `cockpit mcp` is an MCP server with four read-only tools — `fleet_status`,
+  `why_queued`, `fleet_queue`, `wait_for_checks`. Register it with
+  `claude mcp add --scope user fleet-cockpit -- ~/.local/bin/cockpit mcp`.
+- `cockpit/skills/fleet-cockpit/SKILL.md` teaches a session when to reach for
+  them.
+
+## Releases
+
+`.github/workflows/cockpit-release.yml` builds, signs with a Developer ID
+certificate, notarizes and publishes a DMG and the CLI on a `cockpit-v*` tag.
+It does nothing until the signing secrets listed at its top are set on the
+repository.
 
 ## Getting it
 

@@ -25,6 +25,8 @@ commands:
   pair                pair this command line with the dashboard (its own revocable token)
   run <action>        run a catalogue action (e.g. fleet.health, fleet.healthRepair,
                       runner.restart --name <runner>); anything but a read needs --yes
+  mcp                 run as an MCP server over stdio (fleet_status, why_queued,
+                      fleet_queue, wait_for_checks)
   fixtures            list the bundled fixture names
 
 options:
@@ -178,6 +180,8 @@ func exitCode(_ v: Verdict) -> Int32 {
 let opts = parse(Array(CommandLine.arguments.dropFirst()))
 
 switch opts.command {
+case "mcp":
+    await MCPServer.run()
 case "fixtures":
     for n in Fixtures.names { print(n) }
 case "status":
