@@ -125,6 +125,17 @@ describe('what does not count', () => {
   });
 });
 
+describe('a coordinator listed twice', () => {
+  test('its own stale self-record is not a host that went down', () => {
+    const s = SCENARIOS.quiet();
+    s.snapshot.hosts.push({ ...s.snapshot.hosts[0], local: false, stale: true, staleForMs: 6 * 60 * 1000 });
+    const r = computeVerdict(s.snapshot, s.facts, { now: s.now });
+    assert.equal(r.verdict.id, 'clear');
+    const g = buildGlance(s.snapshot, r, { now: s.now, localHostId: 'build-host' });
+    assert.equal(g.hosts.filter((h) => h.id === s.snapshot.hosts[0].id).length, 1);
+  });
+});
+
 describe('the offline tracker', () => {
   test('offline under five minutes is settling, then becomes a dead service', () => {
     const s = SCENARIOS.quiet();

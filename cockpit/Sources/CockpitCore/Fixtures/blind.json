@@ -1,0 +1,557 @@
+{
+ "schema": 1,
+ "ts": 1790781986956,
+ "generatedAt": 1790781986956,
+ "ageMs": 0,
+ "stale": false,
+ "fastMs": 15000,
+ "verdict": {
+  "id": "unknown",
+  "tone": "unknown",
+  "title": "Cannot read GitHub",
+  "sentence": "Every repo failed to read this tick, so nothing below can be trusted.",
+  "evidence": [
+   "28 of 28 repos failed: fetch failed"
+  ],
+  "next": {
+   "label": "Check the GitHub token and network on the host",
+   "kind": "owner"
+  },
+  "rung": 0,
+  "open": [
+   {
+    "id": "unknown",
+    "tone": "unknown",
+    "title": "Cannot read GitHub",
+    "sentence": "Every repo failed to read this tick, so nothing below can be trusted.",
+    "evidence": [
+     "28 of 28 repos failed: fetch failed"
+    ],
+    "next": {
+     "label": "Check the GitHub token and network on the host",
+     "kind": "owner"
+    }
+   }
+  ]
+ },
+ "counts": {
+  "running": 1,
+  "queued": 0,
+  "held": 0,
+  "runners": 54
+ },
+ "hosts": [
+  {
+   "id": "build-host",
+   "name": "build-host",
+   "local": true,
+   "stale": false,
+   "staleForMs": 0,
+   "ghOnly": false,
+   "drained": false,
+   "vitals": {
+    "cores": 12,
+    "load1": 20.77,
+    "memPressure": "warning",
+    "memFreePct": 46,
+    "swapinsPerSec": 2.5,
+    "swapUsedMb": 5922,
+    "diskFreeGb": 49.3,
+    "diskTotalGb": 926,
+    "diskFloorGb": 40,
+    "diskFloorEtaMs": null,
+    "uptimeSec": 781840
+   }
+  },
+  {
+   "id": "elsewhere:mini",
+   "name": "mini",
+   "local": false,
+   "stale": false,
+   "staleForMs": 0,
+   "ghOnly": true,
+   "drained": false,
+   "vitals": null
+  }
+ ],
+ "runners": [
+  {
+   "name": "build-host-atlas-android",
+   "repo": "acme/atlas-android",
+   "project": "atlas",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-atlas-backend",
+   "repo": "acme/atlas-backend",
+   "project": "atlas",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-atlas-ios",
+   "repo": "acme/atlas-ios",
+   "project": "atlas",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-atlas-ios-2",
+   "repo": "acme/atlas-ios",
+   "project": "atlas",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-atlas-web",
+   "repo": "acme/atlas-web",
+   "project": "atlas",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-atlas-web-2",
+   "repo": "acme/atlas-web",
+   "project": "atlas",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-atlas-web-3",
+   "repo": "acme/atlas-web",
+   "project": "atlas",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-beacon",
+   "repo": "acme/beacon",
+   "project": "beacon",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-beacon-2",
+   "repo": "acme/beacon",
+   "project": "beacon",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-beacon-3",
+   "repo": "acme/beacon",
+   "project": "beacon",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-comet-backend",
+   "repo": "acme/comet-backend",
+   "project": "comet",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-comet-backend-2",
+   "repo": "acme/comet-backend",
+   "project": "comet",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-comet-backend-3",
+   "repo": "acme/comet-backend",
+   "project": "comet",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-comet-firetv",
+   "repo": "acme/comet-firetv",
+   "project": "comet",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-comet-roku",
+   "repo": "acme/comet-roku",
+   "project": "comet",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-comet-tvos",
+   "repo": "acme/comet-tvos",
+   "project": "comet",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-comet-web",
+   "repo": "acme/comet-web",
+   "project": "comet",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-comet-web-2",
+   "repo": "acme/comet-web",
+   "project": "comet",
+   "host": "build-host",
+   "state": "busy",
+   "detail": "web-e2e · e2e / e2e / webkit · 3 min of ~75 min",
+   "job": {
+    "runId": 36736111347,
+    "repo": "acme/comet-web",
+    "workflow": "web-e2e",
+    "job": "e2e / e2e / webkit",
+    "startedAt": 1790781792000,
+    "elapsedMs": 194956,
+    "expectedMs": 4519000,
+    "overdue": false,
+    "url": "https://github.com/acme/comet-web/actions/runs/36736111347/job/109958140779",
+    "branch": "develop"
+   }
+  },
+  {
+   "name": "build-host-comet-web-3",
+   "repo": "acme/comet-web",
+   "project": "comet",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-event-schema",
+   "repo": "acme/event-schema",
+   "project": "other",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-delta-android",
+   "repo": "acme/delta-android",
+   "project": "delta",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-delta-android-2",
+   "repo": "acme/delta-android",
+   "project": "delta",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-delta-android-3",
+   "repo": "acme/delta-android",
+   "project": "delta",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-delta-backend",
+   "repo": "acme/delta-backend",
+   "project": "delta",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-delta-ios",
+   "repo": "acme/delta-ios",
+   "project": "delta",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-delta-web",
+   "repo": "acme/delta-web",
+   "project": "delta",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-delta-web-2",
+   "repo": "acme/delta-web",
+   "project": "delta",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-delta-web-3",
+   "repo": "acme/delta-web",
+   "project": "delta",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-ember-android",
+   "repo": "acme/ember-android",
+   "project": "ember",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-ember-backend",
+   "repo": "acme/ember-backend",
+   "project": "ember",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-ember-backend-2",
+   "repo": "acme/ember-backend",
+   "project": "ember",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-ember-ios",
+   "repo": "acme/ember-ios",
+   "project": "ember",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-ember-ios-2",
+   "repo": "acme/ember-ios",
+   "project": "ember",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-ember-ios-3",
+   "repo": "acme/ember-ios",
+   "project": "ember",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-ember-ios-4",
+   "repo": "acme/ember-ios",
+   "project": "ember",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-ember-web",
+   "repo": "acme/ember-web",
+   "project": "ember",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-ember-web-2",
+   "repo": "acme/ember-web",
+   "project": "ember",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-falcon-android",
+   "repo": "acme/falcon-android",
+   "project": "falcon",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-falcon-backend",
+   "repo": "acme/falcon-backend",
+   "project": "falcon",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-falcon-web",
+   "repo": "acme/falcon-web",
+   "project": "falcon",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-falcon-web-2",
+   "repo": "acme/falcon-web",
+   "project": "falcon",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-watchtower",
+   "repo": "acme/watchtower",
+   "project": "other",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-harbor-site",
+   "repo": "acme/harbor-site",
+   "project": "other",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-garnet",
+   "repo": "acme/garnet",
+   "project": "other",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-garnet-2",
+   "repo": "acme/garnet",
+   "project": "other",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-launch-kit",
+   "repo": "acme/launch-kit",
+   "project": "other",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-portfolio.dev",
+   "repo": "acme/portfolio.dev",
+   "project": "other",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-ion",
+   "repo": "acme/ion",
+   "project": "other",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "mini-atlas-ios",
+   "repo": "acme/atlas-ios",
+   "project": "atlas",
+   "host": "elsewhere:mini",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "mini-beacon-release",
+   "repo": "acme/beacon",
+   "project": "beacon",
+   "host": "elsewhere:mini",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "mini-comet-roku-release",
+   "repo": "acme/comet-roku",
+   "project": "comet",
+   "host": "elsewhere:mini",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "mini-falcon-ios-release",
+   "repo": "acme/falcon-ios",
+   "project": "falcon",
+   "host": "elsewhere:mini",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "mini-comet-tvos-release",
+   "repo": "acme/comet-tvos",
+   "project": "comet",
+   "host": "elsewhere:mini",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "mini-delta-ios",
+   "repo": "acme/delta-ios",
+   "project": "delta",
+   "host": "elsewhere:mini",
+   "state": "idle",
+   "detail": "idle"
+  }
+ ],
+ "queue": [],
+ "incidents": [
+  {
+   "key": "account:blocked",
+   "rule": "account-blocked-recurring",
+   "severity": "critical",
+   "title": "Account blocked on 2 repos in the last 24h",
+   "body": "(body removed)",
+   "openedAt": 1790713213560,
+   "dismissed": false
+  },
+  {
+   "key": "host:pressure",
+   "rule": "memory-pressure",
+   "severity": "warning",
+   "title": "Kernel reports warning memory pressure",
+   "body": "(body removed)",
+   "openedAt": 1790781337302,
+   "dismissed": false
+  }
+ ],
+ "admission": {
+  "mode": "enforce",
+  "limit": 2,
+  "waiting": 0
+ },
+ "collector": {
+  "lastError": "28 of 28 repos failed: fetch failed",
+  "failedRepos": 28
+ },
+ "api": {
+  "remaining": 4268,
+  "limit": 5000
+ }
+}

@@ -112,6 +112,7 @@ nav:
       - HTTP API: api.md
       - Glossary: glossary.md
   - Remote access and mobile: remote-access.md
+  - Fleet Cockpit (macOS): cockpit.md
   - Security: security-hardening.md
   - Design notes:
       - Overview: design/index.md

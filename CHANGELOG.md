@@ -27,6 +27,22 @@ Portable, mobile-first dashboard.
 - **`host-saturated` alert.** Two `runner-lost` jobs inside an hour — the
   signature of a starved host — open a warning while it is happening.
 - `scripts/scrub-snapshot.mjs` turns a live snapshot into a committable fixture.
+- **Fleet Cockpit** (`cockpit/`), a macOS menu bar client of `/api/glance`:
+  verdict, per-host vitals with the disk floor drawn on the gauge, a pill per
+  runner, the queue. Reaches a loopback-only dashboard through an SSH tunnel
+  that dies with the app; reconnects on wake and network change; keeps a stale
+  view greyed rather than green. Bundled incident fixtures, `--render` for
+  screenshots, a `cockpit` CLI, and a snapshot file for other tools. See
+  [docs/cockpit.md](docs/cockpit.md).
+- `scripts/make-glance-fixtures.mjs` keeps the cockpit's fixtures in step with
+  the daemon (checked in CI).
+
+### Fixed
+
+- The coordinator was listed twice in `hosts` when a heartbeat under its own id
+  had been recorded (an `agent.js` run on the coordinator); once that record
+  aged out it read as a second host that had stopped reporting.
+- `dashboard/.fleet-vapid.json`, the web-push private key, was not ignored.
 
 - **LAN access.** `./fleetctl.sh remote lan on|off` sets `FLEET_HOST` in
   `fleet.env` and regenerates the LaunchAgent, which is where the bind address

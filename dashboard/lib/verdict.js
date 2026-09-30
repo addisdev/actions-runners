@@ -287,7 +287,8 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
     });
   }
 
-  const staleHosts = (snapshot.hosts ?? []).filter((h) => !h.local && (h.stale || h.hostStale));
+  const localIds = new Set((snapshot.hosts ?? []).filter((h) => h.local).map((h) => h.id));
+  const staleHosts = (snapshot.hosts ?? []).filter((h) => !h.local && !localIds.has(h.id) && (h.stale || h.hostStale));
   if (staleHosts.length) {
     push('host-down', {
       title: staleHosts.length === 1 ? `${staleHosts[0].name ?? staleHosts[0].id} is not reporting` : `${staleHosts.length} hosts are not reporting`,
@@ -469,7 +470,8 @@ export function buildGlance(snapshot, result, opts = {}) {
     return (prefixCounts.get(p) ?? 0) >= 2 ? `elsewhere:${p}` : 'elsewhere';
   };
 
-  const hosts = (snapshot.hosts ?? []).map((h) => {
+  const localIds = new Set((snapshot.hosts ?? []).filter((h) => h.local).map((h) => h.id));
+  const hosts = (snapshot.hosts ?? []).filter((h) => h.local || !localIds.has(h.id)).map((h) => {
     const v = h.host ?? (h.local ? snapshot.host : null) ?? {};
     return {
       id: h.id,

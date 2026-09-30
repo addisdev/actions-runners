@@ -54,6 +54,13 @@ jobs:
         working-directory: dashboard
         run: npm test
 
+      # The cockpit's bundled fixtures are this daemon's /api/glance output for
+      # each recorded incident. A contract change without regenerating them
+      # fails here, before the Swift decoder meets it.
+      - name: Glance fixtures are current
+        working-directory: dashboard
+        run: node scripts/make-glance-fixtures.mjs --check
+
   # ---------------------------------------------------------------------------
   # JavaScript syntax check (all tracked .js files, no npm install needed)
   # ---------------------------------------------------------------------------
@@ -179,3 +186,35 @@ jobs:
         run: |
           ./preflight.sh --all 2>&1 || true
           echo "Exit code: $? (non-zero is expected without full prerequisites)"
+
+  # ---------------------------------------------------------------------------
+  # Fleet Cockpit — the macOS menu bar client. Core tests with SwiftPM alone;
+  # the app is built unsigned from its XcodeGen spec to prove it compiles.
+  # ---------------------------------------------------------------------------
+  cockpit:
+    name: Fleet Cockpit (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Toolchain
+        run: xcodebuild -version && swift --version
+
+      - name: Core tests
+        working-directory: cockpit
+        run: swift test
+
+      - name: CLI smoke
+        working-directory: cockpit
+        run: |
+          swift run cockpit status --fixture quiet
+          swift run cockpit status --fixture diskHold --json | grep -q '"disk-floor"'
+
+      - name: Build the app (unsigned)
+        working-directory: cockpit/App
+        run: |
+          set -o pipefail
+          brew install xcodegen
+          xcodegen generate
+          xcodebuild -project FleetCockpit.xcodeproj -scheme FleetCockpit -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO build | tail -20
