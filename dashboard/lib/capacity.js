@@ -35,19 +35,31 @@
 //
 // Load is the early signal precisely because it tracks concurrency so tightly.
 
-// WHAT LIMITS CONCURRENCY, stated plainly because the names below invite a
-// wrong reading: nothing in this fleet throttles EXECUTION. There is no
-// scheduler. Every registered runner listens independently, and if 27 of them
-// are offered work in the same second, 27 jobs start — which is how this host
-// recorded a load average of 760.
+// WHAT LIMITS CONCURRENCY. This paragraph used to say that nothing throttles
+// EXECUTION, that there is no scheduler, and therefore that the number of
+// runners IS the concurrency limit. That was true when it was written and has
+// not been true since 2026-09-11, when job admission control went to enforce:
+// a job-started hook in every runner holds a job until the host is under
+// FLEET_ADMIT_MAX_CONCURRENT (2, and 1 for the simulator runners). That hook,
+// not this file, is what stops a burst — and it is deliberately enforced inside
+// the runner so it survives this daemon being down.
 //
-// So the number of runners IS the concurrency limit. That makes `maxTotalRunners`
-// the real cap, and `ceiling` something narrower: a "not right now" check that
-// stops growth while the machine is already working. Both are needed, and
-// neither can stop a burst across runners that already exist.
+// The stale premise had a cost. `maxTotalRunners` kept being read as the
+// concurrency cap, so 43 idle listeners — 901 MB of RSS, executing nothing —
+// were counted as "43 jobs that could start at once" and refused every
+// scale-up, while admission was independently holding execution at 2. The queue
+// could not be served and the reason given was a limit that no longer described
+// what it was limiting.
+//
+// So, honestly: admission caps CONCURRENT JOBS. `maxTotalRunners` caps how many
+// runner directories may exist, which is a disk and memory bound (~1.3-2.3 GB
+// on disk and ~17-35 MB resident each), not a concurrency one. `ceiling` is a
+// "not right now" check that stops growth while the machine is already working.
+// Size maxTotalRunners against the disk, not against the core count.
 export const CAPACITY_DEFAULTS = {
-  // Fleet-wide cap on how many runners may exist, and therefore on how many jobs
-  // could ever run at once.
+  // Fleet-wide cap on how many runner directories may exist. A disk and memory
+  // bound — NOT a concurrency one; admission control owns concurrency. See the
+  // note above before lowering this to "protect" the host.
   maxTotalRunners: 32,
   // Refuse to ADD a runner while this many jobs are already running. Not a cap
   // on execution — see above — just a refusal to make a busy moment busier.
@@ -89,9 +101,13 @@ export function headroom({ host = {}, runners = [], limits = {} } = {}) {
   const reasons = [];
 
   if (runners.length >= lim.maxTotalRunners) {
+    // The parenthetical used to read "(every runner is a job that could start at
+    // once)". With admission control enforcing, that is simply false, and it was
+    // the sentence that talked operators out of raising a limit they should
+    // have raised. State what the limit actually governs.
     reasons.push(
       `${runners.length} runners already exist, the fleet limit of ${lim.maxTotalRunners} ` +
-        '(every runner is a job that could start at once)'
+        '(a disk and memory bound on how many runners may exist — concurrent jobs are capped separately by admission control)'
     );
   }
 

@@ -38,6 +38,10 @@
 
 import { roleLabel } from './state.js';
 
+// Only used when a capacity object arrives without a ceiling, which happens for
+// remote hosts reporting an older agent payload.
+const CAPACITY_BUSY_FALLBACK = 3;
+
 export const CAUSES = {
   TELEMETRY_UNAVAILABLE: 'telemetry-unavailable',
   GITHUB_HOSTED: 'github-hosted',
@@ -47,6 +51,7 @@ export const CAUSES = {
   RUNNER_DOWN: 'runner-down',
   CONCURRENCY_BLOCK: 'concurrency-block',
   HOST_SATURATION: 'host-saturation',
+  FLEET_LIMIT: 'fleet-limit',
   REPO_CAPACITY: 'repo-capacity',
   GITHUB_DELAY: 'github-delay',
 };
@@ -60,6 +65,7 @@ export const RECOMMENDED = {
   [CAUSES.RUNNER_DOWN]: 'Run health.sh --repair or restart the runner from the dashboard.',
   [CAUSES.CONCURRENCY_BLOCK]: 'GitHub is holding this run before dispatch. Check workflow concurrency, required approvals, billing, and GitHub Actions status.',
   [CAUSES.HOST_SATURATION]: 'Do not add another runner on this host. Let running jobs finish, reduce workflow fan-out, or add capacity on another host.',
+  [CAUSES.FLEET_LIMIT]: 'The host is mostly idle — this is a configured limit, not saturation. Raise maxTotalRunners, or reap idle duplicates, then let the autoscaler add the runner.',
   [CAUSES.REPO_CAPACITY]: 'Add a runner for this repo. The Capacity tab shows whether the host can take one.',
   [CAUSES.GITHUB_DELAY]: 'Probably fine — GitHub dispatch takes a few seconds. If the job is still queued in 2 minutes, check for GitHub API errors.',
 };
@@ -230,11 +236,41 @@ export function classifyQueueCause({ run, runners, capacity, api = {}, collector
     return result(CAUSES.GITHUB_DELAY, 'low', evidence, false);
   }
 
-  // ---- host saturation ----------------------------------------------------
+  // ---- headroom gate refusing --------------------------------------------
+  //
+  // Split, because "the gate said no" and "the machine is busy" are not the
+  // same condition and the advice for them is opposite. This branch used to
+  // return host-saturation for every refusal, so a fleet sitting at 42 of 43
+  // runners IDLE was reported as saturated with high confidence, and the
+  // recommendation told the operator not to add the very runner the queue
+  // needed. The count-based limits are a configured ceiling on how many
+  // listeners may exist; they say nothing about how hard the host is working.
+  //
+  // Saturation has to be observable in the host: runners actually executing, or
+  // a load/pressure/disk reason. If the only thing refusing is a count, and
+  // almost nothing is running, name it as the limit it is.
   if (capacity && !capacity.ok) {
     for (const reason of capacity.reasons ?? []) {
       evidence.push(reason);
     }
+    // Busyness has to be read fleet-wide, not from this repo's runners. The
+    // repo whose queue triggered this usually has one runner and it is busy, so
+    // a repo-scoped ratio would call every fleet in existence saturated. The
+    // headroom result already carries the host-wide busy count and the ceiling
+    // that defines "busy", so use the system's own definition rather than
+    // inventing a second one here.
+    const busyNow = capacity.busy ?? 0;
+    const ceiling = capacity.ceiling ?? CAPACITY_BUSY_FALLBACK;
+    const countOnly = (capacity.reasons ?? []).every((r) => /runners already exist/.test(r));
+
+    if (countOnly && busyNow < ceiling) {
+      evidence.push(
+        `${busyNow} job(s) executing host-wide, below the ceiling of ${ceiling} — the host is not saturated`
+      );
+      evidence.push('A configured limit is refusing scale-up additions');
+      return result(CAUSES.FLEET_LIMIT, 'high', evidence, false);
+    }
+
     evidence.push('Headroom gate is refusing scale-up additions');
     return result(CAUSES.HOST_SATURATION, 'high', evidence, false);
   }

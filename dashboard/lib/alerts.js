@@ -105,6 +105,7 @@ const QUEUE_CAUSE_ALERTS = {
   'runner-down': { severity: 'critical', title: 'Runner is down and work is queued' },
   'concurrency-block': { severity: 'warning', title: 'Run held before GitHub dispatch' },
   'host-saturation': { severity: 'warning', title: 'Host is saturated and work is queued' },
+  'fleet-limit': { severity: 'warning', title: 'A configured limit is blocking scale-up while work is queued' },
   'repo-capacity': { severity: 'warning', title: 'Every runner for this repo is busy' },
   'github-delay': { severity: 'info', title: 'Probable GitHub dispatch delay' },
 };
@@ -305,6 +306,28 @@ export class Alerts {
       }
     } else {
       this.sustained('mempressure', false, c.pressureSustainMs, now);
+    }
+
+    // A stale host heartbeat is an outage of the same kind, and there was no
+    // rule for it at all. The placer refuses every host whose beat is older
+    // than 120s, so a host that stops reporting silently stops being
+    // placeable — autoscaling is off and nothing says so. On 2026-09-28 that
+    // cost ten consecutive refusals ("no eligible host: last heartbeat 923s
+    // ago") while five jobs sat queued, and the only surface was a banner on a
+    // tab nobody had open. Critical, because the fleet cannot grow while it is
+    // true, and the Hosts tab reports the same host as healthy.
+    for (const h of snapshot.hosts ?? []) {
+      if (!h?.id) continue;
+      const stale = Boolean(h.hostStale ?? h.stale);
+      if (this.sustained(`host-stale:${h.id}`, stale, 3 * 60 * 1000, now)) {
+        const ageS = Math.round((h.staleForMs ?? 0) / 1000);
+        add(`host:stale:${h.id}`, 'host-stale', 'critical',
+          `Host is not reporting: ${h.name ?? h.id}`,
+          `No heartbeat for ${ageS}s. Its runners keep taking jobs from GitHub, so this is a ` +
+            'reporting problem first — but while it lasts the placer refuses this host and no ' +
+            'runner can be added to it, whatever the queue looks like. Check the agent process ' +
+            'and the network before the runners.');
+      }
     }
 
     // The collector losing its GitHub connection is itself an outage: every
