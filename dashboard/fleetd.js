@@ -302,6 +302,7 @@ function publish() {
 // offline — so it lives for the life of the process.
 const verdictTracker = createVerdictTracker();
 let lastVerdict = null;
+let lastFacts = null;
 
 function diskFloorGb() {
   return CONFIG.admitMinFreeDiskGb ?? settings.limits().minFreeDiskGb ?? null;
@@ -314,6 +315,7 @@ function currentGlance(now = Date.now()) {
     staleMs: CONFIG.collectorStaleMs,
     floorGb: diskFloorGb(),
     localHostId: LOCAL_HOST_ID,
+    failures: lastFacts?.recentFailures ?? [],
   });
 }
 
@@ -1924,7 +1926,8 @@ async function fastTick() {
     },
   };
   try {
-    lastVerdict = verdictTracker.observe(snapshot, loadFailureFacts(db, started), started);
+    lastFacts = loadFailureFacts(db, started);
+    lastVerdict = verdictTracker.observe(snapshot, lastFacts, started);
     snapshot.verdict = lastVerdict.verdict;
   } catch (err) {
     warn('verdict:', err.message);

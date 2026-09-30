@@ -18,10 +18,13 @@ struct PopoverView: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 5)) { ctx in
-            let now = Format.nowMs(ctx.date)
+            let now = model.clockMs(ctx.date)
             VStack(alignment: .leading, spacing: 12) {
                 VerdictHeader(verdict: model.verdict, dimmed: model.isDimmed, onNext: handle)
-                if model.verdict.open.count > 1 {
+                headerActions
+                if model.showLadder {
+                    LadderView(rungs: model.ladder)
+                } else if model.verdict.open.count > 1 {
                     alsoOpen
                 }
                 Divider()
@@ -35,6 +38,10 @@ struct PopoverView: View {
                         }
                         if let g = model.store.glance {
                             QueueSection(rows: Presenter.queue(g)) { model.open($0) }
+                            if let f = g.failures, !f.isEmpty {
+                                Divider()
+                                FailuresSection(rows: f, now: now) { model.open($0) }
+                            }
                         }
                     }
                     .opacity(model.isDimmed ? 0.55 : 1)
@@ -55,6 +62,34 @@ struct PopoverView: View {
         } else {
             ScrollView { content() }.frame(maxHeight: 520)
         }
+    }
+
+    @State private var copied = false
+
+    private var headerActions: some View {
+        HStack(spacing: 12) {
+            if isRendering {
+                Text(model.showLadder ? "Hide why" : "Why?").foregroundStyle(Color.accentColor)
+                Text("Copy brief").foregroundStyle(Color.accentColor)
+            } else {
+                Button(model.showLadder ? "Hide why" : "Why?") { model.showLadder.toggle() }
+                Button(copied ? "Copied" : "Copy brief") {
+                    model.copyBrief()
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                }
+            }
+            if model.probing {
+                ProgressView().controlSize(.mini)
+                Text("checking the host out of band…").foregroundStyle(.secondary)
+            } else if let t = model.lastProbeMs, model.outOfBand != nil {
+                Text("checked out of band \(Format.ago(t, now: Format.nowMs()))").foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .buttonStyle(.link)
+        .font(.system(size: 11))
+        .padding(.leading, 14)
     }
 
     private var alsoOpen: some View {

@@ -11,6 +11,9 @@ usage: cockpit <command> [options]
 
 commands:
   status              the fleet verdict, one screen
+  sentinel            check the host out of band (SSH, GitHub, the other machine) —
+                      what the app does when the dashboard does not answer
+  brief               a markdown incident brief of the current state
   fixtures            list the bundled fixture names
 
 options:
@@ -19,6 +22,7 @@ options:
   --via <alias>       ssh alias to tunnel through (repeatable; default: runner-host, runner-ts)
   --url <url>         reach the dashboard directly
   --fresh             ignore the app's snapshot and connect now
+  --port <n>          the dashboard's port on the host (default 7878)
 """
 
 struct Options {
@@ -160,6 +164,25 @@ case "status":
     } else {
         printVerdict(src.verdict, route: src.route, glance: src.glance)
     }
+    src.transport?.close()
+    exit(exitCode(src.verdict))
+case "sentinel":
+    let aliases = opts.via.isEmpty ? ["runner-host", "runner-ts"] : opts.via
+    let targets = (try? SnapshotFile.read())?.glance.flatMap { SentinelTargets.from($0) }
+    var probe = SentinelProbe(aliases: aliases)
+    if let port = opts.flags["port"].flatMap(Int.init) { probe.remotePort = port }
+    let probes = await probe.run(targets, localNetwork: true)
+    let v = Sentinel.classify(probes, hostName: targets?.hostName ?? aliases.first ?? "host")
+    if opts.json {
+        printJSON(v)
+    } else {
+        printVerdict(v, route: "out of band", glance: nil)
+        if targets == nil { print("  (no snapshot from the app yet: GitHub runner checks skipped)") }
+    }
+    exit(exitCode(v))
+case "brief":
+    let src = await obtain(opts)
+    print(IncidentBrief.markdown(verdict: src.verdict, glance: src.glance, route: src.route, connection: "cli"))
     src.transport?.close()
     exit(exitCode(src.verdict))
 default:

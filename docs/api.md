@@ -64,6 +64,8 @@ every tick.
   "runners": [ { "name": "build-host-web", "repo": "owner/web", "project": "web", "host": "build-host",
                  "state": "held-disk", "detail": "held: 36 GB disk free, below the 40 GB floor", "since": 1790780126000 } ],
   "queue": [],
+  "failures": [ { "runId": 901, "repo": "owner/web", "workflow": "web-e2e", "cls": "runner-lost",
+                  "notYourCode": true, "at": 1790779986956, "url": "https://github.com/owner/web/actions/runs/901" } ],
   "incidents": [ { "key": "admission:disk-floor", "rule": "admission-hold", "severity": "critical",
                    "title": "Disk floor is holding 3 jobs", "openedAt": 1790780246000, "dismissed": false } ],
   "admission": { "mode": "enforce", "limit": 2, "waiting": 3 },
@@ -72,8 +74,11 @@ every tick.
 }
 ```
 
-Fields that would be `null` are omitted from runners, queue entries and
-incidents. `schema` changes only on a breaking change; new fields may appear at
+Fields that would be `null` are omitted from runners, queue entries, failures
+and incidents. `failures` lists failed runs from the last two hours with their
+failure class (see `lib/failures.js`); `notYourCode` is true for `runner-lost`,
+`account-blocked`, `account-quota` and `no-runner`, the classes whose first move
+is not reading the diff. `schema` changes only on a breaking change; new fields may appear at
 any time and decoders should ignore what they do not know.
 
 **`verdict.id`** is the first matching rung of the ladder, in this order:

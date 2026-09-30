@@ -37,7 +37,7 @@ struct DiskGauge: View {
     let disk: DiskModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 6) {
             GeometryReader { geo in
                 let w = geo.size.width
                 ZStack(alignment: .leading) {
@@ -194,6 +194,81 @@ struct QueueSection: View {
                 }
                 .buttonStyle(.plain)
                 .help(r.recommended ?? "")
+            }
+        }
+    }
+}
+
+/// The whole ladder with the verdict's rung lit: what was checked, in what
+/// order, and why this rung won.
+struct LadderView: View {
+    let rungs: [LadderRung]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(rungs.enumerated()), id: \.element.id) { i, r in
+                HStack(alignment: .top, spacing: 8) {
+                    Text("\(i)")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(r.lit ? Color.accentColor : .secondary)
+                        .frame(width: 14, alignment: .trailing)
+                    Circle()
+                        .fill(r.open ? r.tone.color : Color.secondary.opacity(0.25))
+                        .frame(width: 7, height: 7)
+                        .padding(.top, 4)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(r.title)
+                            .font(.system(size: 12, weight: r.lit ? .bold : r.open ? .semibold : .regular))
+                            .foregroundStyle(r.open ? .primary : .secondary)
+                        if r.lit || r.open {
+                            Text(r.blurb).font(.system(size: 11)).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            ForEach(r.evidence, id: \.self) { e in
+                                Text("· \(e)").font(.system(size: 11)).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 4)
+                .padding(.horizontal, 6)
+                .background(r.lit ? RoundedRectangle(cornerRadius: 5).fill(Color.accentColor.opacity(0.08)) : nil)
+            }
+        }
+    }
+}
+
+struct FailuresSection: View {
+    let rows: [FailureRow]
+    let now: Double
+    var onOpen: (String?) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Failed in the last 2 hours").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+            ForEach(rows) { f in
+                Button { onOpen(f.url) } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("\(f.repo.split(separator: "/").last.map(String.init) ?? f.repo) · \(f.workflow ?? "run")")
+                                .font(.system(size: 12.5)).lineLimit(1)
+                            Text(f.label).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer(minLength: 4)
+                        if f.notYourCode == true {
+                            Text("not your code")
+                                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                                .padding(.horizontal, 6).padding(.vertical, 1)
+                                .background(Capsule().fill(Color.orange.opacity(0.15)))
+                                .foregroundStyle(.orange)
+                        }
+                        Text(Format.ago(f.at, now: now))
+                            .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
         }
     }

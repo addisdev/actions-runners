@@ -20,6 +20,19 @@ final class AppModel {
     var hovered: PillModel?
     var filter: String = ""
 
+    /// What the sentinel concluded while the dashboard was unreachable.
+    var outOfBand: Verdict?
+    var lastProbeMs: Double?
+    var probing = false
+    var showLadder = false
+    let notifier = Notifier()
+
+    @ObservationIgnored private var sentinelTask: Task<Void, Never>?
+    @ObservationIgnored private var networkUp = true
+    @ObservationIgnored private var lastTargets: SentinelTargets?
+    /// Kept in the snapshot file while nothing newer has arrived, so a restart
+    /// during an outage does not erase what the fleet looked like before it.
+    @ObservationIgnored private var lastGoodGlance: Glance?
     @ObservationIgnored private var pathMonitor: NWPathMonitor?
     @ObservationIgnored private var lastPath: String?
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
@@ -34,8 +47,19 @@ final class AppModel {
         }
         settings = s
         store = GlanceStore(config: s.transport)
-        store.onGlance = { [weak self] _ in self?.writeSnapshot() }
-        store.onConnection = { [weak self] _ in self?.writeSnapshot() }
+        store.onGlance = { [weak self] g in
+            self?.lastGoodGlance = g
+            self?.lastTargets = SentinelTargets.from(g) ?? self?.lastTargets
+            self?.writeSnapshot()
+        }
+        store.onConnection = { [weak self] state in self?.connectionChanged(state) }
+        notifier.requestAuthorization()
+        // Targets from the last run, so a launch while the host is down can
+        // still ask GitHub about the right runners.
+        if s.mode != .fixture, let g = (try? SnapshotFile.read())?.glance {
+            lastGoodGlance = g
+            lastTargets = SentinelTargets.from(g)
+        }
         store.start()
         observeSystem()
         Renderer.runIfRequested(self)
@@ -43,7 +67,78 @@ final class AppModel {
 
     var verdict: Verdict {
         CockpitVerdict.effective(glance: store.glance, connection: store.connection,
-                                 outOfBand: nil, lastGlanceMs: store.lastGlanceMs)
+                                 outOfBand: outOfBand, lastGlanceMs: store.lastGlanceMs)
+    }
+
+    var ladder: [LadderRung] { Ladder.build(verdict) }
+
+    /// "Now" for ages on screen. A fixture is a moment in the past, so its ages
+    /// are measured from when it was recorded rather than from today.
+    func clockMs(_ date: Date = Date()) -> Double {
+        if case .fixture = store.connection, let t = store.glance?.generatedAt { return t }
+        return Format.nowMs(date)
+    }
+
+    var brief: String {
+        IncidentBrief.markdown(verdict: verdict, glance: store.glance, route: store.route?.label,
+                               connection: String(describing: store.connection))
+    }
+
+    func copyBrief() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(brief, forType: .string)
+    }
+
+    // MARK: sentinel
+
+    private func connectionChanged(_ state: ConnectionState) {
+        switch state {
+        case .reconnecting:
+            startSentinel()
+        case .live, .collectorStale, .fixture:
+            stopSentinel()
+            if outOfBand != nil { outOfBand = nil }
+            notifier.cockpit(nil)
+        case .connecting:
+            break
+        }
+        writeSnapshot()
+    }
+
+    /// Starts after 20 s of failed reconnects — a daemon restart takes a few
+    /// seconds and is not an incident — then probes once a minute until the
+    /// stream is back.
+    private func startSentinel() {
+        guard sentinelTask == nil else { return }
+        sentinelTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            while !Task.isCancelled {
+                await self?.probeOnce()
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+            }
+        }
+    }
+
+    private func stopSentinel() {
+        sentinelTask?.cancel()
+        sentinelTask = nil
+        probing = false
+    }
+
+    func probeOnce() async {
+        if case .fixture = settings.transport { return }
+        probing = true
+        defer { probing = false }
+        let targets = lastTargets
+        var probe = SentinelProbe(aliases: settings.mode == .tunnel ? settings.aliasList : [])
+        probe.remotePort = settings.remotePort
+        let p = await probe.run(targets, localNetwork: networkUp)
+        guard !store.connection.isLive, store.connection != .collectorStale else { return }
+        let v = Sentinel.classify(p, hostName: targets?.hostName ?? settings.aliasList.first ?? "the host")
+        outOfBand = v
+        lastProbeMs = Format.nowMs()
+        notifier.cockpit(v)
+        writeSnapshot()
     }
 
     var menuBar: MenuBarModel {
@@ -98,8 +193,10 @@ final class AppModel {
             // A route built on the old network (Wi-Fi to hotspot, VPN up or
             // down) is dead weight even if the socket has not noticed yet.
             let signature = "\(path.status)|" + path.availableInterfaces.map(\.name).joined(separator: ",")
+            let up = path.status == .satisfied
             Task { @MainActor in
                 guard let self else { return }
+                self.networkUp = up
                 defer { self.lastPath = signature }
                 if let last = self.lastPath, last != signature, path.status == .satisfied {
                     self.store.reconnectNow()
@@ -121,7 +218,7 @@ final class AppModel {
             route: store.route?.label,
             connection: String(describing: store.connection),
             verdict: verdict,
-            glance: store.glance
+            glance: store.glance ?? lastGoodGlance
         )
         Task.detached(priority: .utility) { try? snap.write() }
     }
