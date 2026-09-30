@@ -391,18 +391,24 @@ export class GitHub {
   // the scope or the billing plan does not expose the endpoint. The caller
   // treats null as "unavailable" rather than "zero".
   //
-  // Uses the newer /orgs/{org}/settings/billing/usage endpoint rather than the
-  // retired product-specific /settings/billing/actions one. Falls back to user-
-  // level billing if an org slug is not available.
+  // Uses the newer /settings/billing/usage endpoint rather than the retired
+  // product-specific /settings/billing/actions one — on BOTH paths. The user
+  // fallback used to call .../billing/actions, which GitHub retired and now
+  // answers 410 Gone. 410 is not in the expected-status list below, so for a
+  // personal account (addisdev is a user, not an org) the org call 404'd, the
+  // fallback 410'd, and the probe threw on every tick: billing was configured
+  // and reporting nothing, which is worse than being switched off, because the
+  // Alerts tab showed a billing check that could never fire while account-quota
+  // was the single largest cause of failure on the fleet.
   async billingUsage(orgOrUser) {
     try {
-      // Try org first; fall back to user endpoint if 404.
+      // Try org first; fall back to the user endpoint if this is not an org.
       let res;
       try {
         res = await this.get(`orgs/${encodeURIComponent(orgOrUser)}/settings/billing/usage`, { etag: true });
       } catch (err) {
-        if (err.status === 404) {
-          res = await this.get(`users/${encodeURIComponent(orgOrUser)}/settings/billing/actions`, { etag: true });
+        if (err.status === 404 || err.status === 403 || err.status === 410) {
+          res = await this.get(`users/${encodeURIComponent(orgOrUser)}/settings/billing/usage`, { etag: true });
         } else {
           throw err;
         }
@@ -412,7 +418,8 @@ export class GitHub {
     } catch (err) {
       // 403 = no billing scope, 404 = endpoint not available on this plan.
       // Both are expected and are treated as "not available" rather than errors.
-      if (err.status === 403 || err.status === 404 || err.status === 422) {
+      // 410 included: a retired endpoint is "not available", not a crash.
+      if (err.status === 403 || err.status === 404 || err.status === 410 || err.status === 422) {
         return { data: null, unavailable: true, reason: `${err.status}` };
       }
       throw err;
