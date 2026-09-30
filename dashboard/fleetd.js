@@ -69,6 +69,7 @@ import { classifyAnnotations } from './lib/failures.js';
 import { HaCoordinator } from './lib/ha.js';
 import { collectHostReport } from './lib/host-report.js';
 import { createVerdictTracker, computeVerdict, buildGlance, loadFailureFacts } from './lib/verdict.js';
+import { createEtaBaselines, estimateQueue } from './lib/eta.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(HERE, 'public');
@@ -301,6 +302,7 @@ function publish() {
 // The verdict remembers one thing between ticks — when each runner went
 // offline — so it lives for the life of the process.
 const verdictTracker = createVerdictTracker();
+const etaBaselines = createEtaBaselines(db);
 let lastVerdict = null;
 let lastFacts = null;
 
@@ -1925,6 +1927,15 @@ async function fastTick() {
       leaderSince: ha.leaderSince,
     },
   };
+  try {
+    const etas = estimateQueue({ queue: snapshot.queue, active, baselines: etaBaselines(started), now: started });
+    for (const q of snapshot.queue) {
+      const e = etas.get(q.id);
+      if (e) Object.assign(q, { etaStartMs: e.etaStartMs, etaDoneMs: e.etaDoneMs, etaBasis: e.basis });
+    }
+  } catch (err) {
+    warn('queue eta:', err.message);
+  }
   try {
     lastFacts = loadFailureFacts(db, started);
     lastVerdict = verdictTracker.observe(snapshot, lastFacts, started);

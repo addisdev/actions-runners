@@ -78,6 +78,14 @@ describe('what does not count', () => {
     assert.equal(r.runners.get('build-host-comet-web').lostAt, s.facts.runnerLost[0].at);
   });
 
+  test('a run held by the headroom gate is waiting, not saturation', () => {
+    // Seen live: memory pressure "warning" is this host's normal, so the gate
+    // refuses additions most of the day and a queued run reads host-saturation.
+    const s = SCENARIOS.quiet();
+    s.snapshot.queue = [{ ...SCENARIOS.waiting().snapshot.queue[0], cause: 'host-saturation', confidence: 'high' }];
+    assert.equal(computeVerdict(s.snapshot, s.facts, { now: s.now }).verdict.id, 'waiting');
+  });
+
   test('warning memory pressure alone is not saturation', () => {
     const s = SCENARIOS.quiet();
     s.snapshot.host.memPressure = 'warning';
@@ -205,6 +213,14 @@ describe('the glance payload', () => {
     const local = g.hosts.find((h) => h.local);
     assert.equal(local.vitals.diskFloorGb, 40);
     assert.equal(local.vitals.diskFreeGb, 36.6);
+  });
+
+  test('carries active runs and the last two hours of finished ones, compact', () => {
+    const g = glanceOf('live');
+    assert.ok(Array.isArray(g.runs) && Array.isArray(g.recent));
+    assert.ok(g.runs.every((r) => r.id && r.repo && r.status));
+    assert.ok(g.recent.every((r) => r.conclusion));
+    assert.ok((g.runs.find((r) => r.status === 'in_progress')?.sha?.length ?? 0) >= 7);
   });
 
   test('is small enough to stream every tick over a phone link', () => {

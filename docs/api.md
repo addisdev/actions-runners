@@ -75,7 +75,12 @@ every tick.
 ```
 
 Fields that would be `null` are omitted from runners, queue entries, failures
-and incidents. `failures` lists failed runs from the last two hours with their
+and incidents. `runs` carries the active runs and `recent` the runs finished in the last two
+hours, compact (id, repo, workflow, status, conclusion, branch, sha, prNumber,
+url, timing), which is enough to roll a commit's checks into one row. Queue
+entries carry `etaStartMs` and `etaDoneMs` as `[p50, p90]` ranges and
+`etaBasis` saying what the estimate waits behind; both are absent when the
+cause never clears on its own. `failures` lists failed runs from the last two hours with their
 failure class (see `lib/failures.js`); `notYourCode` is true for `runner-lost`,
 `account-blocked`, `account-quota` and `no-runner`, the classes whose first move
 is not reading the diff. `schema` changes only on a breaking change; new fields may appear at
@@ -89,7 +94,7 @@ any time and decoders should ignore what they do not know.
 | 1 | `host-down` | critical | a federated agent host has stopped heartbeating |
 | 2 | `disk-floor` | critical | a job is held by the admission disk floor, or disk is under the floor while admission enforces |
 | 3 | `dead-service` | critical | a runner service is dead or missing, or a runner has been offline for 5 min, or work is queued behind a down runner |
-| 4 | `saturated` | warning | two or more `runner-lost` jobs in an hour, sustained paging, critical memory pressure, or a high-confidence host-saturation queue cause |
+| 4 | `saturated` | warning | two or more `runner-lost` jobs in an hour, sustained paging, or critical memory pressure. A run queued because the headroom gate is at capacity is `waiting`, not this |
 | 5 | `account-blocked` | warning | an `account-blocked` or `account-quota` job in the last 6 hours |
 | 6 | `config-drift` | warning | an orphan or label mismatch, or a queue cause that waiting cannot fix (`unserved`, `role-unserved`, `label-mismatch`, `github-hosted`) |
 | 7 | `waiting` | ok | runs are queued or held for an admission slot, and nothing above explains them |

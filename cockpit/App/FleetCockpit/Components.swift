@@ -273,3 +273,44 @@ struct FailuresSection: View {
         }
     }
 }
+
+struct ChecksSection: View {
+    let rows: [Presenter.CheckRowModel]
+    let isWatched: (WaitTarget) -> Bool
+    var onToggle: (WaitTarget) -> Void
+    var onOpen: (String?) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Checks").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+            ForEach(rows) { r in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Circle().fill(r.state == .red ? Color.red : Color.accentColor).frame(width: 7, height: 7)
+                    Button { onOpen(r.url) } label: {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(r.title).font(.system(size: 12.5)).lineLimit(1)
+                            if let s = r.subtitle { Text(s).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1) }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    Spacer(minLength: 4)
+                    VStack(alignment: .trailing, spacing: 0) {
+                        Text(r.progress).font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(r.state == .red ? .red : .primary)
+                        if let e = r.eta { Text(e).font(.system(size: 9.5, design: .monospaced)).foregroundStyle(.secondary) }
+                    }
+                    .monospacedDigit()
+                    if r.state == .pending {
+                        Button { onToggle(r.target) } label: {
+                            Image(systemName: isWatched(r.target) ? "bell.fill" : "bell")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(isWatched(r.target) ? Color.accentColor : .secondary)
+                        .help(isWatched(r.target) ? "Stop watching" : "Notify me when these checks finish")
+                    }
+                }
+            }
+        }
+    }
+}

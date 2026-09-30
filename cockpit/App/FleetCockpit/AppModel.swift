@@ -4,6 +4,7 @@ import Foundation
 import Network
 import Observation
 import ServiceManagement
+import UserNotifications
 
 @MainActor
 @Observable
@@ -37,6 +38,22 @@ final class AppModel {
     var runnerDetail: RunnerDetail?
     var pairingStatus: String?
     var token: String? { didSet { store.token = token } }
+
+    /// Commits someone asked to be told about.
+    var watches: [Watch] = AppModel.loadWatches() {
+        didSet { if let d = try? JSONEncoder().encode(watches) { UserDefaults.standard.set(d, forKey: "watches.v1") } }
+    }
+
+    static func loadWatches() -> [Watch] {
+        guard let d = UserDefaults.standard.data(forKey: "watches.v1") else { return [] }
+        return (try? JSONDecoder().decode([Watch].self, from: d)) ?? []
+    }
+
+    func isWatched(_ t: WaitTarget) -> Bool { watches.contains { $0.target == t } }
+
+    func toggleWatch(_ t: WaitTarget) {
+        if isWatched(t) { watches.removeAll { $0.target == t } } else { watches.append(Watch(target: t, createdAt: Format.nowMs())) }
+    }
 
     @ObservationIgnored private var incidents = IncidentTracker()
     @ObservationIgnored private var sentinelTask: Task<Void, Never>?
@@ -115,10 +132,24 @@ final class AppModel {
     private func glanceArrived(_ g: Glance) {
         if token == nil, let t = TokenStore.load(account: tokenAccount) { token = t }
         if catalog == nil, case .live = store.connection { Task { await loadCatalog() } }
+        for (w, s) in Watch.finished(watches, glance: g) {
+            watches.removeAll { $0.id == w.id }
+            let failed = s.failed.compactMap(\.workflow).joined(separator: ", ")
+            notifier.post(id: "watch:\(w.id)", title: s.state == .green ? "✔ \(s.label) is green" : "✖ \(s.label) failed",
+                          body: s.state == .green ? s.progress : "Failed: \(failed). \(notYourCodeNote(s, g))",
+                          critical: false, info: ["kind": "watch", "url": (s.failed.first ?? s.runs.first)?.url ?? ""])
+        }
         let hour = Calendar.current.component(.hour, from: Date())
         for event in incidents.update(g.incidents, prefs: settings.notifications, now: Format.nowMs(), hour: hour) {
             notifier.incident(event)
         }
+    }
+
+    /// "Not your code" when the daemon recorded the failure as the host's or the account's.
+    private func notYourCodeNote(_ s: CheckSet, _ g: Glance) -> String {
+        let ids = Set(s.failed.map(\.id))
+        guard let f = g.failures?.first(where: { ids.contains($0.runId) }), f.notYourCode == true else { return "" }
+        return f.label + "."
     }
 
     func loadCatalog() async {
@@ -212,6 +243,7 @@ final class AppModel {
         case "dismiss": if let k = info["key"] { Task { await dismiss(k) } }
         case "snooze": if let k = info["key"] { incidents.snooze(k, untilMs: Format.nowMs() + 3_600_000) }
         case "open": openDashboard(fragment: "#/alerts")
+        case UNNotificationDefaultActionIdentifier where info["kind"] == "watch": open(info["url"])
         default: break // tapping the banner itself: the menu bar is right there
         }
     }

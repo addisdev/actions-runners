@@ -245,5 +245,7 @@ site/
 !cockpit/App/FleetCockpit/**
 !cockpit/App/FleetCockpitWidgets/
 !cockpit/App/FleetCockpitWidgets/**
+!cockpit/skills/
+!cockpit/skills/**
 cockpit/**/.DS_Store
 cockpit/App/FleetCockpit/Info.plist

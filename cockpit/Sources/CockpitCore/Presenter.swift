@@ -288,10 +288,17 @@ public enum Presenter {
             var sub: [String] = []
             if let pr = q.prNumber { sub.append("PR #\(pr)") } else if let b = q.branch { sub.append(b) }
             if let t = q.title { sub.append(t) }
-            let eta: String? = q.etaStartMs.flatMap { r in
-                guard r.count == 2 else { return nil }
-                return r[1] <= 0 ? "starting" : "starts in \(Format.short(ms: r[0]))–\(Format.short(ms: r[1]))"
-            }
+            let eta: String? = {
+                if let r = q.etaStartMs, r.count == 2 {
+                    var s = r[1] <= 0 ? "starting" : "starts in \(range(r))"
+                    if let d = q.etaDoneMs, d.count == 2 { s += " · done in \(range(d))" }
+                    return s
+                }
+                if ["runner-down", "unserved", "role-unserved", "label-mismatch", "github-hosted"].contains(q.cause ?? "") {
+                    return "won't start on its own"
+                }
+                return nil
+            }()
             return QueueRowModel(
                 id: q.id,
                 title: "\(repo) · \(q.workflow ?? "workflow")",
@@ -302,6 +309,37 @@ public enum Presenter {
                 eta: eta,
                 recommended: q.recommended,
                 url: q.url
+            )
+        }
+    }
+
+    /// "4m–11m", or "~5m" when the two ends round the same.
+    public static func range(_ r: [Double]) -> String {
+        let a = Format.short(ms: r[0]), b = Format.short(ms: r[1])
+        return a == b ? "~\(a)" : "\(a)–\(b)"
+    }
+
+    public struct CheckRowModel: Identifiable, Sendable, Equatable {
+        public var id: String
+        public var title: String
+        public var subtitle: String?
+        public var progress: String
+        public var eta: String?
+        public var state: CheckSet.State
+        public var target: WaitTarget
+        public var url: String?
+    }
+
+    /// Commits with checks still running, plus anything that finished red.
+    public static func checks(_ g: Glance, limit: Int = 5) -> [CheckRowModel] {
+        Rollup.checkSets(g).filter { $0.state != .green }.prefix(limit).map { s in
+            CheckRowModel(
+                id: s.id, title: s.label, subtitle: s.title, progress: s.progress,
+                eta: s.etaGreenMs.map { "done in \(range($0))" },
+                state: s.state,
+                target: WaitTarget(repo: s.repo, pr: s.prNumber, sha: s.prNumber == nil ? s.sha : nil,
+                                   branch: s.prNumber == nil && s.sha == nil ? s.branch : nil),
+                url: (s.failed.first ?? s.runs.first)?.url
             )
         }
     }

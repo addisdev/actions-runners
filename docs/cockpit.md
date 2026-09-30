@@ -43,7 +43,14 @@ running (`▸`) and queued (`◷`) jobs.
   | dotted | state unknown |
 
   Hover a pill for its detail; click it to open its running job on GitHub.
-- **The queue**, oldest first, with the classifier's cause in plain words.
+- **Checks**: every commit with checks still running (or finished red) as one
+  row — "comet-web PR #96 · 2 of 5 done · done in 11m–26m". The bell notifies
+  you when that commit's checks finish, green or red, and says *not your code*
+  when the host or the account failed them.
+- **The queue**, oldest first, with the classifier's cause in plain words and,
+  where one can be given, when the run should start and finish — a p50–p90
+  range from the job ahead of it and this workflow's history. A run whose cause
+  never clears on its own says *won't start on its own* instead of a number.
 
 When the stream drops, the last view stays on screen, greyed, with its age. It
 never stays green.
@@ -193,8 +200,25 @@ The command line keeps its token in
 than the Keychain: SwiftPM builds are signed ad hoc, so every rebuild would
 otherwise meet a Keychain prompt.
 
-Exit codes: `0` fine or healthy waiting, `1` a real fault, `3` nothing could be
-read.
+```bash
+cockpit why comet-web               # one repo: runners, queue with causes and ETAs, checks, failures, alerts
+cockpit queue                       # every queued run with cause and ETA
+cockpit wait comet-web --pr 96      # block until PR #96's checks finish
+```
+
+`cockpit wait` is built for scripts and agent sessions that would otherwise run
+`gh pr checks --watch`. It exits `0` when the checks are green, `1` when one
+failed (listing which), `2` as soon as waiting is pointless — the host is down,
+the disk floor is holding jobs, GitHub is refusing jobs for billing, or one of
+the checks is queued with a cause that never clears — and `3` on timeout
+(`--timeout 45m` by default).
+
+Exit codes for `status` and `why`: `0` fine or healthy waiting, `1` a real
+fault, `3` nothing could be read.
+
+`cockpit/skills/fleet-cockpit/SKILL.md` is a Claude Code skill that teaches an
+agent session to reach for these before blaming a workflow or a test; copy it
+into `~/.claude/skills/`.
 
 ## The snapshot file
 
