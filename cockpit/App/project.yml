@@ -1,0 +1,54 @@
+# XcodeGen spec for the Fleet Cockpit menu bar app.
+#   cd cockpit/App && xcodegen generate && open FleetCockpit.xcodeproj
+# The .xcodeproj is generated, never committed. Signing identity and team come
+# from Local.xcconfig (untracked; copy Local.xcconfig.example); without it the
+# app builds ad-hoc signed, which runs on the machine that built it.
+name: FleetCockpit
+options:
+  bundleIdPrefix: io.github.addisdev
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+configFiles:
+  Debug: Signing.xcconfig
+  Release: Signing.xcconfig
+packages:
+  CockpitCore:
+    path: ..
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_HARDENED_RUNTIME: YES
+    DEAD_CODE_STRIPPING: YES
+targets:
+  FleetCockpit:
+    type: application
+    platform: macOS
+    sources:
+      - path: FleetCockpit
+    dependencies:
+      - package: CockpitCore
+        product: CockpitCore
+    info:
+      path: FleetCockpit/Info.plist
+      properties:
+        CFBundleDisplayName: Fleet Cockpit
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSUIElement: true
+        LSApplicationCategoryType: public.app-category.developer-tools
+        NSHumanReadableCopyright: MIT licensed
+        CFBundleURLTypes:
+          - CFBundleURLName: io.github.addisdev.fleetcockpit
+            CFBundleURLSchemes: [fleetcockpit]
+    entitlements:
+      path: FleetCockpit/FleetCockpit.entitlements
+      properties: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.addisdev.fleetcockpit
+        PRODUCT_NAME: Fleet Cockpit
+        GENERATE_INFOPLIST_FILE: NO
+        COMBINE_HIDPI_IMAGES: YES

@@ -975,6 +975,19 @@ curl -s localhost:7878/api/state > /tmp/live.json
 node scripts/scrub-snapshot.mjs /tmp/live.json test/fixtures/snapshots/new.json --map ~/scrub-map.json
 ```
 
+### `dashboard/scripts/make-glance-fixtures.mjs`
+
+Writes one `/api/glance` payload per scenario in
+`dashboard/test/fixtures/scenarios.js` into
+`cockpit/Sources/CockpitCore/Fixtures/`, so the macOS cockpit is tested against
+exactly what the daemon produces for each recorded incident. `--check` exits
+non-zero when any fixture is out of date; CI runs it.
+Source: [`dashboard/scripts/make-glance-fixtures.mjs`](https://github.com/addisdev/actions-runners/blob/main/dashboard/scripts/make-glance-fixtures.mjs).
+
+```bash
+node dashboard/scripts/make-glance-fixtures.mjs
+```
+
 ### `dashboard/autofix/fix.sh`
 
 The allowlisted entry point used by the remediation bridge to launch a cloud

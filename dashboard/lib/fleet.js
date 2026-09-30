@@ -172,7 +172,12 @@ export function buildHostList(localSnapshot, hostState, {
     local: true,
   };
 
-  const remotes = [...hostState.values()].map((h) => ({
+  // A record under the coordinator's own id is this machine reporting itself
+  // through the agent path (an agent.js started on the coordinator, or its
+  // heartbeat restored from the hosts table after a restart). The local entry
+  // above is always fresher. Keeping both listed the coordinator twice, and once
+  // the self-record aged out it read as a second host that had gone down.
+  const remotes = [...hostState.values()].filter((h) => h.id !== coordinatorId).map((h) => ({
     id: h.id,
     name: h.name,
     lastHeartbeat: h.lastHeartbeat ?? null,

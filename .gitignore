@@ -124,6 +124,9 @@ dashboard/.fleet-agent-tokens.json
 dashboard/.fleet-device-tokens.json
 dashboard/.fleet-agent-command-results.json
 dashboard/.fleet-agent-command-results.json.tmp-*
+# The web-push signing key (lib/push.js). A private key, mode 0600, and it was
+# un-ignored by the rule above until this line existed.
+dashboard/.fleet-vapid.json
 
 # The auto-remediation bridge. Source in, runtime state out: state.json holds
 # per-alert attempt counts, runs/ holds agent transcripts, and repos/ holds
@@ -223,3 +226,24 @@ site/
 !examples/fleet.env.single-host
 !examples/fleet.env.federated-coordinator
 !examples/fleet.env.federated-agent
+
+# Fleet Cockpit, the macOS menu bar client (cockpit/). Source, tests, bundled
+# fixtures and the XcodeGen spec. The generated .xcodeproj, SwiftPM's .build,
+# and Local.xcconfig (a developer's signing identity) stay out.
+!cockpit/
+!cockpit/Package.swift
+!cockpit/README.md
+!cockpit/Sources/
+!cockpit/Sources/**
+!cockpit/Tests/
+!cockpit/Tests/**
+!cockpit/App/
+!cockpit/App/project.yml
+!cockpit/App/Signing.xcconfig
+!cockpit/App/Local.xcconfig.example
+!cockpit/App/FleetCockpit/
+!cockpit/App/FleetCockpit/**
+!cockpit/App/FleetCockpitWidgets/
+!cockpit/App/FleetCockpitWidgets/**
+cockpit/**/.DS_Store
+cockpit/App/FleetCockpit/Info.plist

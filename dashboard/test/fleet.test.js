@@ -207,6 +207,21 @@ describe('buildHostList', () => {
     assert.equal(hosts[1].id, 'id-mac2');
   });
 
+  test('a record under the coordinator\'s own id is not listed as a second host', () => {
+    // Seen live: an agent.js run on the coordinator heartbeated as itself for
+    // two days; after a restart the restored record aged out and the fleet
+    // verdict read the coordinator as a host that had stopped reporting.
+    const hostState = new Map([
+      ['build-host', { id: 'build-host', name: 'build-host', lastHeartbeat: NOW - 10 * 60 * 1000,
+        labels: [], runners: [], repos: [], host: {}, capacity: null, drained: false }],
+      ['id-mac2', { id: 'id-mac2', name: 'mac2', lastHeartbeat: NOW - 1000,
+        labels: [], runners: [], repos: [], host: {}, capacity: null, drained: false }],
+    ]);
+    const hosts = buildHostList({ ts: NOW, runners: [], host: {}, capacity: null }, hostState,
+      { coordinatorId: 'build-host', coordinatorName: 'build-host' });
+    assert.deepEqual(hosts.map((h) => [h.id, Boolean(h.local)]), [['build-host', true], ['id-mac2', false]]);
+  });
+
   test('coordinator labels are passed through', () => {
     const hosts = buildHostList(
       { ts: NOW, runners: [], host: {}, capacity: null },
