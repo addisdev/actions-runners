@@ -184,9 +184,18 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
   const floorGb = o.floorGb ?? null;
 
   // ---- admission waiters --------------------------------------------------
+  // A held row records why the hold STARTED; the hook logs nothing while it
+  // keeps waiting. After disk is freed, a job held at 38 GB goes on waiting
+  // for a slot under the same "below the floor" reason (seen live 2026-09-30).
+  // So a disk reason counts only while free disk is actually under the floor.
+  const diskNow = host.diskFreeGb;
   const waiting = (snapshot.admission?.waiting ?? [])
     .filter((w) => w.since == null || now - w.since * (w.since < 1e12 ? 1000 : 1) <= o.holdTtlMs)
-    .map((w) => ({ ...w, disk: parseDiskHold(w.reason) }));
+    .map((w) => {
+      const disk = parseDiskHold(w.reason);
+      const stillBelow = disk && (diskNow == null || diskNow < disk.floorGb);
+      return stillBelow ? { ...w, disk } : { ...w, disk: null, reason: disk ? 'waiting for a slot (disk freed)' : w.reason };
+    });
   const heldByName = new Map(waiting.map((w) => [w.runner, w]));
   const diskHeld = waiting.filter((w) => w.disk);
   const effectiveFloor = diskHeld[0]?.disk.floorGb ?? floorGb;

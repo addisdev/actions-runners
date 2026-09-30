@@ -326,6 +326,13 @@ describe('admission holds', () => {
     assert.match(open.body, /36 GB free, below the 40 GB admission floor/);
   });
 
+  test('a disk reason on a held row is ignored once disk is back above the floor', () => {
+    const alerts = makeAlerts({ admissionDiskSustainMs: 0 });
+    const snap = { host: { diskFreeGb: 46.8 }, admission: { waiting: [hold('a', '38 GB disk free, below the 40 GB floor', 120)] } };
+    alerts.evaluate(snap); alerts.evaluate(snap);
+    assert.equal(alerts.open.has('admission:disk-floor'), false);
+  });
+
   test('a slot hold is quiet until it outlives the max wait', () => {
     const alerts = makeAlerts({ admissionMaxWaitS: 600 });
     alerts.evaluate({ admission: { waiting: [hold('a', '2 job(s) already running, at the limit of 2', 120)] } });

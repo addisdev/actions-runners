@@ -82,6 +82,15 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- **Disk-floor deadlock.** `cleanup.sh` counted runners held by the admission
+  hook as busy, so during a disk-floor freeze the held jobs stopped the one
+  script that frees disk (seen live 2026-09-30). Held runners are no longer
+  counted, and the dry run always runs.
+- A job held while disk was under the floor kept reading as disk-held after the
+  disk was freed (the hold's reason is recorded once); the verdict and the
+  `admission-hold` alert now count a disk reason only while disk is still under
+  the floor.
+
 - The coordinator was listed twice in `hosts` when a heartbeat under its own id
   had been recorded (an `agent.js` run on the coordinator); once that record
   aged out it read as a second host that had stopped reporting.

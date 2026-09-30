@@ -327,7 +327,12 @@ export class Alerts {
       const sinceMs = w.since == null ? null : w.since * (w.since < 1e12 ? 1000 : 1);
       return sinceMs == null || now - sinceMs <= holdTtlMs;
     });
-    const diskHeld = waiters.filter((w) => parseDiskHold(w.reason));
+    // Only while disk is still under the floor: the reason on a held row is
+    // the reason the hold began, and it does not change once disk is freed.
+    const diskHeld = waiters.filter((w) => {
+      const d = parseDiskHold(w.reason);
+      return d && (host.diskFreeGb == null || host.diskFreeGb < d.floorGb);
+    });
     if (this.sustained('admission-disk', diskHeld.length > 0, c.admissionDiskSustainMs ?? 2 * 60 * 1000, now)) {
       const floor = parseDiskHold(diskHeld[0].reason);
       add('admission:disk-floor', 'admission-hold', 'critical',
@@ -338,7 +343,7 @@ export class Alerts {
           'Preview cleanup, then apply it.');
     }
     const maxWaitMs = (c.admissionMaxWaitS ?? 600) * 1000;
-    const longSlot = waiters.filter((w) => !parseDiskHold(w.reason) && w.since != null
+    const longSlot = waiters.filter((w) => !diskHeld.includes(w) && w.since != null
       && now - w.since * (w.since < 1e12 ? 1000 : 1) > maxWaitMs);
     if (longSlot.length) {
       add('admission:slot-wait', 'admission-hold', 'warning',

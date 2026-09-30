@@ -48,15 +48,40 @@ for d in "$ROOT"/*/; do
 done | sort -u | while read -r repo; do
   gh api "repos/$repo/actions/runners" --jq '.runners[] | select(.busy) | .name' 2>/dev/null
 done > /tmp/.cleanup-busy 2>/dev/null
-busy="$(tr -d '[:space:]' < /tmp/.cleanup-busy)"
+# A runner held by the admission hook is "busy" to GitHub but is running
+# nothing: its job is parked before its first step, waiting for a slot or for
+# disk. Counting those as busy deadlocked the fleet on 2026-09-30 — the disk
+# floor held four jobs, the held jobs made this script refuse, and this script
+# is what frees the disk. Waiters with a live hook PID are left out.
+held=""
+for w in "$ROOT"/.admission/waiters/*; do
+  [ -f "$w" ] || continue
+  pid="$(sed -n 's/^pid=//p' "$w" | head -1)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
+  held="$held $(sed -n 's/^runner=//p' "$w" | head -1)"
+done
+: > /tmp/.cleanup-building
+while read -r name; do
+  [ -n "$name" ] || continue
+  case " $held " in *" $name "*) continue ;; esac
+  echo "$name" >> /tmp/.cleanup-building
+done < /tmp/.cleanup-busy
+[ -n "$(tr -d '[:space:]' < /tmp/.cleanup-busy)" ] && [ ! -s /tmp/.cleanup-building ] \
+  && say "(runners held by admission are waiting, not building — not counted)"
+busy="$(tr -d '[:space:]' < /tmp/.cleanup-building)"
 if [ -n "$busy" ]; then
   say "a runner is BUSY:"
-  sed 's/^/  /' /tmp/.cleanup-busy
-  say "refusing to clean while a job is running — try again when the fleet is idle"
-  rm -f /tmp/.cleanup-busy
-  exit 0
+  sed 's/^/  /' /tmp/.cleanup-building
+  if [ "$APPLY" = 1 ]; then
+    say "refusing to clean while a job is running — try again when the fleet is idle"
+    rm -f /tmp/.cleanup-busy /tmp/.cleanup-building
+    exit 0
+  fi
+  # A dry run deletes nothing, so it always runs: during a disk-floor freeze
+  # the preview is exactly what someone needs to see.
+  say "(dry run continues; --apply would refuse until these finish)"
 fi
-rm -f /tmp/.cleanup-busy
+rm -f /tmp/.cleanup-busy /tmp/.cleanup-building
 
 before=$(df -g / | awk 'NR==2{print $4}')
 say "==> free before: ${before} GB"

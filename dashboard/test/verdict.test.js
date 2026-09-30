@@ -115,6 +115,17 @@ describe('what does not count', () => {
     assert.equal(r.runners.get('build-host-comet-web').state, 'held-slot');
   });
 
+  test('once disk is freed, a job held at 38 GB is waiting for a slot, not disk-held', () => {
+    // Seen live 2026-09-30: after cleanup took the host to 46.8 GB, two jobs
+    // still carried "38 GB disk free, below the 40 GB floor" from when their
+    // hold began, and the verdict stayed on disk-floor.
+    const s = SCENARIOS.diskHold();
+    s.snapshot.host.diskFreeGb = 46.8;
+    const r = computeVerdict(s.snapshot, s.facts, { now: s.now, floorGb: 40 });
+    assert.equal(r.verdict.id, 'waiting');
+    assert.equal(r.runners.get('build-host-comet-web').state, 'held-slot');
+  });
+
   test('a held row older than the slot TTL is a dead hook, not a wait', () => {
     const s = SCENARIOS.diskHold();
     for (const w of s.snapshot.admission.waiting) w.since -= 7 * 3600;
