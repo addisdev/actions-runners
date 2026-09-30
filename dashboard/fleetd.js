@@ -68,6 +68,7 @@ import { renderPrometheusMetrics } from './lib/metrics.js';
 import { classifyAnnotations } from './lib/failures.js';
 import { HaCoordinator } from './lib/ha.js';
 import { collectHostReport } from './lib/host-report.js';
+import { createVerdictTracker, computeVerdict, buildGlance, loadFailureFacts } from './lib/verdict.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(HERE, 'public');
@@ -145,6 +146,12 @@ const CONFIG = {
       .map((u) => { try { return new URL(String(u).trim()).hostname; } catch { return ''; } }),
   ].map((s) => s.trim()).filter(Boolean),
   deviceTokensFile: process.env.FLEET_DEVICE_TOKENS_FILE ?? join(HERE, '.fleet-device-tokens.json'),
+  // The hooks' own admission settings, handed to this process by fleetctl.sh so
+  // the verdict and the admission alerts judge a hold by the limits actually in
+  // force. Unset means an older plist: the Capacity tab's disk floor stands in.
+  admitMaxWaitS: Number(process.env.FLEET_ADMIT_MAX_WAIT_S ?? 600),
+  admitMinFreeDiskGb: process.env.FLEET_ADMIT_MIN_FREE_DISK_GB
+    ? Number(process.env.FLEET_ADMIT_MIN_FREE_DISK_GB) : null,
 };
 
 // Grouping, capacity and autoscaling settings do NOT live in CONFIG. They are
@@ -216,7 +223,12 @@ const ACTIONS = buildActions({
   getLimits: () => settings.limits(),
 });
 const alerts = CONFIG.alertsEnabled
-  ? new Alerts({ db, config: loadAlertConfig(CONFIG.alertConfig, log), log, warn })
+  ? new Alerts({
+    db,
+    config: { admissionMaxWaitS: CONFIG.admitMaxWaitS, ...loadAlertConfig(CONFIG.alertConfig, log) },
+    log,
+    warn,
+  })
   : null;
 // Notifications can take longer than the fast cadence. Chain evaluations so two
 // snapshots never reconcile the same in-memory open-alert map concurrently.
@@ -262,6 +274,9 @@ let snapshot = {
 };
 
 const clients = new Set();
+// Subscribers to the compact view. Kept apart so a phone on a tailnet is not
+// sent 130 KB every tick to draw a menu bar.
+const glanceClients = new Set();
 
 function publish() {
   const payload = `data: ${JSON.stringify(snapshot)}\n\n`;
@@ -272,6 +287,34 @@ function publish() {
       clients.delete(res);
     }
   }
+  if (!glanceClients.size) return;
+  const glancePayload = `data: ${JSON.stringify(currentGlance())}\n\n`;
+  for (const res of glanceClients) {
+    try {
+      res.write(glancePayload);
+    } catch {
+      glanceClients.delete(res);
+    }
+  }
+}
+
+// The verdict remembers one thing between ticks — when each runner went
+// offline — so it lives for the life of the process.
+const verdictTracker = createVerdictTracker();
+let lastVerdict = null;
+
+function diskFloorGb() {
+  return CONFIG.admitMinFreeDiskGb ?? settings.limits().minFreeDiskGb ?? null;
+}
+
+function currentGlance(now = Date.now()) {
+  const result = lastVerdict ?? computeVerdict(snapshot, {}, { now, floorGb: diskFloorGb() });
+  return buildGlance(snapshot, result, {
+    now,
+    staleMs: CONFIG.collectorStaleMs,
+    floorGb: diskFloorGb(),
+    localHostId: LOCAL_HOST_ID,
+  });
 }
 
 // ---------------------------------------------------------------- persistence
@@ -1880,6 +1923,12 @@ async function fastTick() {
       leaderSince: ha.leaderSince,
     },
   };
+  try {
+    lastVerdict = verdictTracker.observe(snapshot, loadFailureFacts(db, started), started);
+    snapshot.verdict = lastVerdict.verdict;
+  } catch (err) {
+    warn('verdict:', err.message);
+  }
   if (CONFIG.databaseUrl) {
     await ha.publishSnapshot(snapshot).catch((err) => warn('publish shared snapshot:', err.message));
   }
@@ -2292,7 +2341,10 @@ const server = http.createServer(async (req, res) => {
     return res.end(body);
   }
 
+  if (url.pathname === '/api/glance') return json(res, currentGlance());
+
   if (url.pathname === '/api/stream') {
+    const glance = url.searchParams.get('view') === 'glance';
     res.writeHead(200, {
       ...SECURITY_HEADERS,
       'content-type': 'text/event-stream',
@@ -2301,14 +2353,15 @@ const server = http.createServer(async (req, res) => {
       // Tells nginx-style proxies not to buffer the stream into silence.
       'x-accel-buffering': 'no',
     });
-    res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
-    clients.add(res);
+    res.write(`data: ${JSON.stringify(glance ? currentGlance() : snapshot)}\n\n`);
+    const set = glance ? glanceClients : clients;
+    set.add(res);
     // Comment frames keep the connection from being reaped by anything in the
     // middle during a quiet fleet.
     const beat = setInterval(() => {
       try { res.write(': keepalive\n\n'); } catch { /* closed */ }
     }, 25000);
-    req.on('close', () => { clearInterval(beat); clients.delete(res); });
+    req.on('close', () => { clearInterval(beat); set.delete(res); });
     return;
   }
 

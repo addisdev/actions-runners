@@ -308,3 +308,56 @@ describe('long-running job alerts', () => {
     assert.equal(announced().length, 0);
   });
 });
+
+describe('admission holds', () => {
+  const nowS = () => Math.floor(Date.now() / 1000);
+  const hold = (runner, reason, agoS) => ({ runner, repo: `acme/${runner}`, since: nowS() - agoS, reason, busy: 0, limit: 2 });
+
+  test('a disk-floor hold opens a critical alert once sustained', () => {
+    const alerts = makeAlerts({ admissionDiskSustainMs: 60000 });
+    const snap = { admission: { waiting: [hold('a', '36 GB disk free, below the 40 GB floor', 120)] } };
+    const t0 = Date.now();
+    alerts.evaluate(snap, t0);
+    assert.equal(alerts.open.has('admission:disk-floor'), false, 'not before the sustain window');
+    alerts.evaluate(snap, t0 + 61000);
+    const open = [...alerts.open.values()].find((a) => a.key === 'admission:disk-floor');
+    assert.ok(open, 'opened');
+    assert.equal(open.severity, 'critical');
+    assert.match(open.body, /36 GB free, below the 40 GB admission floor/);
+  });
+
+  test('a slot hold is quiet until it outlives the max wait', () => {
+    const alerts = makeAlerts({ admissionMaxWaitS: 600 });
+    alerts.evaluate({ admission: { waiting: [hold('a', '2 job(s) already running, at the limit of 2', 120)] } });
+    assert.equal([...alerts.open.keys()].includes('admission:slot-wait'), false);
+    alerts.evaluate({ admission: { waiting: [hold('a', '2 job(s) already running, at the limit of 2', 900)] } });
+    assert.equal(alerts.open.get('admission:slot-wait')?.severity, 'warning');
+  });
+
+  test('a held row older than the TTL is a dead hook and says nothing', () => {
+    const alerts = makeAlerts({ admissionDiskSustainMs: 0 });
+    const snap = { admission: { waiting: [hold('a', '36 GB disk free, below the 40 GB floor', 7 * 3600)] } };
+    alerts.evaluate(snap); alerts.evaluate(snap);
+    assert.equal(alerts.open.has('admission:disk-floor'), false);
+  });
+});
+
+describe('host saturation', () => {
+  const lost = (id, minsAgo) => db.prepare(`INSERT INTO jobs (id, run_id, repo, status, conclusion, completed_at,
+    runner_name, failure_class) VALUES (?,?,?,?,?,?,?,?)`)
+    .run(id, id, 'acme/web', 'completed', 'failure', new Date(Date.now() - minsAgo * 60000).toISOString(), 'host-web', 'runner-lost');
+
+  test('two runner-lost jobs inside an hour open host-saturated', () => {
+    const alerts = makeAlerts();
+    lost(1, 5); lost(2, 50);
+    alerts.evaluate({});
+    assert.equal(alerts.open.get('host:saturated')?.rule, 'host-saturated');
+  });
+
+  test('one lost job, or two far apart, do not', () => {
+    const alerts = makeAlerts();
+    lost(1, 5); lost(2, 90);
+    alerts.evaluate({});
+    assert.equal(alerts.open.has('host:saturated'), false);
+  });
+});

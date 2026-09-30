@@ -28,6 +28,7 @@
 import { execFile } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { FAILURE_CLASSES } from './failures.js';
+import { parseDiskHold } from './verdict.js';
 import {
   annotateActiveFromDb,
   longRunningAlertFindings,
@@ -300,6 +301,58 @@ export class Alerts {
     } else {
       this.sustained('mempressure', false, c.pressureSustainMs, now);
     }
+
+    // Admission holds. The hook's disk floor freezes every runner at once and
+    // says so nowhere: jobs sit at "Set up runner" with busy=0 and no error, and
+    // on 2026-09-29 that read as load for most of an hour. disk-low above does
+    // not cover it — its threshold is a separate number, and the floor can hold
+    // jobs while the disk rule is still quiet. A long slot wait is the milder
+    // cousin: normal serialization, until it outlives the hook's own max wait.
+    const holdTtlMs = c.admissionHoldTtlMs ?? 6 * 60 * 60 * 1000;
+    const waiters = (snapshot.admission?.waiting ?? []).filter((w) => {
+      const sinceMs = w.since == null ? null : w.since * (w.since < 1e12 ? 1000 : 1);
+      return sinceMs == null || now - sinceMs <= holdTtlMs;
+    });
+    const diskHeld = waiters.filter((w) => parseDiskHold(w.reason));
+    if (this.sustained('admission-disk', diskHeld.length > 0, c.admissionDiskSustainMs ?? 2 * 60 * 1000, now)) {
+      const floor = parseDiskHold(diskHeld[0].reason);
+      add('admission:disk-floor', 'admission-hold', 'critical',
+        `Disk floor is holding ${diskHeld.length} job${diskHeld.length === 1 ? '' : 's'}`,
+        `${floor.freeGb} GB free, below the ${floor.floorGb} GB admission floor. Held: ` +
+          `${diskHeld.map((w) => String(w.repo ?? w.runner).split('/').pop()).join(', ')}. ` +
+          'Jobs wait at "Set up runner" with no error until disk is freed — waiting does not fix this. ' +
+          'Preview cleanup, then apply it.');
+    }
+    const maxWaitMs = (c.admissionMaxWaitS ?? 600) * 1000;
+    const longSlot = waiters.filter((w) => !parseDiskHold(w.reason) && w.since != null
+      && now - w.since * (w.since < 1e12 ? 1000 : 1) > maxWaitMs);
+    if (longSlot.length) {
+      add('admission:slot-wait', 'admission-hold', 'warning',
+        `${longSlot.length} job${longSlot.length === 1 ? '' : 's'} held past the admission max wait`,
+        `Held longer than ${Math.round(maxWaitMs / 60000)} min for a slot: ` +
+          `${longSlot.map((w) => `${String(w.repo ?? w.runner).split('/').pop()} (${w.reason})`).join('; ')}. ` +
+          'Something is occupying the slots for longer than usual — check the long-running jobs first.');
+    }
+
+    // Two jobs losing contact with GitHub mid-step inside an hour is the
+    // saturated-host signature (2026-09-12: 03:13 and 04:10, Spotlight indexing
+    // _work, the host up for three days). One is a network blip. The jobs table
+    // already carries the class; this is the rule that reads it while it is
+    // still happening rather than in the runs table afterwards.
+    try {
+      const lost = this.db.prepare(`
+        SELECT runner_name, repo, completed_at FROM jobs
+        WHERE failure_class = 'runner-lost' AND completed_at >= ?
+        ORDER BY completed_at DESC`)
+        .all(new Date(now - 60 * 60 * 1000).toISOString());
+      if (lost.length >= (c.runnerLostThreshold ?? 2)) {
+        add('host:saturated', 'host-saturated', 'warning',
+          `${lost.length} jobs lost contact with GitHub in the last hour`,
+          `${lost.slice(0, 5).map((l) => `${String(l.repo).split('/').pop()} at ${String(l.completed_at).slice(11, 16)}Z`).join(', ')}. ` +
+            'This is host starvation, not the code: check `uptime` and the top CPU processes ' +
+            '(Spotlight indexing _work has done this before) before re-running.');
+      }
+    } catch { /* pre-migration db — skip silently */ }
 
     // The collector losing its GitHub connection is itself an outage: every
     // other rule here goes quiet at the same time, so silence would otherwise
