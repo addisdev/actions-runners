@@ -80,6 +80,12 @@ Portable, mobile-first dashboard.
   Is a Repo Queued, Repair Fleet) with Siri/Spotlight phrases, a Focus filter,
   a ⌃⌥⌘F floating panel, an incident replay window, and a sound on green.
 
+- **Host sentinel** (`scripts/host-sentinel.sh`): from another machine, an ntfy
+  message when the runner host stops answering and when it returns.
+- **`cockpit mcp`**: an MCP server with `fleet_status`, `why_queued`,
+  `fleet_queue` and `wait_for_checks`.
+- **Release workflow** for signed, notarized cockpit builds, gated on secrets.
+
 ### Changed
 
 - The `saturated` verdict no longer fires on a run the headroom gate is

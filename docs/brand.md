@@ -176,6 +176,21 @@ The convention for both, taken from the project this documentation borrows its
 method from: a number that gets believed and turns out to be wrong costs more
 than one that was never reported.
 
+## The cockpit screenshots
+
+`docs/img/cockpit-*.png` are drawn by the app itself from its bundled fixtures —
+the scrubbed live fleet and the recorded incidents — so they need no fleet and
+carry no real names:
+
+```bash
+APP="Fleet Cockpit.app/Contents/MacOS/Fleet Cockpit"
+"$APP" --fixture live      --render docs/img/cockpit-glance.png --history
+"$APP" --fixture diskHold  --render docs/img/cockpit-disk-floor.png --dark
+"$APP" --fixture saturated --render docs/img/cockpit-why.png --why
+"$APP" --fixture dead      --render docs/img/cockpit-runner.png --select ember-ios --dark
+sips -Z 1100 docs/img/cockpit-*.png
+```
+
 ## The recording
 
 `npm run motion` in `docs/tools/` records `img/drift-repair.gif`: a runner

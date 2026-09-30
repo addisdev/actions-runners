@@ -181,7 +181,8 @@ dashboard/.fleet-vapid.json
 
 # The site's stylesheet and its rendered images. docs/img/ is output — every
 # file in it is produced by `npm run assets`, `npm run shoot` or `npm run
-# motion` in docs/tools/, and committed so that building the site needs no
+# motion` in docs/tools/ (the cockpit-*.png by the app's --render, see
+# docs/brand.md), and committed so that building the site needs no
 # browser. The .mp4 is the recording's companion, for the surfaces that can
 # play a video instead of looping a GIF.
 !docs/css/

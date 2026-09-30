@@ -989,6 +989,22 @@ Source: [`dashboard/scripts/make-glance-fixtures.mjs`](https://github.com/addisd
 node dashboard/scripts/make-glance-fixtures.mjs
 ```
 
+### `scripts/host-sentinel.sh`
+
+Runs on a machine other than the runner host and posts to ntfy when the host
+stops answering for `SENTINEL_FAILS` consecutive minutes, and again when it is
+back — the one failure the host cannot report itself. Configuration is
+`~/.config/fleet-sentinel.env`; `--install` writes a LaunchAgent that probes
+every 60 seconds, `--test-notify` sends a test, `--uninstall` removes it. A
+message that could not be delivered is retried on the next probe.
+Source: [`scripts/host-sentinel.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/host-sentinel.sh).
+
+### `scripts/test-sentinel.sh`
+
+Tests for `host-sentinel.sh` with a scripted probe and delivery: announce after
+the threshold, once; announce recovery, once; retry an undelivered message.
+Source: [`scripts/test-sentinel.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/test-sentinel.sh).
+
 ### `dashboard/autofix/fix.sh`
 
 The allowlisted entry point used by the remediation bridge to launch a cloud

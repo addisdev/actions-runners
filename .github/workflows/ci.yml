@@ -123,6 +123,9 @@ jobs:
       - name: Admission control tests
         run: bash hooks/tests/run.sh
 
+      - name: Host sentinel tests
+        run: bash scripts/test-sentinel.sh
+
   # ---------------------------------------------------------------------------
   # Offline release check (no network, checks tracked files for private data)
   # ---------------------------------------------------------------------------

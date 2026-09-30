@@ -1,0 +1,121 @@
+name: Fleet Cockpit release
+
+# On a cockpit-v* tag: build Fleet Cockpit and the cockpit CLI, sign them with
+# a Developer ID certificate, notarize, staple, and attach a DMG and a CLI zip to
+# a GitHub release.
+#
+# Gated on secrets. Until DEVELOPER_ID_P12 and the notarization credentials are
+# set on the repository the job says so and stops, successfully — a fork or a
+# fresh clone must be able to run CI without anybody's certificate. Local builds
+# need none of this (see docs/cockpit.md).
+#
+# Secrets: DEVELOPER_ID_P12 (base64 .p12), DEVELOPER_ID_P12_PASSWORD, APPLE_TEAM_ID,
+#          APPLE_ID, APPLE_APP_PASSWORD (app-specific password for notarytool).
+
+on:
+  push:
+    tags: ['cockpit-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cockpit-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, sign, notarize
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      HAS_CERT: ${{ secrets.DEVELOPER_ID_P12 != '' && secrets.APPLE_ID != '' }}
+    steps:
+      - name: Signing secrets present?
+        if: env.HAS_CERT != 'true'
+        run: |
+          echo "::notice::No Developer ID secrets on this repository; skipping the signed release. See the header of this workflow."
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        if: env.HAS_CERT == 'true'
+
+      - name: Import the certificate into a throwaway keychain
+        if: env.HAS_CERT == 'true'
+        env:
+          P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/release.keychain-db"
+          KC_PASS="$(uuidgen)"
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KC_PASS" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PASS" "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KC"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KC_PASS" "$KC" >/dev/null
+          read -r -a existing <<< "$(security list-keychains -d user | tr -d '"' | xargs)"
+          security list-keychains -d user -s "$KC" "${existing[@]}"
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Build the app (Developer ID, hardened runtime)
+        if: env.HAS_CERT == 'true'
+        working-directory: cockpit/App
+        env:
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#cockpit-v}"
+          printf 'CODE_SIGN_IDENTITY = Developer ID Application\nDEVELOPMENT_TEAM = %s\nOTHER_CODE_SIGN_FLAGS = --timestamp\n' "$TEAM" > Local.xcconfig
+          brew install xcodegen
+          xcodegen generate
+          xcodebuild -project FleetCockpit.xcodeproj -scheme FleetCockpit -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/dd" MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" build | tail -20
+          cp -R "$RUNNER_TEMP/dd/Build/Products/Release/Fleet Cockpit.app" "$RUNNER_TEMP/"
+          codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/Fleet Cockpit.app"
+
+      - name: Build the CLI
+        if: env.HAS_CERT == 'true'
+        working-directory: cockpit
+        run: |
+          set -euo pipefail
+          swift build -c release
+          mkdir -p "$RUNNER_TEMP/cli"
+          cp .build/release/cockpit "$RUNNER_TEMP/cli/"
+          cp -R .build/release/FleetCockpit_CockpitCore.bundle "$RUNNER_TEMP/cli/"
+          codesign --force --timestamp --options runtime --sign "Developer ID Application" "$RUNNER_TEMP/cli/cockpit"
+
+      - name: Package, notarize, staple
+        if: env.HAS_CERT == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#cockpit-v}"
+          DMG="$RUNNER_TEMP/FleetCockpit-$VERSION.dmg"
+          mkdir -p "$RUNNER_TEMP/dmg" && cp -R "$RUNNER_TEMP/Fleet Cockpit.app" "$RUNNER_TEMP/dmg/"
+          ln -s /Applications "$RUNNER_TEMP/dmg/Applications"
+          hdiutil create -volname "Fleet Cockpit" -srcfolder "$RUNNER_TEMP/dmg" -ov -format UDZO "$DMG"
+          codesign --timestamp --sign "Developer ID Application" "$DMG"
+          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$TEAM" --wait
+          xcrun stapler staple "$DMG"
+          (cd "$RUNNER_TEMP/cli" && ditto -c -k --keepParent . "$RUNNER_TEMP/cockpit-cli-$VERSION.zip")
+          xcrun notarytool submit "$RUNNER_TEMP/cockpit-cli-$VERSION.zip" --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" --team-id "$TEAM" --wait
+          echo "DMG=$DMG" >> "$GITHUB_ENV"
+          echo "CLI_ZIP=$RUNNER_TEMP/cockpit-cli-$VERSION.zip" >> "$GITHUB_ENV"
+
+      - name: Publish the release
+        if: env.HAS_CERT == 'true' && startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "$DMG" "$CLI_ZIP" --title "Fleet Cockpit ${GITHUB_REF_NAME#cockpit-v}" \
+            --notes "Signed and notarized. See docs/cockpit.md." --verify-tag
+
+      - name: Remove the keychain
+        if: always() && env.HAS_CERT == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/release.keychain-db" || true

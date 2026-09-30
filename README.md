@@ -60,6 +60,19 @@ which is why it is the one asset in `docs/img/` that cannot be produced from
 fixtures — a fixture fleet can hold a dead runner, but it cannot die.
 [`docs/brand.md`](docs/brand.md) records how it was made.
 
+## On your Mac: Fleet Cockpit
+
+![Fleet Cockpit's popover during a disk-floor freeze: the verdict "Disk floor is holding jobs" with a Preview cleanup button, the host lane with the disk gauge under its floor line, and square red pills for the three held runners](docs/img/cockpit-disk-floor.png)
+
+A menu bar app for the Mac you sit at. One verdict for the whole fleet — host
+down, disk floor, dead service, saturated, account blocked, config drift,
+waiting, clear — with the evidence and one next move; a pill per runner; the
+queue with start and finish estimates. When the dashboard itself stops
+answering it checks the host out of band (SSH, GitHub's view of the runners, a
+runner on another machine) and still tells you which of those it is. A
+`cockpit` command line and an MCP server give agent sessions the same answers.
+See [Fleet Cockpit](docs/cockpit.md).
+
 ## Documentation
 
 **[addisdev.github.io/actions-runners](https://addisdev.github.io/actions-runners/)**
@@ -175,6 +188,7 @@ instead. This is a small Mac fleet, no Kubernetes and no cloud runner control pl
 | **Fleet scripts** | `preflight.sh`, `register.sh`, `status.sh`, `health.sh`, `runs.sh`, `cleanup.sh` at the top level; the rest in [`scripts/`](scripts). Every destructive one is dry-run by default. |
 | **[`hooks/`](hooks)** | `job-started` and `job-completed`. The only mechanism that can hold a job already dispatched to a runner. |
 | **[`examples/`](examples)** | Workflow files, `fleet.env` for three deployment shapes, and the LaunchAgent plists. |
+| **[`cockpit/`](cockpit)** | Fleet Cockpit: the macOS menu bar app, its Swift core, the `cockpit` CLI and MCP server, widgets, and a Claude Code skill. |
 | **[`docs/`](docs)** | The handbook, its figures, and the rig that renders them. |
 
 Every script is documented with its flags and what it refuses to do in the
