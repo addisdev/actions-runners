@@ -117,6 +117,10 @@ export const SCENARIOS = {
           { runner: 'build-host-comet-web-2', repo: 'acme/comet-web', at: at(62 - 5), url: null },
         ],
         account: { blocked: 0, quota: 0, repos: [], lastAt: null },
+        recentFailures: [
+          { runId: 901, repo: 'acme/comet-web', workflow: 'web-e2e', branch: 'main', url: 'https://github.com/acme/comet-web/actions/runs/901', cls: 'runner-lost', at: at(5), runner: 'build-host-comet-web' },
+          { runId: 902, repo: 'acme/delta-web', workflow: 'web-ci', branch: 'fix-login', url: 'https://github.com/acme/delta-web/actions/runs/902', cls: 'job-failed', at: at(30), runner: 'build-host-delta-web' },
+        ],
       },
       now: LIVE_TS,
       expect: 'saturated',

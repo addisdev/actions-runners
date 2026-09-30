@@ -212,6 +212,12 @@ describe('the glance payload', () => {
     assert.ok(bytes < 16 * 1024, `${bytes} bytes`);
   });
 
+  test('recent failures carry whether the code is to blame', () => {
+    const { s, r } = run('saturated');
+    const g = buildGlance(s.snapshot, r, { now: s.now, failures: s.facts.recentFailures });
+    assert.deepEqual(g.failures.map((f) => [f.cls, f.notYourCode]), [['runner-lost', true], ['job-failed', false]]);
+  });
+
   test('a snapshot older than the stale window says so', () => {
     const { s, r } = run('quiet');
     const g = buildGlance(s.snapshot, r, { now: s.now + 300000, staleMs: 240000 });
@@ -239,6 +245,7 @@ describe('loadFailureFacts', () => {
       assert.equal(f.account.quota, 1);
       assert.deepEqual(f.account.repos, ['acme/b', 'acme/c']);
       assert.equal(f.account.lastAt, Date.parse(iso(29)));
+      assert.deepEqual(f.recentFailures.map((x) => x.cls).sort(), ['account-blocked', 'account-quota', 'runner-lost']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

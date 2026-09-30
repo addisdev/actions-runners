@@ -36,6 +36,15 @@ Portable, mobile-first dashboard.
   [docs/cockpit.md](docs/cockpit.md).
 - `scripts/make-glance-fixtures.mjs` keeps the cockpit's fixtures in step with
   the daemon (checked in CI).
+- **Out-of-band sentinel** in the cockpit: when the dashboard does not answer it
+  reads SSH reachability, GitHub's view of the host's runners, a runner on
+  another machine and githubstatus.com against one table — host asleep, power
+  or network out, rebooted with nobody logged in, every service dead, dashboard
+  down with the fleet working, this Mac offline — and notifies on transitions.
+  `cockpit sentinel` runs the same check from a terminal.
+- The cockpit's **Why?** ladder, **Copy brief** (markdown incident brief, also
+  `cockpit brief`), and **Failed in the last 2 hours** with a *not your code*
+  mark. `/api/glance` gains `failures`.
 
 ### Fixed
 

@@ -539,6 +539,7 @@
   }
  ],
  "queue": [],
+ "failures": [],
  "incidents": [],
  "admission": {
   "mode": "enforce",

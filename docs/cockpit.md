@@ -48,6 +48,50 @@ running (`▸`) and queued (`◷`) jobs.
 When the stream drops, the last view stays on screen, greyed, with its age. It
 never stays green.
 
+## When the dashboard does not answer
+
+After 20 seconds of failed reconnects the cockpit starts asking three other
+witnesses, once a minute, until the stream is back:
+
+- **Can this Mac reach the host's SSH port** on any of the configured aliases
+  (resolved with `ssh -G`, so it goes where ssh would)?
+- **What does GitHub say about the host's runners?** A few of them, taken from
+  the last good view, checked with your own `gh` credential — asked for when
+  needed and never stored.
+- **Is a runner on a different machine online?** One from a *GitHub view only*
+  lane. If it is, the house has power and network, and the problem is the host.
+
+When SSH answers, it also asks the host when it booted, who owns the console,
+and whether the dashboard answers locally. The answers are read against one
+table:
+
+| SSH | GitHub: host's runners | Other machine | Verdict |
+|---|---|---|---|
+| no | offline | online | **Host asleep, off or off the network.** Only someone there can wake it. |
+| no | offline | offline | **Home network or power is out.** |
+| no | offline | — | **GitHub Actions is having trouble**, when githubstatus.com reports an Actions incident |
+| yes | offline | — | **Rebooted and nobody has logged in** when the console belongs to nobody (no auto-login strands every LaunchAgent); otherwise **every runner service is down** |
+| yes | online | — | **Dashboard down, fleet working.** Restart the dashboard. |
+| no | online | — | **Fleet working, out of reach from here.** |
+| no GitHub and no SSH | | | **This Mac is offline.** |
+
+These verdicts notify once when they open and once when they clear, with how
+long they lasted.
+
+## Why, and the brief
+
+**Why?** under the verdict opens the whole ladder with the verdict's rung lit,
+the evidence under it, and every other rung that is currently true.
+
+**Copy brief** puts a markdown incident brief on the clipboard: the verdict,
+its evidence and next move, everything else open, host vitals, any runner that
+is neither idle nor busy, the queue and open alerts. It is written to paste
+into an agent session or an issue.
+
+Below the queue, **Failed in the last 2 hours** lists red runs with the reason
+the daemon recorded, and marks the ones that were the host's or the account's
+doing — lost runner, refused by billing, storage quota — as *not your code*.
+
 ## Getting it
 
 Build it from the repository. It needs Xcode 16 or later, macOS 14 or later,
@@ -105,6 +149,8 @@ cd cockpit
 swift run cockpit status            # the verdict, one screen
 swift run cockpit status --json     # the same, for scripts
 swift run cockpit status --fixture saturated
+swift run cockpit sentinel          # the out-of-band check, from this Mac
+swift run cockpit brief             # the markdown incident brief
 ```
 
 Exit codes: `0` fine or healthy waiting, `1` a real fault, `3` nothing could be

@@ -20,6 +20,9 @@ public struct Glance: Codable, Sendable, Equatable {
     public var runners: [Runner]
     public var queue: [QueueItem]
     public var incidents: [Incident]
+    /// Failed runs in the last two hours, with why. Absent from daemons older
+    /// than the field.
+    public var failures: [FailureRow]?
     public var admission: Admission?
     public var collector: Collector?
     public var api: RateLimit?
@@ -233,6 +236,31 @@ public struct Incident: Codable, Sendable, Equatable, Identifiable {
         case "warning": .warning
         case "info": .info
         default: .unknown
+        }
+    }
+}
+
+public struct FailureRow: Codable, Sendable, Equatable, Identifiable {
+    public var id: Int { runId }
+    public var runId: Int
+    public var repo: String
+    public var workflow: String?
+    public var branch: String?
+    public var url: String?
+    public var cls: String
+    public var notYourCode: Bool?
+    public var runner: String?
+    public var at: Double?
+
+    /// The one-line redirect, matching lib/failures.js.
+    public var label: String {
+        switch cls {
+        case "runner-lost": "Runner lost contact — the host, not the code"
+        case "account-blocked": "Refused by GitHub — billing, not the code"
+        case "account-quota": "Storage quota full — the job ran, publishing failed"
+        case "no-runner": "No runner matched — configuration, not the code"
+        case "job-failed": "A step failed"
+        default: "Cause not recorded"
         }
     }
 }

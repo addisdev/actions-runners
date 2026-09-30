@@ -529,6 +529,30 @@
   }
  ],
  "queue": [],
+ "failures": [
+  {
+   "runId": 901,
+   "repo": "acme/comet-web",
+   "workflow": "web-e2e",
+   "branch": "main",
+   "url": "https://github.com/acme/comet-web/actions/runs/901",
+   "cls": "runner-lost",
+   "notYourCode": true,
+   "runner": "build-host-comet-web",
+   "at": 1790781686956
+  },
+  {
+   "runId": 902,
+   "repo": "acme/delta-web",
+   "workflow": "web-ci",
+   "branch": "fix-login",
+   "url": "https://github.com/acme/delta-web/actions/runs/902",
+   "cls": "job-failed",
+   "notYourCode": false,
+   "runner": "build-host-delta-web",
+   "at": 1790780186956
+  }
+ ],
  "incidents": [
   {
    "key": "account:blocked",

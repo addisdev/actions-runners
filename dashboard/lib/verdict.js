@@ -61,7 +61,12 @@ export const DEFAULTS = {
   holdTtlMs: 6 * 60 * 60 * 1000,
   // Queue causes that are structural: waiting will never fix them.
   driftCauses: ['unserved', 'role-unserved', 'label-mismatch', 'github-hosted'],
+  // How far back the glance lists failed runs.
+  recentFailureWindowMs: 2 * 60 * 60 * 1000,
 };
+
+// Failure classes whose first move is not reading the diff (lib/failures.js).
+export const NOT_YOUR_CODE = ['runner-lost', 'account-blocked', 'account-quota', 'no-runner'];
 
 const DISK_HOLD = /(\d+(?:\.\d+)?) GB disk free, below the (\d+(?:\.\d+)?) GB floor/;
 
@@ -83,7 +88,21 @@ const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
  */
 export function loadFailureFacts(db, now = Date.now(), opts = {}) {
   const o = { ...DEFAULTS, ...opts };
-  const facts = { runnerLost: [], account: { blocked: 0, quota: 0, repos: [], lastAt: null } };
+  const facts = { runnerLost: [], account: { blocked: 0, quota: 0, repos: [], lastAt: null }, recentFailures: [] };
+  try {
+    // One row per failed run in the window, carrying the class that sends the
+    // reader somewhere other than the diff. The cockpit uses it to say "not
+    // your code" on a red run that the host or the account failed.
+    facts.recentFailures = db.prepare(`
+      SELECT j.run_id AS runId, j.repo, r.workflow_name AS workflow, r.head_branch AS branch,
+             r.html_url AS url, j.failure_class AS cls, MAX(j.completed_at) AS at, j.runner_name AS runner
+      FROM jobs j LEFT JOIN runs r ON r.id = j.run_id
+      WHERE j.conclusion IN ('failure', 'timed_out') AND j.completed_at >= ?
+      GROUP BY j.run_id
+      ORDER BY at DESC LIMIT 8`)
+      .all(new Date(now - o.recentFailureWindowMs).toISOString())
+      .map((r) => ({ ...r, at: Date.parse(r.at) || null, cls: r.cls ?? 'unknown' }));
+  } catch { /* pre-migration db */ }
   try {
     facts.runnerLost = db.prepare(`
       SELECT runner_name AS runner, repo, completed_at AS at, html_url AS url FROM jobs
@@ -559,6 +578,17 @@ export function buildGlance(snapshot, result, opts = {}) {
         etaDoneMs: q.etaDoneMs ?? null,
       });
     }),
+    failures: (opts.failures ?? []).map((f) => strip({
+      runId: f.runId,
+      repo: f.repo,
+      workflow: f.workflow ?? null,
+      branch: f.branch ?? null,
+      url: f.url ?? null,
+      cls: f.cls,
+      notYourCode: NOT_YOUR_CODE.includes(f.cls),
+      runner: f.runner ?? null,
+      at: f.at ?? null,
+    })),
     incidents: (snapshot.alertState?.open ?? []).map((a) => strip({
       key: a.key,
       rule: a.rule,

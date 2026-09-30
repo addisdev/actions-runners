@@ -12,6 +12,7 @@ enum Renderer {
         guard let i = args.firstIndex(of: "--render"), i + 1 < args.count else { return }
         let out = URL(fileURLWithPath: args[i + 1])
         let dark = args.contains("--dark")
+        model.showLadder = args.contains("--why")
         if let j = args.firstIndex(of: "--hover"), j + 1 < args.count, let g = model.store.glance {
             let name = args[j + 1]
             model.hovered = Presenter.lanes(g, now: Format.nowMs()).flatMap { $0.groups.flatMap(\.pills) }
