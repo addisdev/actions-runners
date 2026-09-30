@@ -25,7 +25,7 @@ for (const [name, make] of Object.entries(SCENARIOS)) {
   const floorGb = s.floorGb ?? 40;
   const result = computeVerdict(s.snapshot, s.facts, { now: s.now, floorGb });
   const glance = buildGlance(s.snapshot, result, {
-    now: s.now, staleMs: 240000, floorGb, localHostId: 'build-host', failures: s.facts.recentFailures ?? [],
+    now: s.now, staleMs: 240000, floorGb, localHostId: 'build-host', failures: s.facts.recentFailures ?? [], posture: s.posture,
   });
   const text = JSON.stringify(glance, null, 1) + '\n';
   const path = join(OUT, `${name}.json`);

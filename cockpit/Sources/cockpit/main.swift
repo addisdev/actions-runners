@@ -18,6 +18,7 @@ commands:
                       --timeout 45m). Exit 0 green, 1 red, 2 waiting is pointless (host
                       down, disk floor, billing block, a check that will never start),
                       3 timed out or nothing readable
+  top                 the host's top CPU users, naming Spotlight when it is the culprit
   sentinel            check the host out of band (SSH, GitHub, the other machine) —
                       what the app does when the dashboard does not answer
   brief               a markdown incident brief of the current state
@@ -337,6 +338,17 @@ case "wait":
         }
     }
     report(last)
+case "top":
+    let alias = opts.via.first ?? "runner-host"
+    guard let top = await HostProbe.topCPU(alias: alias) else { fail("could not run ps on \(alias)", code: 3) }
+    if opts.json {
+        struct Top: Encodable { let verdict: String; let spotlightCPU: Double; let top: [String] }
+        printJSON(Top(verdict: top.verdict, spotlightCPU: top.spotlightCPU, top: top.lines.map { String(format: "%.1f %@", $0.cpu, $0.command) }))
+    } else {
+        print(top.verdict)
+        for l in top.lines.prefix(10) { print(String(format: "  %5.1f%%  %@", l.cpu, (l.command as NSString).lastPathComponent)) }
+    }
+    exit(top.spotlightCPU >= 50 ? 1 : 0)
 case "brief":
     let src = await obtain(opts)
     print(IncidentBrief.markdown(verdict: src.verdict, glance: src.glance, route: src.route, connection: "cli"))

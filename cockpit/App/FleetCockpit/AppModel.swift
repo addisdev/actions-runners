@@ -55,6 +55,15 @@ final class AppModel {
         if isWatched(t) { watches.removeAll { $0.target == t } } else { watches.append(Watch(target: t, createdAt: Format.nowMs())) }
     }
 
+    // MARK: history state
+    var timeline: Timeline?
+    var showHistory = false
+    var historyWindowDays = 1
+    var showPosture = false
+    var topCPU: HostProbe.TopCPU?
+    var probingCPU = false
+    @ObservationIgnored private var lastTimelineMs: Double = 0
+
     @ObservationIgnored private var incidents = IncidentTracker()
     @ObservationIgnored private var sentinelTask: Task<Void, Never>?
     @ObservationIgnored private var networkUp = true
@@ -139,9 +148,55 @@ final class AppModel {
                           body: s.state == .green ? s.progress : "Failed: \(failed). \(notYourCodeNote(s, g))",
                           critical: false, info: ["kind": "watch", "url": (s.failed.first ?? s.runs.first)?.url ?? ""])
         }
+        if Format.nowMs() - lastTimelineMs > 5 * 60_000 { Task { await refreshTimeline() } }
+        checkWeeklyDigest()
         let hour = Calendar.current.component(.hour, from: Date())
         for event in incidents.update(g.incidents, prefs: settings.notifications, now: Format.nowMs(), hour: hour) {
             notifier.incident(event)
+        }
+    }
+
+    func refreshTimeline() async {
+        guard let c = store.client else { return }
+        lastTimelineMs = Format.nowMs()
+        if let t = try? await c.timeline(days: 7) { timeline = t }
+    }
+
+    /// Monday 09:00 local, once a week: the digest as a notification.
+    private func checkWeeklyDigest() {
+        let cal = Calendar.current
+        let now = Date()
+        guard cal.component(.weekday, from: now) == 2, cal.component(.hour, from: now) >= 9 else { return }
+        let week = "\(cal.component(.yearForWeekOfYear, from: now))-\(cal.component(.weekOfYear, from: now))"
+        guard UserDefaults.standard.string(forKey: "digest.lastWeek") != week else { return }
+        UserDefaults.standard.set(week, forKey: "digest.lastWeek")
+        Task {
+            await refreshTimeline()
+            guard let t = timeline else { return }
+            let d = HistoryPresenter.digest(t)
+            notifier.post(id: "digest", title: d.title, body: d.body, critical: false, info: ["kind": "digest"])
+        }
+    }
+
+    func probeTopCPU() async {
+        guard let alias = settings.aliasList.first else { return }
+        probingCPU = true
+        defer { probingCPU = false }
+        topCPU = await HostProbe.topCPU(alias: alias)
+    }
+
+    /// Saves the runner's redacted diagnostic bundle to Downloads and shows it.
+    func downloadBundle(_ runner: String) async {
+        guard let c = store.client, isPaired else { return }
+        do {
+            let data = try await c.bundle(runner: runner)
+            let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+            let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+            let url = dir.appendingPathComponent("\(runner)-diagnostics-\(stamp).txt")
+            try data.write(to: url, options: [.atomic])
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            lastResult = ("Diagnostic bundle", ActionResult(ok: false, error: String(describing: error)))
         }
     }
 

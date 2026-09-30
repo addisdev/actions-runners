@@ -23,6 +23,12 @@ struct PopoverView: View {
                 VerdictHeader(verdict: model.verdict, dimmed: model.isDimmed, onNext: handle)
                 headerActions
                 ControlBar(model: model)
+                if model.showPosture, let risks = model.store.glance?.posture?.items, !risks.isEmpty {
+                    PostureList(items: risks)
+                }
+                if let top = model.topCPU {
+                    TopCPUView(top: top) { model.topCPU = nil }
+                }
                 if model.showLadder {
                     LadderView(rungs: model.ladder)
                 } else if model.verdict.open.count > 1 {
@@ -31,9 +37,19 @@ struct PopoverView: View {
                 Divider()
                 scrolling {
                     VStack(alignment: .leading, spacing: 14) {
+                        if model.showHistory {
+                            HistoryPanel(model: model, now: now)
+                            Divider()
+                        }
                         ForEach(model.lanes(now: now)) { lane in
                             LaneView(lane: lane, dense: model.settings.dense, hovered: $model.hovered) { p in
                                 model.select(model.selectedRunner?.id == p.id ? nil : p)
+                            }
+                            if lane.id == model.store.glance?.hosts.first(where: { $0.local == true })?.id {
+                                if let s = model.timeline?.samples, s.count > 2 {
+                                    SparklineStrip(samples: s, floorGb: lane.disk?.floorGb)
+                                }
+                                laneActions(lane)
                             }
                             Divider()
                         }
@@ -89,6 +105,22 @@ struct PopoverView: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
                 }
             }
+            if isRendering {
+                Text(model.showHistory ? "Hide history" : "History").foregroundStyle(Color.accentColor)
+            } else {
+                Button(model.showHistory ? "Hide history" : "History") {
+                    model.showHistory.toggle()
+                    if model.showHistory { Task { await model.refreshTimeline() } }
+                }
+            }
+            if let risks = model.store.glance?.posture?.items, !risks.isEmpty {
+                if isRendering {
+                    Text("\(risks.count) standing risk\(risks.count == 1 ? "" : "s")").foregroundStyle(.orange)
+                } else {
+                    Button("\(risks.count) standing risk\(risks.count == 1 ? "" : "s")") { model.showPosture.toggle() }
+                        .foregroundStyle(.orange)
+                }
+            }
             if model.probing {
                 ProgressView().controlSize(.mini)
                 Text("checking the host out of band…").foregroundStyle(.secondary)
@@ -100,6 +132,27 @@ struct PopoverView: View {
         .buttonStyle(.link)
         .font(.system(size: 11))
         .padding(.leading, 14)
+    }
+
+    @ViewBuilder
+    private func laneActions(_ lane: LaneModel) -> some View {
+        let diskWorry = (lane.disk?.tone ?? .ok) != .ok
+        let busy = lane.vitals.contains { $0.tone != .ok } || model.verdict.id == "saturated"
+        if (diskWorry || busy) && !isRendering {
+            HStack(spacing: 12) {
+                if diskWorry {
+                    Button("What is using disk?") { model.request("fleet.cleanupPreview") }
+                        .disabled(!model.isPaired)
+                        .help(model.isPaired ? "Runs the cleanup preview (deletes nothing)" : "Pair this Mac first")
+                }
+                if busy {
+                    Button(model.probingCPU ? "Checking…" : "Top CPU on the host") { Task { await model.probeTopCPU() } }
+                        .disabled(model.probingCPU)
+                }
+            }
+            .buttonStyle(.link)
+            .font(.system(size: 11))
+        }
     }
 
     private var alsoOpen: some View {
@@ -188,6 +241,8 @@ struct PopoverView: View {
             model.store.reconnectNow()
         case "action":
             if let a = n.action { model.request(a) }
+        case "command" where n.command?.hasPrefix("ps -Ao") == true:
+            Task { await model.probeTopCPU() }
         case "command":
             if let c = n.command {
                 NSPasteboard.general.clearContents()

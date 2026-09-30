@@ -39,6 +39,20 @@ export const SCENARIOS = {
     },
     now: LIVE_TS,
     expect: 'account-blocked',
+    // Measured on the host that day: 71,636 package.json files indexed under
+    // the fleet root, and no auto-login user.
+    posture: {
+      checkedAt: LIVE_TS,
+      items: [
+        { id: 'spotlight', title: 'Spotlight is indexing runner work trees', ok: false,
+          detail: '71,636 package.json files under /Users/ci/actions-runners are in the Spotlight index.',
+          fix: 'System Settings → Spotlight → Search Privacy → add the fleet root.', who: 'owner' },
+        { id: 'auto-login', title: 'A reboot strands every runner until someone logs in', ok: false,
+          detail: 'No auto-login user.', fix: 'Automatically log in, or keep Screen Sharing over the tailnet.', who: 'owner' },
+        { id: 'sleep', title: 'The host does not sleep', ok: true, detail: 'pmset sleep 0' },
+      ],
+      open: 2,
+    },
   }),
 
   // Nothing wrong and nothing to do.

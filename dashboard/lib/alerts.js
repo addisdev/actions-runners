@@ -274,6 +274,20 @@ export class Alerts {
       }
     }
 
+    // The trend, before the level: free disk heading for the admission floor
+    // within 12 hours (lib/disk-forecast.js). On 2026-09-28 a line through the
+    // previous six hours called the freeze eight hours before it happened.
+    const floorEta = host.diskFloorEtaMs;
+    if (this.sustained('disk-floor-soon', floorEta != null && floorEta < (c.diskFloorSoonMs ?? 12 * 3600 * 1000),
+      10 * 60 * 1000, now)) {
+      const rate = host.diskForecast?.rate6hGbPerHour ?? host.diskForecast?.rate72hGbPerHour;
+      add('host:disk-floor-soon', 'disk-floor-soon', floorEta < 3 * 3600 * 1000 ? 'critical' : 'warning',
+        `Disk reaches the admission floor in about ${Math.max(1, Math.round(floorEta / 3600000))} h`,
+        `${Math.round(host.diskFreeGb ?? 0)} GB free, falling ${rate != null ? `${Math.abs(rate)} GB/h` : ''}. ` +
+          'When it crosses the floor every job is held at "Set up runner". Preview cleanup now; ' +
+          'CoreSimulator devices and DerivedData are usually the largest.');
+    }
+
     // Swap LEVEL is not a condition. macOS never reclaims swap space, so the
     // number only ever climbs and a level rule eventually fires forever on a
     // machine that is completely healthy — this host sat at 84% with 71% memory
@@ -313,7 +327,12 @@ export class Alerts {
       const sinceMs = w.since == null ? null : w.since * (w.since < 1e12 ? 1000 : 1);
       return sinceMs == null || now - sinceMs <= holdTtlMs;
     });
-    const diskHeld = waiters.filter((w) => parseDiskHold(w.reason));
+    // Only while disk is still under the floor: the reason on a held row is
+    // the reason the hold began, and it does not change once disk is freed.
+    const diskHeld = waiters.filter((w) => {
+      const d = parseDiskHold(w.reason);
+      return d && (host.diskFreeGb == null || host.diskFreeGb < d.floorGb);
+    });
     if (this.sustained('admission-disk', diskHeld.length > 0, c.admissionDiskSustainMs ?? 2 * 60 * 1000, now)) {
       const floor = parseDiskHold(diskHeld[0].reason);
       add('admission:disk-floor', 'admission-hold', 'critical',
@@ -324,7 +343,7 @@ export class Alerts {
           'Preview cleanup, then apply it.');
     }
     const maxWaitMs = (c.admissionMaxWaitS ?? 600) * 1000;
-    const longSlot = waiters.filter((w) => !parseDiskHold(w.reason) && w.since != null
+    const longSlot = waiters.filter((w) => !diskHeld.includes(w) && w.since != null
       && now - w.since * (w.since < 1e12 ? 1000 : 1) > maxWaitMs);
     if (longSlot.length) {
       add('admission:slot-wait', 'admission-hold', 'warning',

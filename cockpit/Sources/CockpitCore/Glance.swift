@@ -26,6 +26,8 @@ public struct Glance: Codable, Sendable, Equatable {
     /// Active runs, and runs finished in the last two hours (compact).
     public var runs: [RunRow]?
     public var recent: [RunRow]?
+    /// Standing risks currently open on the coordinator.
+    public var posture: PostureSummary?
     public var admission: Admission?
     public var collector: Collector?
     public var api: RateLimit?
@@ -140,6 +142,7 @@ public struct Vitals: Codable, Sendable, Equatable {
     public var diskTotalGb: Double?
     public var diskFloorGb: Double?
     public var diskFloorEtaMs: Double?
+    public var diskRateGbPerHour: Double?
     public var uptimeSec: Double?
 
     public var loadPerCore: Double? {
@@ -265,6 +268,22 @@ public struct Incident: Codable, Sendable, Equatable, Identifiable {
         default: .unknown
         }
     }
+}
+
+public struct PostureItem: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var title: String
+    public var ok: Bool?
+    public var detail: String?
+    public var fix: String?
+    /// "owner" (only a person, maybe blocked by MDM), "command", or "button".
+    public var who: String?
+}
+
+public struct PostureSummary: Codable, Sendable, Equatable {
+    public var checkedAt: Double?
+    public var items: [PostureItem]
+    public var open: Int?
 }
 
 public struct FailureRow: Codable, Sendable, Equatable, Identifiable {

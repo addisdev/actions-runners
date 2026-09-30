@@ -6,8 +6,9 @@ parses.
 One convention runs through all of them: **anything that deletes, deregisters or
 rewrites is dry-run by default and needs `--apply`**. Run it once, read what it
 says it would do, then run it again. The other half of that convention is that
-each script states what it *refuses* to do — `cleanup.sh` will not run while a
-job is in flight, `deregister.sh` will not remove a runner mid-job or leave a
+each script states what it *refuses* to do — `cleanup.sh --apply` will not run
+while a job is building (a job held by the admission hook is waiting, not
+building, and does not count; the dry run always runs), `deregister.sh` will not remove a runner mid-job or leave a
 repo with no CI, the reaper will not touch a directory with a live process in
 it. Those refusals are the interesting part of the behaviour, so they are
 documented here alongside the flags.

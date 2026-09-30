@@ -326,6 +326,13 @@ describe('admission holds', () => {
     assert.match(open.body, /36 GB free, below the 40 GB admission floor/);
   });
 
+  test('a disk reason on a held row is ignored once disk is back above the floor', () => {
+    const alerts = makeAlerts({ admissionDiskSustainMs: 0 });
+    const snap = { host: { diskFreeGb: 46.8 }, admission: { waiting: [hold('a', '38 GB disk free, below the 40 GB floor', 120)] } };
+    alerts.evaluate(snap); alerts.evaluate(snap);
+    assert.equal(alerts.open.has('admission:disk-floor'), false);
+  });
+
   test('a slot hold is quiet until it outlives the max wait', () => {
     const alerts = makeAlerts({ admissionMaxWaitS: 600 });
     alerts.evaluate({ admission: { waiting: [hold('a', '2 job(s) already running, at the limit of 2', 120)] } });
@@ -359,5 +366,25 @@ describe('host saturation', () => {
     lost(1, 5); lost(2, 90);
     alerts.evaluate({});
     assert.equal(alerts.open.has('host:saturated'), false);
+  });
+});
+
+describe('disk heading for the floor', () => {
+  test('under 12 h to the floor, sustained, opens a warning; under 3 h is critical', () => {
+    const alerts = makeAlerts();
+    const snap = (etaH) => ({ host: { diskFreeGb: 55, diskFloorEtaMs: etaH * 3600000, diskForecast: { rate6hGbPerHour: -2.1 } } });
+    const t0 = Date.now();
+    alerts.evaluate(snap(8), t0);
+    assert.equal(alerts.open.has('host:disk-floor-soon'), false);
+    alerts.evaluate(snap(8), t0 + 11 * 60000);
+    assert.equal(alerts.open.get('host:disk-floor-soon')?.severity, 'warning');
+    assert.match(alerts.open.get('host:disk-floor-soon').body, /falling 2\.1 GB\/h/);
+  });
+
+  test('no forecast, no alert', () => {
+    const alerts = makeAlerts();
+    alerts.evaluate({ host: { diskFreeGb: 55, diskFloorEtaMs: null } });
+    alerts.evaluate({ host: { diskFreeGb: 55, diskFloorEtaMs: null } }, Date.now() + 20 * 60000);
+    assert.equal(alerts.open.has('host:disk-floor-soon'), false);
   });
 });

@@ -240,7 +240,10 @@ public enum Presenter {
                 ? "\(Format.gb(free)) free · \(Format.gb(margin)) above the \(Int(floor)) GB floor"
                 : "\(Format.gb(free)) free · \(Format.gb(-margin)) BELOW the \(Int(floor)) GB floor"
         }()
-        let eta = v.diskFloorEtaMs.map { "floor in ~\(Format.duration(ms: $0)) at the current rate" }
+        let eta = v.diskFloorEtaMs.map { ms -> String in
+            let rate = v.diskRateGbPerHour.map { String(format: " (−%.1f GB/h)", abs($0)) } ?? ""
+            return "floor in ~\(Format.duration(ms: ms))\(rate)"
+        }
         return DiskModel(
             freeGb: free,
             totalGb: v.diskTotalGb,

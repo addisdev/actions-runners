@@ -100,6 +100,8 @@ struct RunnerPanel: View {
                     Button("Drain") { model.request("runner.drain", args: ["name": pill.name]) }
                 }
                 if pill.url != nil { Button("Open job") { model.open(pill.url) } }
+                Button("Diagnostics") { Task { await model.downloadBundle(pill.name) } }
+                    .help("Save the redacted diagnostic bundle to Downloads")
             }
             .controlSize(.small)
             .disabled(!model.isPaired || model.running != nil)
@@ -118,5 +120,32 @@ struct RunnerPanel: View {
         case nil: .accentColor
         default: .gray
         }
+    }
+}
+
+struct TopCPUView: View {
+    let top: HostProbe.TopCPU
+    var onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(top.verdict).font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(top.spotlightCPU >= 50 ? .orange : .primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button { onClose() } label: { Image(systemName: "xmark") }.buttonStyle(.plain).foregroundStyle(.secondary)
+            }
+            ForEach(Array(top.lines.prefix(6).enumerated()), id: \.offset) { _, l in
+                HStack {
+                    Text(String(format: "%5.1f%%", l.cpu)).font(.system(size: 10.5, design: .monospaced))
+                    Text(l.command.split(separator: "/").last.map(String.init) ?? l.command)
+                        .font(.system(size: 10.5, design: .monospaced)).lineLimit(1)
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
     }
 }
