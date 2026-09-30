@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import CockpitCore
 
@@ -40,8 +41,4 @@ struct ReplayView: View {
         let s = sequence.steps[min(step, sequence.steps.count - 1)]
         if let g = try? Fixtures.glance(s.fixture) { model.store.show(g, as: .fixture(s.fixture)) }
     }
-}
-
-extension ReplaySequence: Hashable {
-    public func hash(into h: inout Hasher) { h.combine(id) }
 }

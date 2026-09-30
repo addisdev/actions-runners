@@ -3,8 +3,8 @@ import Foundation
 /// The recorded incidents, as sequences the replay window steps through. Each
 /// step is a bundled fixture plus a caption saying what changed and when —
 /// the same fixtures the tests hold the verdict to.
-public struct ReplaySequence: Identifiable, Sendable, Equatable {
-    public struct Step: Sendable, Equatable {
+public struct ReplaySequence: Identifiable, Sendable, Hashable {
+    public struct Step: Sendable, Hashable {
         public var fixture: String
         public var caption: String
     }
