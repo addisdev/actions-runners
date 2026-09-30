@@ -122,6 +122,36 @@ test('GET /api/state returns 200 without auth', async () => {
   assert.ok(Array.isArray(body.runners));
 });
 
+test('GET /api/glance returns the compact contract without auth', async () => {
+  await waitForFirstTick(daemon.port);
+  const r = await fetch(url('/api/glance'));
+  assert.equal(r.status, 200);
+  const g = await r.json();
+  assert.equal(g.schema, 1);
+  assert.ok(g.verdict?.id, 'carries a verdict');
+  assert.ok(Array.isArray(g.runners) && Array.isArray(g.hosts) && Array.isArray(g.queue));
+  assert.ok(Array.isArray(g.incidents));
+});
+
+test('GET /api/stream?view=glance streams the glance, not the full state', async () => {
+  const ctrl = new AbortController();
+  const r = await fetch(url('/api/stream?view=glance'), { signal: ctrl.signal });
+  assert.equal(r.headers.get('content-type'), 'text/event-stream');
+  const reader = r.body.getReader();
+  let text = '';
+  while (!text.includes('\n\n')) text += new TextDecoder().decode((await reader.read()).value);
+  ctrl.abort();
+  const first = JSON.parse(text.slice(text.indexOf('data: ') + 6, text.indexOf('\n\n')));
+  assert.equal(first.schema, 1);
+  assert.equal(first.fleetRunners, undefined, 'no full-state fields');
+});
+
+test('GET /api/state carries the verdict once a tick has landed', async () => {
+  await waitForFirstTick(daemon.port);
+  const body = await (await fetch(url('/api/state'))).json();
+  assert.ok(body.verdict?.id);
+});
+
 test('GET /api/actions returns 200 without auth', async () => {
   const r = await fetch(url('/api/actions'));
   assert.equal(r.status, 200);

@@ -274,6 +274,11 @@ the daemon. A value in `fleet.env` seeds the setting on first boot.
 Used by `hooks/job-started.sh`. Must be in `fleet.env` — the hooks cannot
 reach the daemon's database.
 
+`fleetctl.sh install` also passes `FLEET_ADMIT_MODE`, `FLEET_ADMIT_MAX_WAIT_S`
+and `FLEET_ADMIT_MIN_FREE_DISK_GB` to the daemon, so the fleet verdict and the
+`admission-hold` alert judge a held job by the limits the hooks actually
+enforce. After changing any of them, rerun `./fleetctl.sh install`.
+
 | Variable | Default | What it does |
 |---|---|---|
 | `FLEET_ADMIT_MODE` | `off` | `off` / `observe` / `enforce`. |

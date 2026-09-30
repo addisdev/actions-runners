@@ -251,9 +251,15 @@ fire on healthy behaviour every day, which is how people learn to ignore
 alerts. The same reasoning removed a swap-level rule.
 
 What does fire: a runner dead, missing its LaunchAgent, or offline; an orphan;
-a sibling label mismatch; a run stuck in the queue; disk low; sustained paging
-or kernel-reported memory pressure; the collector unable to reach GitHub; and a
-workflow that was green and just went red. Those are the drift kinds above plus
+a sibling label mismatch; a run stuck in the queue; disk low; a job held by
+the admission disk floor, or held for a slot past the hooks' max wait; two jobs
+losing contact with GitHub inside an hour; sustained paging or kernel-reported
+memory pressure; the collector unable to reach GitHub; and a workflow that was
+green and just went red.
+
+The same conditions, in the order that makes the others meaningless, are the
+**fleet verdict** — one sentence and one next move for the whole fleet. See
+[`GET /api/glance`](api.md#get-apiglance) for the ladder. Those are the drift kinds above plus
 the host conditions — the alerting rules and the drift table are deliberately
 the same vocabulary.
 

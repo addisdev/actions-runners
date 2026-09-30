@@ -960,6 +960,21 @@ cd dashboard
 FLEET_DATABASE_URL=postgres://... node scripts/migrate-sqlite-to-pg.mjs
 ```
 
+### `dashboard/scripts/scrub-snapshot.mjs`
+
+Turns a live `/api/state` snapshot into a test fixture that is safe to commit.
+Every string passes through a map of real-to-replacement names that you keep
+outside the repository; free text people wrote (commit messages, run titles,
+actors, alert bodies) is replaced wholesale. It refuses to write the fixture if
+a home directory, an e-mail address or a GitHub URL for another owner survives.
+Source: [`dashboard/scripts/scrub-snapshot.mjs`](https://github.com/addisdev/actions-runners/blob/main/dashboard/scripts/scrub-snapshot.mjs).
+
+```bash
+cd dashboard
+curl -s localhost:7878/api/state > /tmp/live.json
+node scripts/scrub-snapshot.mjs /tmp/live.json test/fixtures/snapshots/new.json --map ~/scrub-map.json
+```
+
 ### `dashboard/autofix/fix.sh`
 
 The allowlisted entry point used by the remediation bridge to launch a cloud

@@ -22,13 +22,86 @@ Print the token: `cd dashboard && ./fleetctl.sh token`
 
 Full live snapshot: local and fleet-wide runners, per-host summaries, active
 runs, host vitals, capacity, drift alerts, queue causes, alerts, federation
-counts, and control-plane leader/standby metadata. This is what the browser's
+counts, the fleet `verdict` (see `GET /api/glance`), and control-plane
+leader/standby metadata. This is what the browser's
 SSE stream delivers on every tick.
 
 ### `GET /api/stream`
 
 Server-Sent Events stream. The browser subscribes to this for live updates.
-Each event is a full `GET /api/state` payload.
+Each event is a full `GET /api/state` payload. With `?view=glance`, each event
+is a `GET /api/glance` payload instead.
+
+### `GET /api/glance`
+
+The compact view: one verdict for the whole fleet, one state per runner, the
+queue, open incidents and per-host vitals, in roughly 10 KB where `/api/state`
+is 130 KB. Built for small screens and slow links — the macOS cockpit, a
+phone, a script. `GET /api/stream?view=glance` streams the same payload on
+every tick.
+
+```json
+{
+  "schema": 1,
+  "ts": 1790781986956,
+  "generatedAt": 1790781990012,
+  "ageMs": 3056,
+  "stale": false,
+  "verdict": {
+    "id": "disk-floor",
+    "tone": "critical",
+    "rung": 2,
+    "title": "Disk floor is holding jobs",
+    "sentence": "3 jobs held because free disk is under the admission floor. It looks like load; it is disk.",
+    "evidence": ["36.6 GB free, floor 40 GB", "3 jobs held at Set up runner: web, backend, ios"],
+    "next": { "label": "Preview cleanup", "kind": "action", "action": "fleet.cleanupPreview", "then": "fleet.cleanupApply" },
+    "open": [ { "id": "disk-floor", "...": "..." } ]
+  },
+  "counts": { "running": 0, "queued": 0, "held": 3, "runners": 54 },
+  "hosts": [ { "id": "build-host", "name": "build-host", "local": true, "stale": false, "ghOnly": false,
+               "vitals": { "cores": 12, "load1": 4.2, "memPressure": "normal", "swapinsPerSec": 0,
+                           "diskFreeGb": 36.6, "diskTotalGb": 926, "diskFloorGb": 40 } } ],
+  "runners": [ { "name": "build-host-web", "repo": "owner/web", "project": "web", "host": "build-host",
+                 "state": "held-disk", "detail": "held: 36 GB disk free, below the 40 GB floor", "since": 1790780126000 } ],
+  "queue": [],
+  "incidents": [ { "key": "admission:disk-floor", "rule": "admission-hold", "severity": "critical",
+                   "title": "Disk floor is holding 3 jobs", "openedAt": 1790780246000, "dismissed": false } ],
+  "admission": { "mode": "enforce", "limit": 2, "waiting": 3 },
+  "collector": { "lastError": null, "failedRepos": 0 },
+  "api": { "remaining": 4282, "limit": 5000 }
+}
+```
+
+Fields that would be `null` are omitted from runners, queue entries and
+incidents. `schema` changes only on a breaking change; new fields may appear at
+any time and decoders should ignore what they do not know.
+
+**`verdict.id`** is the first matching rung of the ladder, in this order:
+
+| Rung | `id` | Tone | Opens when |
+|---|---|---|---|
+| 0 | `unknown` | unknown | the collector has not finished a pass, or every repo failed to read |
+| 1 | `host-down` | critical | a federated agent host has stopped heartbeating |
+| 2 | `disk-floor` | critical | a job is held by the admission disk floor, or disk is under the floor while admission enforces |
+| 3 | `dead-service` | critical | a runner service is dead or missing, or a runner has been offline for 5 min, or work is queued behind a down runner |
+| 4 | `saturated` | warning | two or more `runner-lost` jobs in an hour, sustained paging, critical memory pressure, or a high-confidence host-saturation queue cause |
+| 5 | `account-blocked` | warning | an `account-blocked` or `account-quota` job in the last 6 hours |
+| 6 | `config-drift` | warning | an orphan or label mismatch, or a queue cause that waiting cannot fix (`unserved`, `role-unserved`, `label-mismatch`, `github-hosted`) |
+| 7 | `waiting` | ok | runs are queued or held for an admission slot, and nothing above explains them |
+| 8 | `clear` | ok | none of the above |
+
+`verdict.open` lists every rung that is currently true, in ladder order.
+`verdict.next.kind` is `action` (an id from `GET /api/actions`), `url`,
+`command` (to run on the host), `owner` (only a person can do it) or `none`.
+A client that cannot reach this daemon at all is expected to add its own
+out-of-band rungs; the macOS cockpit uses `blind` and `host-down` for that.
+
+**`runners[].state`** is one of `host-down`, `unknown`, `dead`,
+`misconfigured`, `draining`, `offline`, `settling` (offline under 5 minutes,
+which usually self-resolves), `held-disk`, `held-slot`, `overdue` (running past
+its workflow's p95), `busy`, `lost` (lost contact mid-job in the last hour) or
+`idle`. Runners registered on machines this daemon does not supervise appear in
+a host with `ghOnly: true`, named after their shared runner-name prefix.
 
 ### `GET /api/runner?name=<runner-name>`
 

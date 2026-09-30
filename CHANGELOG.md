@@ -12,6 +12,22 @@ Portable, mobile-first dashboard.
 
 ### Added
 
+- **Fleet verdict.** `lib/verdict.js` reduces drift, queue causes, failure
+  classes, admission holds and alerts to one ordered ladder — cannot read
+  GitHub, host down, disk floor, dead service, saturated, account blocked,
+  config drift, waiting, clear — with evidence and one next move, plus a state
+  for every runner. Published as `verdict` on `/api/state`. Checked against
+  recorded incidents in `test/fixtures/scenarios.js`.
+- **`GET /api/glance`** and **`/api/stream?view=glance`**: a versioned
+  (`schema: 1`) ~10 KB payload for small screens and slow links, where the full
+  state is ~130 KB.
+- **`admission-hold` alert.** A job held by the admission disk floor opens a
+  critical alert after 2 minutes — previously jobs sat at "Set up runner" with
+  no error anywhere. A slot wait past `FLEET_ADMIT_MAX_WAIT_S` opens a warning.
+- **`host-saturated` alert.** Two `runner-lost` jobs inside an hour — the
+  signature of a starved host — open a warning while it is happening.
+- `scripts/scrub-snapshot.mjs` turns a live snapshot into a committable fixture.
+
 - **LAN access.** `./fleetctl.sh remote lan on|off` sets `FLEET_HOST` in
   `fleet.env` and regenerates the LaunchAgent, which is where the bind address
   actually lives. `./fleetctl.sh remote status` shows the running daemon's real

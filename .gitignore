@@ -110,6 +110,10 @@
 !dashboard/test/*.js
 !dashboard/test/fixtures/
 !dashboard/test/fixtures/*.js
+# Recorded fleet snapshots, scrubbed by dashboard/scripts/scrub-snapshot.mjs
+# before they land here. JSON only; nothing else under fixtures is ours.
+!dashboard/test/fixtures/snapshots/
+!dashboard/test/fixtures/snapshots/*.json
 
 # Re-ignore the runtime alert config. `!dashboard/*.json` above un-ignores it,
 # which contradicted the README's claim that it was safe to put a webhook URL

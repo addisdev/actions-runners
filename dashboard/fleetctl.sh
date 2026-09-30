@@ -100,6 +100,11 @@ cmd_install() {
     <key>FLEET_GROUP_MIN</key><string>${FLEET_GROUP_MIN:-2}</string>
     <key>FLEET_GROUPS</key><string>${FLEET_GROUPS:-on}</string>
     <key>FLEET_CEILING</key><string>${FLEET_CEILING:-3}</string>
+    <!-- The hooks' admission settings, so the verdict and alerts judge holds
+         against the limits the hooks actually enforce. -->
+    <key>FLEET_ADMIT_MODE</key><string>${FLEET_ADMIT_MODE:-off}</string>
+    <key>FLEET_ADMIT_MAX_WAIT_S</key><string>${FLEET_ADMIT_MAX_WAIT_S:-600}</string>
+    <key>FLEET_ADMIT_MIN_FREE_DISK_GB</key><string>${FLEET_ADMIT_MIN_FREE_DISK_GB:-40}</string>
     <!-- Federation: bind address, agent token, capability labels, read-only -->
     <key>FLEET_HOST</key><string>${FLEET_HOST:-127.0.0.1}</string>
     <key>FLEET_ALLOWED_HOSTS</key><string>${FLEET_ALLOWED_HOSTS:-}</string>
