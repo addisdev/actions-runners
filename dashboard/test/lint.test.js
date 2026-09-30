@@ -168,3 +168,64 @@ jobs:
     assert.ok(!rules(found).some((r) => r.startsWith('playwright-')));
   });
 });
+
+// An expression-valued cancel-in-progress is a decision, not an omission.
+// actions-runners' own ci.yml uses `${{ github.ref != 'refs/heads/main' }}` —
+// cancel superseded PR runs, never cancel a push to main — and the rule used to
+// report it as "cancel-in-progress is not true".
+const EXPRESSION_CANCEL = `
+name: CI
+on:
+  pull_request:
+concurrency:
+  group: \${{ github.ref }}-ci
+  cancel-in-progress: \${{ github.ref != 'refs/heads/main' }}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: echo hi
+`;
+
+const LITERAL_FALSE_CANCEL = `
+name: web-e2e
+on:
+  pull_request:
+concurrency:
+  group: web-e2e
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: echo hi
+`;
+
+test('cancel-in-progress set to an expression is not flagged', () => {
+  const findings = lintWorkflow({
+    repo: 'addisdev/actions-runners',
+    path: '.github/workflows/ci.yml',
+    name: 'CI',
+    content: EXPRESSION_CANCEL,
+    runnerLabelSets: [['self-hosted', 'macos', 'ci']],
+    fleetLabelSets: [['self-hosted', 'macos', 'ci']],
+  });
+  assert.ok(
+    !findings.some((f) => f.rule === 'no-cancel-in-progress'),
+    `expected no no-cancel-in-progress finding, got ${JSON.stringify(findings.map((f) => f.rule))}`
+  );
+});
+
+test('a literally false cancel-in-progress is still flagged', () => {
+  const findings = lintWorkflow({
+    repo: 'testowner/app-web',
+    path: '.github/workflows/web-e2e.yml',
+    name: 'web-e2e',
+    content: LITERAL_FALSE_CANCEL,
+    runnerLabelSets: [['self-hosted', 'macos', 'ci']],
+    fleetLabelSets: [['self-hosted', 'macos', 'ci']],
+  });
+  assert.ok(findings.some((f) => f.rule === 'no-cancel-in-progress'));
+});

@@ -137,7 +137,17 @@ export function lintWorkflow({ repo, path, name, content, runnerLabelSets, fleet
     ? doc.concurrency['cancel-in-progress']
     : null;
 
-  if (onPullRequest && cancel !== true && !reusable) {
+  // `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}` is the correct
+  // way to cancel superseded PR runs while never cancelling a push to the
+  // default branch. It is a string here, not `true`, so a strict !== true test
+  // reported the most careful spelling of this setting as the absence of it —
+  // one of the findings on this fleet was exactly that, on actions-runners' own
+  // ci.yml. An expression means somebody decided; only flag it when the value
+  // is missing or literally false.
+  const cancelIsExpression = typeof cancel === 'string' && cancel.includes('${{');
+  const cancelSettled = cancel === true || cancelIsExpression;
+
+  if (onPullRequest && !cancelSettled && !reusable) {
     add('no-cancel-in-progress', 'warning', null,
       doc.concurrency
         ? 'Runs on pull_request with a concurrency group but cancel-in-progress is not true'

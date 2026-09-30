@@ -93,6 +93,59 @@ Portable, mobile-first dashboard.
   `lib/remote.js`. They are re-imported in `fleetd.js` — no external API change.
 - `isLocalRequest()` now returns `false` when a loopback request carries proxy
   headers (Tailscale Serve). Previously, Tailscale requests looked local.
+- `lib/capacity.js` — the rationale for `maxTotalRunners` said that nothing
+  throttles execution and therefore the runner count *is* the concurrency
+  limit. That has not been true since job admission control went to enforce, and
+  reading the count as concurrency is what refused scale-ups while 43 idle
+  listeners executed nothing. Documented as a disk and memory bound, with the
+  refusal text corrected to match.
+
+### Fixed
+
+- **The coordinator never recorded its own heartbeat.** `reportSelfToHa()`
+  returns early unless a shared database is configured, and it was the only
+  writer, so on a single-host install `hosts` and `host_heartbeats` stayed
+  empty. The placer read the coordinator's heartbeat off the published
+  snapshot instead, so any stall in publishing aged the host out of its own
+  placer and every scale-up was refused with `last heartbeat 923s ago` —
+  a number counting up from a timestamp nothing was refreshing. The Hosts tab
+  hid it by hardcoding `hostStale: false` for runners with no `hostId`. The
+  beat is now taken on its own 30 s interval, independent of the collection
+  loop, and `buildHostList()` takes it as `coordinatorHeartbeat`.
+- **A fast tick that never settled stopped collection for the life of the
+  process.** `fastInFlight` was cleared only by the task's own `.finally()`,
+  so a hung tick blocked every later one — observed at 82,144 s (22.8 h) while
+  `fastDeadlineMs` "fired" on the first 120 s and changed nothing: the deadline
+  rejects the race, not the task. A tick past its deadline is now abandoned and
+  a fresh one starts. Safe because every write is an upsert keyed by id, and the
+  `fastInFlight === task` guard stops a late finisher clearing a live slot.
+- **`runner_state` and `repos` were never pruned.** Neither table had a `DELETE`
+  anywhere, so a runner taken off the machine and a repo that was deleted or
+  renamed both kept their rows forever. Those rows feed the repo roster and the
+  `runner-unused` rule, so eight deleted repos were still polled weeks later —
+  a 404 each per refresh and a collector `lastError` that could never clear —
+  and runners with no directory, no LaunchAgent and no process still raised
+  "idle for over 7 days". Both are now pruned: runners each pass against this
+  host's fleet root, repos after a week unseen by discovery. Both guarded on a
+  non-empty pass, so a failed read deletes nothing.
+- **A configured limit was reported as host saturation.** Any headroom refusal
+  became `host-saturation` at high confidence, so a fleet with 42 of 43 runners
+  idle was called saturated and told not to add the runner its queue needed.
+  Count-based refusals on a host below its busy ceiling are now a distinct
+  `fleet-limit` cause with the opposite advice. Busyness is read host-wide from
+  the headroom result, not from the queued repo's own runners.
+- **No alert existed for a host that stops reporting.** The placer refuses any
+  host whose beat is over 120 s old, so a silent host silently stopped being
+  placeable. Now a critical `host-stale` alert.
+- **Billing usage never worked on a personal account.** The user fallback called
+  the retired `/users/{user}/settings/billing/actions`, which answers `410
+  Gone`; 410 was not in the expected-status list, so the probe threw on every
+  tick. Both paths now use `/settings/billing/usage`, and 410 is treated as
+  "unavailable" rather than an error.
+- **`cancel-in-progress` set to an expression was reported as missing.**
+  `${{ github.ref != 'refs/heads/main' }}` — cancel superseded PR runs, never a
+  push to the default branch — is a string, not `true`, and a strict `!== true`
+  test flagged the most careful spelling of the setting as the absence of it.
 
 ## [v0.2.0] — unreleased
 
