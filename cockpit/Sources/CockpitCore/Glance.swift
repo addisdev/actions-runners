@@ -23,6 +23,9 @@ public struct Glance: Codable, Sendable, Equatable {
     /// Failed runs in the last two hours, with why. Absent from daemons older
     /// than the field.
     public var failures: [FailureRow]?
+    /// Active runs, and runs finished in the last two hours (compact).
+    public var runs: [RunRow]?
+    public var recent: [RunRow]?
     public var admission: Admission?
     public var collector: Collector?
     public var api: RateLimit?
@@ -75,6 +78,8 @@ public struct Finding: Codable, Sendable, Equatable, Identifiable {
     public var sentence: String?
     public var evidence: [String]?
     public var next: NextMove?
+    /// account-blocked only: GitHub refuses to start jobs (not merely a full quota).
+    public var blocking: Bool?
 
     public init(id: String, tone: Tone, title: String, sentence: String?, evidence: [String]?, next: NextMove?) {
         self.id = id; self.tone = tone; self.title = title
@@ -218,6 +223,28 @@ public struct QueueItem: Codable, Sendable, Equatable, Identifiable {
     public var title: String?
     public var etaStartMs: [Double]?
     public var etaDoneMs: [Double]?
+    public var etaBasis: String?
+}
+
+public struct RunRow: Codable, Sendable, Equatable, Identifiable {
+    public var id: Int
+    public var repo: String
+    public var workflow: String?
+    public var status: String?
+    public var conclusion: String?
+    public var branch: String?
+    public var sha: String?
+    public var prNumber: Int?
+    public var event: String?
+    public var title: String?
+    public var url: String?
+    public var startedAt: Double?
+    public var updatedAt: Double?
+    public var elapsedMs: Double?
+    public var expectedMs: Double?
+
+    public var isActive: Bool { status != "completed" }
+    public var failed: Bool { ["failure", "timed_out", "startup_failure"].contains(conclusion ?? "") }
 }
 
 public struct Incident: Codable, Sendable, Equatable, Identifiable {

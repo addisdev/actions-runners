@@ -11,6 +11,13 @@ usage: cockpit <command> [options]
 
 commands:
   status              the fleet verdict, one screen
+  why <repo>          everything the fleet knows about one repo: its runners, queue with
+                      causes and ETAs, recent failures and open alerts
+  queue               every queued run, oldest first, with cause and ETA
+  wait <repo>         block until a commit's checks finish (--pr N | --sha S | --branch B,
+                      --timeout 45m). Exit 0 green, 1 red, 2 waiting is pointless (host
+                      down, disk floor, billing block, a check that will never start),
+                      3 timed out or nothing readable
   sentinel            check the host out of band (SSH, GitHub, the other machine) —
                       what the app does when the dashboard does not answer
   brief               a markdown incident brief of the current state
@@ -233,6 +240,103 @@ case "run":
     src.transport?.close()
     src.transport = nil
     exit(r.ok ? 0 : 1)
+case "why":
+    guard let repo = opts.positional.first else { fail("usage: cockpit why <repo>", code: 64) }
+    let src = await obtain(opts)
+    src.transport?.close()
+    guard let g = src.glance else { printVerdict(src.verdict, route: src.route, glance: nil); exit(3) }
+    let match: (String?) -> Bool = { r in guard let r else { return false }; return r == repo || r.hasSuffix("/" + repo) }
+    let runners = g.runners.filter { match($0.repo) }
+    let queue = g.queue.filter { match($0.repo) }
+    let failures = (g.failures ?? []).filter { match($0.repo) }
+    let short = repo.split(separator: "/").last.map(String.init) ?? repo
+    let incidents = g.incidents.filter { $0.key.contains(short) || $0.title.contains(short) }
+    if opts.json {
+        struct Why: Encodable { let verdict: Verdict; let runners: [Runner]; let queue: [QueueItem]; let failures: [FailureRow]; let incidents: [Incident]; let checks: [String] }
+        printJSON(Why(verdict: g.verdict, runners: runners, queue: queue, failures: failures, incidents: incidents,
+                      checks: Rollup.checkSets(g).filter { match($0.repo) }.map { "\($0.label): \($0.progress)" }))
+    } else {
+        print("Fleet: \(mark(g.verdict.tone)) \(g.verdict.title)")
+        print("\n\(short): \(runners.count) runner(s)")
+        if runners.isEmpty { print("  none registered — jobs for this repo can only queue (unserved)") }
+        for r in runners { print("  \(r.state.rawValue.padding(toLength: 13, withPad: " ", startingAt: 0)) \(r.name)  \(r.detail ?? "")") }
+        if !queue.isEmpty {
+            print("\nQueued:")
+            for q in queue {
+                let eta = q.etaStartMs.map { "starts in \(Presenter.range($0))" } ?? (q.cause.map { ["runner-down","unserved","role-unserved","label-mismatch","github-hosted"].contains($0) } == true ? "will not start on its own" : "no estimate")
+                print("  \(q.workflow ?? "?") — \(Format.short(ms: q.queuedMs ?? 0)), \(Presenter.causeLabel(q.cause)) (\(q.confidence ?? "?")); \(eta)")
+                for e in q.evidence ?? [] { print("    · \(e)") }
+                if let r = q.recommended { print("    → \(r)") }
+            }
+        }
+        let sets = Rollup.checkSets(g).filter { match($0.repo) }
+        if !sets.isEmpty {
+            print("\nChecks:")
+            for s in sets.prefix(5) { print("  \(s.label): \(s.progress)\(s.etaGreenMs.map { ", done in \(Presenter.range($0))" } ?? "")") }
+        }
+        if !failures.isEmpty {
+            print("\nFailed in the last 2 hours:")
+            for f in failures { print("  \(f.workflow ?? "?"): \(f.label)\(f.notYourCode == true ? "  [not your code]" : "")") }
+        }
+        if !incidents.isEmpty {
+            print("\nOpen alerts:")
+            for i in incidents { print("  [\(i.severity ?? "?")] \(i.title)") }
+        }
+    }
+    exit(exitCode(g.verdict))
+case "queue":
+    let src = await obtain(opts)
+    src.transport?.close()
+    guard let g = src.glance else { printVerdict(src.verdict, route: src.route, glance: nil); exit(3) }
+    if opts.json { printJSON(g.queue) } else if g.queue.isEmpty { print("nothing queued") } else {
+        for r in Presenter.queue(g) { print("\(r.age.padding(toLength: 6, withPad: " ", startingAt: 0)) \(r.title) — \(r.cause)\(r.eta.map { "; \($0)" } ?? "")") }
+    }
+case "wait":
+    guard let repo = opts.positional.first else { fail("usage: cockpit wait <repo> [--pr N | --sha S | --branch B] [--timeout 45m]", code: 64) }
+    let target = WaitTarget(repo: repo, pr: opts.flags["pr"].flatMap(Int.init), sha: opts.flags["sha"], branch: opts.flags["branch"])
+    let timeout: Double = {
+        let raw = opts.flags["timeout"] ?? "45m"
+        let n = Double(raw.dropLast()) ?? Double(raw) ?? 45
+        return raw.hasSuffix("h") ? n * 3600 : raw.hasSuffix("s") ? n : n * 60
+    }()
+    let transport: Transport = opts.url.map { DirectTransport(url: $0) }
+        ?? TunnelTransport(aliases: opts.via.isEmpty ? ["runner-host", "runner-ts"] : opts.via)
+    let deadline = Date().addingTimeInterval(timeout)
+    var last: WaitDecision = .waiting(nil)
+    func report(_ d: WaitDecision) -> Never {
+        transport.close()
+        switch d {
+        case .green(let s): print("✔ \(target.label): \(s.progress)")
+        case .red(let s):
+            print("✖ \(target.label): \(s.progress)")
+            for f in s.failed { print("  \(f.workflow ?? "?")\(f.url.map { " — \($0)" } ?? "")") }
+        case .pointless(let why): print("⏹ \(target.label): not waiting — \(why)")
+        case .waiting(let s): print("… \(target.label): timed out\(s.map { " at \($0.progress)" } ?? " (no runs seen)")")
+        }
+        exit(d.exitCode)
+    }
+    guard let route = try? await transport.open() else { print("? dashboard unreachable — try `cockpit sentinel`"); exit(3) }
+    let client = FleetClient(base: route.baseURL)
+    var announced = ""
+    while Date() < deadline {
+        do {
+            for try await ev in client.stream() {
+                guard case .glance(let g) = ev else { continue }
+                let d = Waiter.decide(g, verdict: g.verdict, target: target)
+                last = d
+                switch d {
+                case .waiting(let s):
+                    let line = s.map { "\($0.progress)\($0.etaGreenMs.map { ", done in \(Presenter.range($0))" } ?? "")" } ?? "no runs yet"
+                    if line != announced && !opts.json { FileHandle.standardError.write(Data("… \(target.label): \(line)\n".utf8)); announced = line }
+                default: report(d)
+                }
+                if Date() >= deadline { report(last) }
+            }
+        } catch {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+        }
+    }
+    report(last)
 case "brief":
     let src = await obtain(opts)
     print(IncidentBrief.markdown(verdict: src.verdict, glance: src.glance, route: src.route, connection: "cli"))

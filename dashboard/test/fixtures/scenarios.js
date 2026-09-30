@@ -58,6 +58,7 @@ export const SCENARIOS = {
       id: 1, repo: 'acme/ember-ios', project: 'ember', workflowName: 'ios-ci', labels: ['self-hosted', 'macOS'],
       queuedSinceMs: 9 * MIN, cause: 'repo-capacity', confidence: 'medium',
       evidence: ['all 4 matching runners are busy'], recommended: 'Wait, or add a runner.', actionEligible: true,
+      etaStartMs: [4 * MIN, 11 * MIN], etaDoneMs: [26 * MIN, 41 * MIN], etaBasis: 'the job ahead on this repo\'s runner',
     }];
     return { snapshot, facts: noFacts(), now: LIVE_TS, expect: 'waiting' };
   },

@@ -45,6 +45,16 @@ Portable, mobile-first dashboard.
 - The cockpit's **Why?** ladder, **Copy brief** (markdown incident brief, also
   `cockpit brief`), and **Failed in the last 2 hours** with a *not your code*
   mark. `/api/glance` gains `failures`.
+- **Queue ETAs** (`lib/eta.js`): each queued run's start and finish as
+  p50–p90 ranges from the job ahead of it and the workflow's history; none for
+  causes that never clear. `/api/glance` gains `runs`, `recent` and the ETA
+  fields.
+- **Checks rollup and watches** in the cockpit: one row per commit with
+  progress and time to green; a bell to be notified when it finishes.
+- **Agent CLI**: `cockpit why <repo>`, `cockpit queue`, and `cockpit wait` (exit
+  `2` the moment waiting is pointless), plus a Claude Code skill in
+  `cockpit/skills/fleet-cockpit`.
+
 - **Cockpit control.** Pair a Mac (device token in the Keychain, minted with
   `fleetctl.sh pair` over SSH); buttons from the action catalogue with its
   confirmation text; a runner panel with recent jobs, events and restart /
@@ -53,6 +63,11 @@ Portable, mobile-first dashboard.
   hours and muted rules. `fleetcockpit://` URLs (pair, why, runner, reconnect,
   fixture). CLI: `cockpit pair`, `cockpit run <action>` (`--yes` for anything
   that changes the fleet).
+
+### Changed
+
+- The `saturated` verdict no longer fires on a run the headroom gate is
+  holding; on a busy host that is most of the day, and it is `waiting`.
 
 ### Fixed
 

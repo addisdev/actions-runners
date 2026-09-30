@@ -38,6 +38,11 @@ struct PopoverView: View {
                             Divider()
                         }
                         if let g = model.store.glance {
+                            let checks = Presenter.checks(g)
+                            if !checks.isEmpty {
+                                ChecksSection(rows: checks, isWatched: model.isWatched, onToggle: model.toggleWatch) { model.open($0) }
+                                Divider()
+                            }
                             QueueSection(rows: Presenter.queue(g)) { model.open($0) }
                             if let f = g.failures, !f.isEmpty {
                                 Divider()

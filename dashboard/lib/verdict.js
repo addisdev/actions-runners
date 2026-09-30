@@ -353,8 +353,12 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
 
   const recentLost = runnerLost.filter((l) => l.at && now - l.at <= o.lostWindowMs);
   const thrashing = openAlerts.find((a) => a.rule === 'swap-thrashing');
-  const saturationQueued = queue.filter((q) => q.cause === 'host-saturation' && q.confidence === 'high');
-  if (recentLost.length >= o.lostThreshold || thrashing || host.memPressure === 'critical' || saturationQueued.length) {
+  // A run queued because the headroom gate is at capacity is NOT this rung: it
+  // is waiting for a slot, and on a busy host that is most of the day. This
+  // rung is for work that is dying of starvation — lost jobs, sustained paging,
+  // critical pressure. Calling a full host "saturated" all afternoon is how a
+  // verdict becomes wallpaper.
+  if (recentLost.length >= o.lostThreshold || thrashing || host.memPressure === 'critical') {
     const evidence = [];
     if (recentLost.length) {
       evidence.push(`${plural(recentLost.length, 'job')} lost contact mid-step in the last ${minutes(o.lostWindowMs)}: ` +
@@ -362,7 +366,6 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
     }
     if (thrashing) evidence.push(thrashing.title);
     if (host.memPressure === 'critical') evidence.push('Kernel memory pressure is critical');
-    if (saturationQueued.length) evidence.push(`${plural(saturationQueued.length, 'run')} queued because the headroom gate is refusing work`);
     if (host.load1 != null && host.cores) evidence.push(`Load ${(host.load1 / host.cores).toFixed(1)} per core`);
     push('saturated', {
       sentence: 'Jobs are dying from starvation, not from code. Check the host before the workflow, the browser or the test.',
@@ -377,6 +380,9 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
     if (account.blocked) parts.push(`${plural(account.blocked, 'job')} refused (billing or spending limit)`);
     if (account.quota) parts.push(`${plural(account.quota, 'job')} hit a storage quota`);
     push('account-blocked', {
+      // True when GitHub refuses to START jobs; a full storage quota lets
+      // them run. `cockpit wait` stops waiting only for the first.
+      blocking: account.blocked > 0,
       title: account.blocked
         ? `GitHub is refusing jobs on ${plural(account.repos.length || 1, 'repo')}`
         : 'Artifact storage quota is full',
@@ -412,8 +418,7 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
   // Queued runs a fault above already explains are that fault's evidence, not
   // a second finding that says "working" next to "down".
   const explained = new Set(['runner-down', ...o.driftCauses]);
-  const plainQueue = queue.filter((q) => !explained.has(q.cause)
-    && !(q.cause === 'host-saturation' && q.confidence === 'high'));
+  const plainQueue = queue.filter((q) => !explained.has(q.cause));
   if (plainQueue.length || slotHeld.length) {
     const oldest = plainQueue.reduce((m, q) => Math.max(m, q.queuedSinceMs ?? 0), 0);
     const causes = [...new Set(plainQueue.map((q) => q.cause))];
@@ -576,8 +581,17 @@ export function buildGlance(snapshot, result, opts = {}) {
         title: run.displayTitle ?? null,
         etaStartMs: q.etaStartMs ?? null,
         etaDoneMs: q.etaDoneMs ?? null,
+        etaBasis: q.etaBasis ?? null,
       });
     }),
+    // Runs, compact: what is building now, and what finished in the last two
+    // hours. Enough to roll a PR's checks up into one row and to tell a waiting
+    // script that its checks are done, without the 130 KB state.
+    runs: (snapshot.active ?? []).map((r) => compactRun(r, now)),
+    recent: (snapshot.recent ?? [])
+      .filter((r) => now - (Date.parse(r.updatedAt) || 0) <= 2 * 60 * 60 * 1000)
+      .slice(0, 20)
+      .map((r) => compactRun(r, now)),
     failures: (opts.failures ?? []).map((f) => strip({
       runId: f.runId,
       repo: f.repo,
@@ -609,6 +623,26 @@ export function buildGlance(snapshot, result, opts = {}) {
     },
     api: snapshot.api ? { remaining: snapshot.api.remaining ?? null, limit: snapshot.api.limit ?? null } : null,
   };
+}
+
+function compactRun(r, now) {
+  return strip({
+    id: r.id,
+    repo: r.repo,
+    workflow: r.workflowName ?? null,
+    status: r.status ?? null,
+    conclusion: r.conclusion ?? null,
+    branch: r.branch ?? null,
+    sha: r.sha ? String(r.sha).slice(0, 12) : null,
+    prNumber: r.prNumber ?? null,
+    event: r.event ?? null,
+    title: r.displayTitle ? String(r.displayTitle).slice(0, 120) : null,
+    url: r.url ?? null,
+    startedAt: Date.parse(r.startedAt) || null,
+    updatedAt: Date.parse(r.updatedAt) || null,
+    elapsedMs: r.status === 'in_progress' && r.startedAt ? Math.max(0, now - Date.parse(r.startedAt)) : null,
+    expectedMs: r.expectedDurationMs ?? null,
+  });
 }
 
 function round(v, digits) {
