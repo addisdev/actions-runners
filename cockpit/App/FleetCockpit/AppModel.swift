@@ -5,15 +5,20 @@ import Network
 import Observation
 import ServiceManagement
 import UserNotifications
+import WidgetKit
+import os
 
 @MainActor
 @Observable
 final class AppModel {
+    /// The running app's model, for App Intents that act (they run in-process).
+    static weak var shared: AppModel?
+
     let store: GlanceStore
     var settings: AppSettings {
         didSet {
             guard settings != oldValue else { return }
-            settings.save()
+            if !isReplay { settings.save() }
             store.config = settings.transport
         }
     }
@@ -56,7 +61,7 @@ final class AppModel {
     }
 
     // MARK: history state
-    var timeline: Timeline?
+    var timeline: FleetTimeline?
     var showHistory = false
     var historyWindowDays = 1
     var showPosture = false
@@ -71,11 +76,32 @@ final class AppModel {
     /// Kept in the snapshot file while nothing newer has arrived, so a restart
     /// during an outage does not erase what the fleet looked like before it.
     @ObservationIgnored private var lastGoodGlance: Glance?
+    @ObservationIgnored private var lastWidgetVerdict: String?
+    @ObservationIgnored private var lastWidgetTitle: String?
     @ObservationIgnored private var pathMonitor: NWPathMonitor?
     @ObservationIgnored private var lastPath: String?
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
 
+    /// A model for the replay window: fixtures only, no network, no
+    /// notifications, nothing written.
+    let isReplay: Bool
+
+    init(replay: Bool) {
+        isReplay = true
+        var s = AppSettings()
+        s.mode = .fixture
+        s.fixture = "quiet"
+        settings = s
+        store = GlanceStore(config: .fixture("quiet"))
+        store.start()
+    }
+
+    /// Opens the floating panel window; set by a SwiftUI view that holds
+    /// `openWindow`, so the hotkey (AppKit) can reach it.
+    @ObservationIgnored var openPanel: (() -> Void)?
+
     init() {
+        isReplay = false
         var s = AppSettings.load()
         // `--fixture <name>` for screenshots and demos, without touching saved settings.
         let args = ProcessInfo.processInfo.arguments
@@ -103,6 +129,29 @@ final class AppModel {
         store.start()
         observeSystem()
         Renderer.runIfRequested(self)
+        AppModel.shared = self
+        Hotkey.shared.register { [weak self] in self?.togglePanel() }
+    }
+
+    func togglePanel() {
+        if let w = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("panel") == true && $0.isVisible }) {
+            w.close()
+        } else {
+            openPanel?()
+            NSApp.activate(ignoringOtherApps: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                let w = NSApp.windows.first { $0.identifier?.rawValue.hasPrefix("panel") == true && $0.isVisible }
+                Self.log.info("panel visible=\(w != nil, privacy: .public) floating=\(w?.level == .floating, privacy: .public)")
+            }
+        }
+    }
+
+    static let log = Logger(subsystem: "io.github.addisdev.fleetcockpit", category: "app")
+
+    /// Plays a sound when a watched commit goes green, if asked to.
+    func playGreen() {
+        guard settings.soundOnGreen else { return }
+        NSSound(named: "Glass")?.play()
     }
 
     var verdict: Verdict {
@@ -143,6 +192,7 @@ final class AppModel {
         if catalog == nil, case .live = store.connection { Task { await loadCatalog() } }
         for (w, s) in Watch.finished(watches, glance: g) {
             watches.removeAll { $0.id == w.id }
+            if s.state == .green { playGreen() }
             let failed = s.failed.compactMap(\.workflow).joined(separator: ", ")
             notifier.post(id: "watch:\(w.id)", title: s.state == .green ? "✔ \(s.label) is green" : "✖ \(s.label) failed",
                           body: s.state == .green ? s.progress : "Failed: \(failed). \(notYourCodeNote(s, g))",
@@ -151,7 +201,13 @@ final class AppModel {
         if Format.nowMs() - lastTimelineMs > 5 * 60_000 { Task { await refreshTimeline() } }
         checkWeeklyDigest()
         let hour = Calendar.current.component(.hour, from: Date())
-        for event in incidents.update(g.incidents, prefs: settings.notifications, now: Format.nowMs(), hour: hour) {
+        var prefs = settings.notifications
+        switch UserDefaults.standard.string(forKey: "focus.level") {
+        case "critical": prefs.minSeverity = "critical"
+        case "none": prefs.minSeverity = "none"
+        default: break
+        }
+        for event in incidents.update(g.incidents, prefs: prefs, now: Format.nowMs(), hour: hour) {
             notifier.incident(event)
         }
     }
@@ -313,6 +369,7 @@ final class AppModel {
         case "pair": Task { await pair() }
         case "why": showLadder = true
         case "reconnect": store.reconnectNow()
+        case "panel": togglePanel()
         case "runner":
             if let name = arg, let g = store.glance {
                 let pill = Presenter.lanes(g, now: clockMs()).flatMap { $0.groups.flatMap(\.pills) }
@@ -456,7 +513,16 @@ final class AppModel {
             verdict: verdict,
             glance: store.glance ?? lastGoodGlance
         )
-        Task.detached(priority: .utility) { try? snap.write() }
+        let verdictChanged = snap.verdict.id != lastWidgetVerdict || snap.verdict.title != lastWidgetTitle
+        lastWidgetVerdict = snap.verdict.id
+        lastWidgetTitle = snap.verdict.title
+        Task.detached(priority: .utility) {
+            try? snap.write()
+            if let group = SnapshotFile.groupURL { try? snap.write(to: group) }
+            // Widgets redraw on a verdict change; otherwise their own 5-minute
+            // timeline is enough and saves the system the work.
+            if verdictChanged { await MainActor.run { WidgetCenter.shared.reloadAllTimelines() } }
+        }
     }
 
     // MARK: launch at login

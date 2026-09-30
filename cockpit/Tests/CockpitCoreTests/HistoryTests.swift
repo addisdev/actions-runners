@@ -6,8 +6,8 @@ import Testing
 struct HistoryTests {
     let H = 3_600_000.0
 
-    func sample(now: Double) -> Timeline {
-        Timeline(
+    func sample(now: Double) -> FleetTimeline {
+        FleetTimeline(
             days: 7, generatedAt: now,
             incidents: [
                 .init(key: "admission:disk-floor", rule: "admission-hold", severity: "critical", title: "Disk floor holding 3 jobs",
@@ -68,5 +68,15 @@ struct HistoryTests {
         v.diskFloorEtaMs = 8 * H
         v.diskRateGbPerHour = -2.1
         #expect(Presenter.disk(v)?.eta == "floor in ~8.0 h (−2.1 GB/h)")
+    }
+}
+
+@Suite("replay")
+struct ReplayTests {
+    @Test func everyStepIsABundledFixture() throws {
+        for seq in ReplaySequence.all {
+            #expect(!seq.steps.isEmpty)
+            for step in seq.steps { _ = try Fixtures.glance(step.fixture) }
+        }
     }
 }

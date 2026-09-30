@@ -24,6 +24,7 @@ struct AppSettings: Codable, Equatable {
     var fixture: String = "live"
     var showCounts: Bool = true
     var dense: Bool = false
+    var soundOnGreen: Bool = false
     var fleetRoot: String = "~/actions-runners"
     var notifications = IncidentTracker.Preferences()
 
@@ -65,6 +66,7 @@ struct AppSettings: Codable, Equatable {
         fixture = (try? c.decode(String.self, forKey: .fixture)) ?? d.fixture
         showCounts = (try? c.decode(Bool.self, forKey: .showCounts)) ?? d.showCounts
         dense = (try? c.decode(Bool.self, forKey: .dense)) ?? d.dense
+        soundOnGreen = (try? c.decode(Bool.self, forKey: .soundOnGreen)) ?? d.soundOnGreen
         fleetRoot = (try? c.decode(String.self, forKey: .fleetRoot)) ?? d.fleetRoot
         notifications = (try? c.decode(IncidentTracker.Preferences.self, forKey: .notifications)) ?? d.notifications
     }

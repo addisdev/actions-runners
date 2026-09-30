@@ -1,7 +1,7 @@
 import Foundation
 
 /// GET /api/timeline: the week in the ladder's terms.
-public struct Timeline: Codable, Sendable, Equatable {
+public struct FleetTimeline: Codable, Sendable, Equatable {
     public struct Interval: Codable, Sendable, Equatable, Identifiable {
         public var id: String { "\(key)@\(Int(openedAt))" }
         public var key: String
@@ -40,8 +40,8 @@ public struct Timeline: Codable, Sendable, Equatable {
 }
 
 public extension FleetClient {
-    func timeline(days: Int = 7) async throws -> Timeline {
-        try JSONDecoder().decode(Timeline.self, from: try await get("api/timeline", query: ["days": String(days)]))
+    func timeline(days: Int = 7) async throws -> FleetTimeline {
+        try JSONDecoder().decode(FleetTimeline.self, from: try await get("api/timeline", query: ["days": String(days)]))
     }
 
     func posture(refresh: Bool = false) async throws -> PostureSummary {
@@ -81,9 +81,9 @@ public enum HistoryPresenter {
         "failing": "Red builds",
     ]
 
-    public static func lanes(_ t: Timeline, windowMs: Double, now: Double) -> [TimelineLane] {
+    public static func lanes(_ t: FleetTimeline, windowMs: Double, now: Double) -> [TimelineLane] {
         let start = now - windowMs
-        var byRung: [String: [Timeline.Interval]] = [:]
+        var byRung: [String: [FleetTimeline.Interval]] = [:]
         for i in t.incidents where (i.closedAt ?? now) >= start { byRung[i.rung, default: []].append(i) }
         return order.compactMap { rung in
             guard let list = byRung[rung], !list.isEmpty else { return nil }
@@ -97,7 +97,7 @@ public enum HistoryPresenter {
     }
 
     /// "Jobs waited 3.1 h and ran 2.4 h today."
-    public static func todayLine(_ t: Timeline) -> String? {
+    public static func todayLine(_ t: FleetTimeline) -> String? {
         guard let d = t.today, d.jobs > 0 else { return nil }
         var s = "\(d.jobs) jobs today: waited \(Format.duration(ms: d.queueMs)), ran \(Format.duration(ms: d.buildMs))"
         if d.heldSeconds > 0 { s += ", held \(Format.duration(ms: d.heldSeconds * 1000)) by admission" }
@@ -106,7 +106,7 @@ public enum HistoryPresenter {
     }
 
     /// The weekly digest, as a notification body.
-    public static func digest(_ t: Timeline) -> (title: String, body: String) {
+    public static func digest(_ t: FleetTimeline) -> (title: String, body: String) {
         guard let w = t.week else { return ("Fleet week", "No history yet.") }
         var parts: [String] = []
         parts.append(w.incidents == 0 ? "No incidents." : "\(w.incidents) incident\(w.incidents == 1 ? "" : "s")"

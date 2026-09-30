@@ -249,3 +249,4 @@ site/
 !cockpit/skills/**
 cockpit/**/.DS_Store
 cockpit/App/FleetCockpit/Info.plist
+cockpit/App/FleetCockpitWidgets/Info.plist

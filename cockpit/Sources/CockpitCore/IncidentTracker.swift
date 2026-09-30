@@ -81,6 +81,7 @@ public struct IncidentTracker: Sendable {
         if let rule = inc.rule, p.mutedRules.contains(rule) { return false }
         if let until = snoozedUntil[inc.key], until > now { return false }
         let tone = inc.tone
+        if p.minSeverity == "none" { return false }
         if p.inQuietHours(hour: hour) { return tone == .critical }
         return p.minSeverity == "critical" ? tone == .critical : (tone == .critical || tone == .warning)
     }

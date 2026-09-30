@@ -75,6 +75,11 @@ Portable, mobile-first dashboard.
   "What is using disk?", top CPU with a Spotlight detector (`cockpit top`),
   diagnostic bundle download.
 
+- **Verdict banner** on the web dashboard's Fleet and Runs tabs.
+- Cockpit: desktop widgets (app group snapshot), App Intents (Fleet Status, Why
+  Is a Repo Queued, Repair Fleet) with Siri/Spotlight phrases, a Focus filter,
+  a ⌃⌥⌘F floating panel, an incident replay window, and a sound on green.
+
 ### Changed
 
 - The `saturated` verdict no longer fires on a run the headroom gate is

@@ -31,10 +31,13 @@ targets:
     dependencies:
       - package: CockpitCore
         product: CockpitCore
+      - target: FleetCockpitWidgets
+        embed: true
     info:
       path: FleetCockpit/Info.plist
       properties:
         CFBundleDisplayName: Fleet Cockpit
+        FleetAppGroup: $(TeamIdentifierPrefix)io.github.addisdev.fleetcockpit
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSUIElement: true
@@ -45,10 +48,44 @@ targets:
             CFBundleURLSchemes: [fleetcockpit]
     entitlements:
       path: FleetCockpit/FleetCockpit.entitlements
-      properties: {}
+      properties:
+        com.apple.security.application-groups:
+          - $(TeamIdentifierPrefix)io.github.addisdev.fleetcockpit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.addisdev.fleetcockpit
         PRODUCT_NAME: Fleet Cockpit
         GENERATE_INFOPLIST_FILE: NO
         COMBINE_HIDPI_IMAGES: YES
+
+  FleetCockpitWidgets:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: FleetCockpitWidgets
+    dependencies:
+      - package: CockpitCore
+        product: CockpitCore
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+    info:
+      path: FleetCockpitWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Fleet Cockpit
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        FleetAppGroup: $(TeamIdentifierPrefix)io.github.addisdev.fleetcockpit
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: FleetCockpitWidgets/FleetCockpitWidgets.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.application-groups:
+          - $(TeamIdentifierPrefix)io.github.addisdev.fleetcockpit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.addisdev.fleetcockpit.widgets
+        PRODUCT_NAME: FleetCockpitWidgets
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
