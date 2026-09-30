@@ -14,6 +14,9 @@ commands:
   sentinel            check the host out of band (SSH, GitHub, the other machine) —
                       what the app does when the dashboard does not answer
   brief               a markdown incident brief of the current state
+  pair                pair this command line with the dashboard (its own revocable token)
+  run <action>        run a catalogue action (e.g. fleet.health, fleet.healthRepair,
+                      runner.restart --name <runner>); anything but a read needs --yes
   fixtures            list the bundled fixture names
 
 options:
@@ -34,6 +37,11 @@ struct Options {
     var fresh = false
     var positional: [String] = []
     var flags: [String: String] = [:]
+
+    init() {}
+    init(command: String, fresh: Bool, positional: [String], flags: [String: String]) {
+        self.command = command; self.fresh = fresh; self.positional = positional; self.flags = flags
+    }
 }
 
 func parse(_ args: [String]) -> Options {
@@ -68,6 +76,15 @@ func parse(_ args: [String]) -> Options {
 func fail(_ msg: String, code: Int32 = 1) -> Never {
     FileHandle.standardError.write(Data((msg + "\n").utf8))
     exit(code)
+}
+
+extension Options {
+    func with(via: [String], url: URL?) -> Options {
+        var o = self
+        o.via = via
+        o.url = url
+        return o
+    }
 }
 
 struct Source {
@@ -180,6 +197,42 @@ case "sentinel":
         if targets == nil { print("  (no snapshot from the app yet: GitHub runner checks skipped)") }
     }
     exit(exitCode(v))
+case "pair":
+    let alias = opts.via.first ?? "runner-host"
+    let src = await obtain(Options(command: "status", fresh: true, positional: [], flags: [:]).with(via: opts.via, url: opts.url))
+    guard let client = src.client, let g = src.glance else { fail("cannot reach the dashboard to pair") }
+    let account = "cli:" + (g.hosts.first { $0.local == true }?.id ?? alias)
+    guard let code = await Pairing.mintCode(alias: alias, fleetRoot: opts.flags["fleet-root"] ?? "~/actions-runners") else {
+        fail("could not get a pairing code from \(alias) (is fleetctl.sh there?)")
+    }
+    do {
+        let token = try await client.pair(code: code, name: "cockpit CLI on \(Foundation.Host.current().localizedName ?? "this Mac")")
+        do { try CLITokenFile.save(token, account: account) } catch { fail("paired, but the token could not be saved: \(error)") }
+        print("paired; token saved for \(account) (mode 0600). Revoke on the host with ./fleetctl.sh revoke")
+    } catch { fail("pairing failed: \(error)") }
+    src.transport?.close()
+case "run":
+    guard let action = opts.positional.first else { fail("usage: cockpit run <action> [--name <runner>] [--yes]", code: 64) }
+    var src = await obtain(Options(command: "status", fresh: true, positional: [], flags: [:]).with(via: opts.via, url: opts.url))
+    guard var client = src.client, let g = src.glance else { fail("cannot reach the dashboard") }
+    let account = "cli:" + (g.hosts.first { $0.local == true }?.id ?? "fleet")
+    guard let token = CLITokenFile.load(account: account) else { fail("not paired: run `cockpit pair` first") }
+    client.token = token
+    guard let def = (try? await client.actions())?.action(action) else {
+        fail("\(action) is not an action the cockpit offers (see GET /api/actions)")
+    }
+    // Anything that changes the fleet needs an explicit --yes: an agent
+    // exploring the CLI must not repair or restart by accident.
+    if (def.danger ?? "none") != "none" && opts.flags["yes"] == nil {
+        fail("\(def.label) (\(def.danger ?? "?") danger): \(def.confirm ?? "changes the fleet"). Re-run with --yes to proceed.", code: 2)
+    }
+    var args: [String: Any] = [:]
+    if let n = opts.flags["name"] { args["name"] = n }
+    let r = await (try? client.perform(action, args: args)) ?? ActionResult(ok: false, error: "request failed")
+    if opts.json { printJSON(r) } else { print(r.ok ? "✔ \(def.label)" : "✖ \(def.label)"); if !r.summary.isEmpty { print(r.summary) } }
+    src.transport?.close()
+    src.transport = nil
+    exit(r.ok ? 0 : 1)
 case "brief":
     let src = await obtain(opts)
     print(IncidentBrief.markdown(verdict: src.verdict, glance: src.glance, route: src.route, connection: "cli"))

@@ -54,9 +54,11 @@ public struct FleetClient: Sendable {
         return data
     }
 
-    public func post(_ path: String, json: [String: Any]) async throws -> Data {
+    public func post(_ path: String, json: [String: Any], timeout: TimeInterval = 15) async throws -> Data {
         let body = try JSONSerialization.data(withJSONObject: json)
-        let (data, resp) = try await session.data(for: request(path, method: "POST", body: body))
+        var req = request(path, method: "POST", body: body)
+        req.timeoutInterval = timeout
+        let (data, resp) = try await session.data(for: req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(code) else { throw ClientError.http(code, String(decoding: data, as: UTF8.self)) }
         return data

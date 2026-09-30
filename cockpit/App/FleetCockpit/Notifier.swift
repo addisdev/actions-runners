@@ -18,6 +18,33 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     func requestAuthorization() {
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+        let repair = UNNotificationAction(identifier: "repair", title: "Repair", options: [])
+        let dismiss = UNNotificationAction(identifier: "dismiss", title: "Dismiss everywhere", options: [])
+        let snooze = UNNotificationAction(identifier: "snooze", title: "Snooze 1 hour", options: [])
+        let open = UNNotificationAction(identifier: "open", title: "Open dashboard", options: [.foreground])
+        center.setNotificationCategories([
+            UNNotificationCategory(identifier: "incident.repairable", actions: [repair, dismiss, snooze], intentIdentifiers: []),
+            UNNotificationCategory(identifier: "incident", actions: [open, dismiss, snooze], intentIdentifiers: []),
+        ])
+    }
+
+    /// Alert transitions from the daemon.
+    func incident(_ event: IncidentTracker.Event) {
+        switch event {
+        case .opened(let i):
+            post(id: "incident:\(i.key)", title: i.title, body: i.body ?? "", critical: i.tone == .critical,
+                 info: ["kind": "incident", "key": i.key],
+                 category: i.isRepairable ? "incident.repairable" : "incident")
+        case .recovered(let i, let lasted):
+            post(id: "recovered:\(i.key)", title: "Recovered: \(i.title)",
+                 body: "Cleared after \(Format.duration(ms: lasted)).", critical: false, info: ["kind": "incident"])
+        case .storm(let n, let worst):
+            post(id: "storm", title: "\(n) fleet alerts opened at once",
+                 body: "Worst: \(worst.title). A host restart or network drop usually does this.",
+                 critical: worst.tone == .critical, info: ["kind": "incident"], category: "incident")
+        case .recoveredMany(let n):
+            post(id: "storm:recovered", title: "\(n) fleet alerts cleared", body: "", critical: false, info: ["kind": "incident"])
+        }
     }
 
     /// Conditions only this Mac can see: host down, dashboard down, blind.

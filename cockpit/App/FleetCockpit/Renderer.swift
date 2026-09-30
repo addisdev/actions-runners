@@ -18,6 +18,20 @@ enum Renderer {
             model.hovered = Presenter.lanes(g, now: Format.nowMs()).flatMap { $0.groups.flatMap(\.pills) }
                 .first { $0.name.hasSuffix(name) }
         }
+        if args.contains("--pending") {
+            model.pending = (ActionDef(id: "fleet.cleanupApply", label: "Apply cleanup", danger: "high",
+                                       confirm: "This deletes DerivedData, dead simulators and old _diag logs. Preview first."), [:])
+        }
+        if let j = args.firstIndex(of: "--select"), j + 1 < args.count, let g = model.store.glance {
+            model.selectedRunner = Presenter.lanes(g, now: model.clockMs()).flatMap { $0.groups.flatMap(\.pills) }
+                .first { $0.name.hasSuffix(args[j + 1]) }
+            let sample = """
+            {"remote":false,"events":[{"ts":\(model.clockMs() - 840_000),"kind":"state","detail":"running|online|idle -> dead|offline|busy"}],
+             "jobs":[{"id":1,"name":"ci / test","status":"completed","conclusion":"failure"}],
+             "utilization":{"days":7,"jobCount":27,"failureCount":2,"totalMs":6520000}}
+            """
+            model.runnerDetail = try? JSONDecoder().decode(RunnerDetail.self, from: Data(sample.utf8))
+        }
         DispatchQueue.main.async {
             let view = PopoverView(model: model)
                 .background(Color(nsColor: .windowBackgroundColor))

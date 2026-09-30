@@ -22,6 +22,7 @@ struct PopoverView: View {
             VStack(alignment: .leading, spacing: 12) {
                 VerdictHeader(verdict: model.verdict, dimmed: model.isDimmed, onNext: handle)
                 headerActions
+                ControlBar(model: model)
                 if model.showLadder {
                     LadderView(rungs: model.ladder)
                 } else if model.verdict.open.count > 1 {
@@ -32,7 +33,7 @@ struct PopoverView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         ForEach(model.lanes(now: now)) { lane in
                             LaneView(lane: lane, dense: model.settings.dense, hovered: $model.hovered) { p in
-                                model.open(p.url)
+                                model.select(model.selectedRunner?.id == p.id ? nil : p)
                             }
                             Divider()
                         }
@@ -47,7 +48,11 @@ struct PopoverView: View {
                     .opacity(model.isDimmed ? 0.55 : 1)
                     .saturation(model.isDimmed ? 0.2 : 1)
                 }
-                inspector
+                if let sel = model.selectedRunner {
+                    RunnerPanel(model: model, pill: sel)
+                } else {
+                    inspector
+                }
                 footer(now: now)
             }
             .padding(14)
@@ -176,6 +181,8 @@ struct PopoverView: View {
             }
         case "reconnect":
             model.store.reconnectNow()
+        case "action":
+            if let a = n.action { model.request(a) }
         case "command":
             if let c = n.command {
                 NSPasteboard.general.clearContents()

@@ -45,6 +45,14 @@ Portable, mobile-first dashboard.
 - The cockpit's **Why?** ladder, **Copy brief** (markdown incident brief, also
   `cockpit brief`), and **Failed in the last 2 hours** with a *not your code*
   mark. `/api/glance` gains `failures`.
+- **Cockpit control.** Pair a Mac (device token in the Keychain, minted with
+  `fleetctl.sh pair` over SSH); buttons from the action catalogue with its
+  confirmation text; a runner panel with recent jobs, events and restart /
+  drain / resume. Alert notifications on transitions with Repair, Dismiss
+  everywhere and Snooze actions, a storm summary, critical-only mode, quiet
+  hours and muted rules. `fleetcockpit://` URLs (pair, why, runner, reconnect,
+  fixture). CLI: `cockpit pair`, `cockpit run <action>` (`--yes` for anything
+  that changes the fleet).
 
 ### Fixed
 
