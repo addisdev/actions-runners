@@ -155,6 +155,25 @@ everywhere** (the web dashboard and phone push stop too), **Snooze 1 hour**
 break through Focus. In Settings you can notify for critical only, set quiet
 hours during which only critical alerts notify, and mute rules by name.
 
+## Around the system
+
+- **Desktop widgets** (small, medium, large): the verdict, a dot per runner, and
+  the checks and queue. They read the snapshot the app shares through its app
+  group and never touch the network; a view older than ten minutes says so.
+- **Shortcuts and Spotlight**: *Fleet Status*, *Why Is a Repo Queued* and *Repair
+  Fleet* (which asks first, and needs a paired Mac).
+- **Focus filter**: in a Focus's settings, choose whether fleet alerts reach you
+  during it — critical and warning, critical only, or none.
+- **⌃⌥⌘F** opens the popover as a floating window for a second display during
+  an incident, from anywhere; the footer menu does the same.
+- **Incident replay** (footer menu) steps through the recorded incidents — the
+  disk-floor freeze, a dead service, the saturated host, a billing block — with
+  the real popover, one recorded state at a time.
+- Optionally, a sound when a watched commit goes green.
+
+The web dashboard shows the same verdict as a banner above its KPI row, with the
+next move as a button and the evidence under **Why**.
+
 ## Getting it
 
 Build it from the repository. It needs Xcode 16 or later, macOS 14 or later,

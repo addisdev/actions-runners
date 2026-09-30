@@ -53,7 +53,7 @@ enum Renderer {
              "today":{"since":\(now - 10 * H),"jobs":43,"queueMs":\(3.1 * H),"buildMs":\(2.4 * H),"lostJobs":0,"heldSeconds":1800},
              "week":{"worstWait":[{"repo":"acme/comet-web","queueMs":\(5 * H),"jobs":120}],"incidents":4,"byRung":{"disk-floor":1},"mttrMs":\(1.4 * H)}}
             """
-            var tl = try? JSONDecoder().decode(Timeline.self, from: Data(json.utf8))
+            var tl = try? JSONDecoder().decode(FleetTimeline.self, from: Data(json.utf8))
             tl?.samples = samples
             model.timeline = tl
             model.showHistory = true

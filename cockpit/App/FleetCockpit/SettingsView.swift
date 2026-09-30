@@ -69,6 +69,8 @@ struct SettingsView: View {
             Section("Display") {
                 Toggle("Show running and queued counts in the menu bar", isOn: $draft.showCounts)
                 Toggle("Compact runner dots", isOn: $draft.dense)
+                Toggle("Play a sound when a watched commit goes green", isOn: $draft.soundOnGreen)
+                LabeledContent("Floating window") { Text("⌃⌥⌘F").font(.system(.body, design: .monospaced)) }
             }
             Section("System") {
                 Toggle("Open at login", isOn: $loginItem)

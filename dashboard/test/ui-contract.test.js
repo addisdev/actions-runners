@@ -379,3 +379,15 @@ describe('fleetctl remote-access contracts', () => {
     assert.doesNotMatch(fleetctl, /"\$ts" funnel|tailscale funnel/);
   });
 });
+
+describe('fleet verdict banner contract', () => {
+  test('the banner renders the verdict above the KPI row and stays quiet when clear', () => {
+    assert.match(html, /id="verdict-banner"/);
+    assert.ok(html.indexOf('id="verdict-banner"') < html.indexOf('id="kpis"'));
+    assert.match(app, /function renderVerdictBanner\(s\)/);
+    assert.match(app, /v\.id === 'clear'/);
+    assert.match(app, /control\.confirmAct\(next\.action\)/);
+    assert.match(app, /renderVerdictBanner\(snap\)/);
+    assert.match(css, /\.verdict-banner\.tone-critical/);
+  });
+});

@@ -24,6 +24,15 @@ public struct SnapshotFile: Codable, Sendable, Equatable {
             .appendingPathComponent("glance.json")
     }
 
+    /// The copy the widgets read: the app group container shared with the
+    /// sandboxed widget extension. nil when the build carries no app group.
+    public static var groupURL: URL? {
+        guard let group = Bundle.main.object(forInfoDictionaryKey: "FleetAppGroup") as? String,
+              !group.isEmpty, !group.hasPrefix("$("), !group.hasPrefix("io."),
+              let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group) else { return nil }
+        return dir.appendingPathComponent("glance.json")
+    }
+
     public func write(to url: URL = SnapshotFile.defaultURL) throws {
         let dir = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,

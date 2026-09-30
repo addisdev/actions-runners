@@ -827,6 +827,42 @@ function hostSection(s, hostId, hostInfo, runners, summaries) {
     ...projectGroups(runners, s.projects ?? ['other']));
 }
 
+// The fleet verdict (lib/verdict.js): one sentence and one next move, above
+// everything else, so the page answers "is anything wrong, and what do I do"
+// before it shows 54 runner cards. Quiet when the fleet is clear.
+function renderVerdictBanner(s) {
+  const el = $('#verdict-banner');
+  if (!el) return;
+  const v = s.verdict;
+  if (!v || v.id === 'clear') { el.classList.add('is-hidden'); return; }
+  el.classList.remove('is-hidden');
+  el.className = `verdict-banner tone-${v.tone ?? 'unknown'}`;
+  const next = v.next;
+  let action = null;
+  if (next?.kind === 'action' && next.action) {
+    action = h('button', { type: 'button', class: 'verdict-next', text: next.label,
+      onclick: () => control.confirmAct(next.action) });
+  } else if (next?.kind === 'url' && next.url) {
+    action = next.url.startsWith('#')
+      ? h('button', { type: 'button', class: 'verdict-next', text: next.label, onclick: () => setView(next.url.replace(/^#\/?/, '')) })
+      : h('a', { class: 'verdict-next', href: next.url, target: '_blank', rel: 'noopener', text: next.label });
+  } else if (next?.kind === 'command' && next.command) {
+    action = h('code', { class: 'verdict-command', text: next.command });
+  }
+  const others = (v.open ?? []).slice(1);
+  mount(el,
+    h('div', { class: 'verdict-main' },
+      h('strong', { class: 'verdict-title', text: v.title }),
+      v.sentence ? h('span', { class: 'verdict-sentence', text: v.sentence }) : null),
+    action,
+    (v.evidence?.length || others.length)
+      ? h('details', { class: 'verdict-why' },
+        h('summary', { text: 'Why' }),
+        h('ul', {}, ...(v.evidence ?? []).map((e) => h('li', { text: e }))),
+        others.length ? h('p', { class: 'verdict-also', text: `Also open: ${others.map((o) => o.title).join('; ')}` }) : null)
+      : null);
+}
+
 // Quick glance card shown at top of Fleet on narrow screens
 // Counted the same way as the KPI row, so the two never disagree on one screen.
 function renderGlanceCard(s) {
@@ -1541,6 +1577,7 @@ function render() {
   if (!snap) return;
   updateConnectionIndicator();
   renderHeader(snap);
+  renderVerdictBanner(snap);
   renderFederationSummary(snap);
   // The live KPI row and drift list belong to the operational tabs. Analytics
   // brings its own KPIs for the selected window; showing both stacks two

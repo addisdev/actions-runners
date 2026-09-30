@@ -14,6 +14,7 @@ extension EnvironmentValues {
 struct PopoverView: View {
     @Bindable var model: AppModel
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
     @Environment(\.isRendering) private var isRendering
 
     var body: some View {
@@ -219,6 +220,8 @@ struct PopoverView: View {
                     .disabled(model.store.route?.baseURL.scheme?.hasPrefix("http") != true)
                 Button("Terminal on the host") { model.openTerminal() }
                 Button("Reconnect now") { model.store.reconnectNow() }
+                Button("Open as a floating window  ⌃⌥⌘F") { model.togglePanel() }
+                Button("Incident replay…") { openWindow(id: "replay"); NSApp.activate(ignoringOtherApps: true) }
                 Divider()
                 Button("Settings…") { openSettings(); NSApp.activate(ignoringOtherApps: true) }
                 Button("Quit Fleet Cockpit") { NSApp.terminate(nil) }
