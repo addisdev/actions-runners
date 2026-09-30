@@ -157,11 +157,17 @@ export function buildHostList(localSnapshot, hostState, {
   coordinatorDrained = false,
   coordinatorName = LOCAL_HOST_ID,
   coordinatorId = LOCAL_HOST_ID,
+  // When the coordinator last measured itself. Defaults to the snapshot
+  // timestamp so existing callers behave as before, but fleetd passes a value
+  // taken on its own interval: reading the heartbeat off the snapshot means a
+  // slow collection tick presents as a dead host, and the placer then refuses
+  // the very host that is asking for a runner.
+  coordinatorHeartbeat = null,
 } = {}) {
   const local = {
     id: coordinatorId,
     name: coordinatorName,
-    lastHeartbeat: localSnapshot.ts ?? Date.now(),
+    lastHeartbeat: coordinatorHeartbeat ?? localSnapshot.ts ?? Date.now(),
     labels: coordinatorLabels,
     runners: localSnapshot.runners ?? [],
     repos: [...new Set((localSnapshot.runners ?? []).map((r) => r.repo))],
@@ -172,7 +178,10 @@ export function buildHostList(localSnapshot, hostState, {
     local: true,
   };
 
-  const remotes = [...hostState.values()].map((h) => ({
+  // Guard against the coordinator also appearing in hostState. That map is for
+  // remote agents; a self-entry would emit this host twice and double its
+  // runner count in every fleet-wide total.
+  const remotes = [...hostState.values()].filter((h) => h.id !== coordinatorId).map((h) => ({
     id: h.id,
     name: h.name,
     lastHeartbeat: h.lastHeartbeat ?? null,

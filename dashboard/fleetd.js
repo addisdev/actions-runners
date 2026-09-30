@@ -347,6 +347,17 @@ const stmt = {
       pid=excluded.pid, rss_kb=excluded.rss_kb,
       work_kb=COALESCE(excluded.work_kb, runner_state.work_kb),
       updated_at=excluded.updated_at`),
+  // runner_state had no DELETE anywhere, so a runner removed from this machine
+  // left its row behind for good. Those rows are not inert: the roster is built
+  // from them, so repos deleted months earlier were still being polled — 404 on
+  // every refresh, and a permanently non-empty collector lastError — and the
+  // runner-unused rule read the same table and raised
+  // "idle for over 7 days" for runners with no directory, no LaunchAgent and no
+  // process. Scoped to this host's own fleet root so a remote agent's runners
+  // are never touched.
+  deleteVanishedRunners: db.prepare(
+    `DELETE FROM runner_state WHERE dir LIKE ? AND updated_at < ?`
+  ),
   insertEvent: db.prepare('INSERT INTO runner_events (ts, name, repo, kind, detail) VALUES (?,?,?,?,?)'),
   insertSample: db.prepare(`
     INSERT INTO host_samples (ts, load1, mem_used_mb, mem_total_mb, swap_used_mb,
@@ -447,6 +458,18 @@ const stmt = {
     WHERE repo = ? AND event = 'push' AND run_started_at >= ?
     GROUP BY head_branch HAVING n >= 2
     ORDER BY n DESC`),
+  // Same gap as runner_state had: `repos` was only ever upserted, so a repo
+  // that was deleted or renamed kept its row and stayed on the roster forever.
+  // On one fleet eight such repos were still being polled weeks after they
+  // stopped existing — a 404 each per refresh, and a collector lastError that
+  // could never clear.
+  //
+  // Deliberately generous: a repo is dropped only after discovery has not seen
+  // it for a week. A single 404 is not proof a repo is gone — a token losing
+  // access to a private repo looks identical — so this waits for a sustained
+  // absence rather than reacting to one failed call. Discovery re-adds it the
+  // moment it comes back.
+  deleteVanishedRepos: db.prepare('DELETE FROM repos WHERE updated_at < ?'),
   defaultBranchOf: db.prepare('SELECT default_branch FROM repos WHERE full_name = ?'),
   upsertRepo: db.prepare(`
     INSERT INTO repos (full_name, name, archived, private, pushed_at, workflows, has_runner, updated_at)
@@ -502,7 +525,19 @@ const lastVersionState = new Map();
 //
 // Rebuilt from the newest heartbeat per host at startup, so a coordinator
 // restart does not blank the fleet.
+// How long a repo may go unseen by discovery before it is dropped from the
+// roster. A week: long enough that a transient permissions or outage blip never
+// removes a live repo, short enough that a deleted one stops costing a 404 on
+// every refresh.
+const REPO_FORGET_MS = 7 * 24 * 60 * 60 * 1000;
 const hostState = new Map();
+// When the coordinator last took its own vitals. Kept apart from the published
+// snapshot on purpose: the placer used to read the coordinator's heartbeat off
+// `snap.ts`, so any stall in publishing — a fast tick running long on a loaded
+// host — aged the coordinator out of its own placer and every scale-up was
+// refused with "last heartbeat 923s ago". The host was fine; the loop reporting
+// on it was late. recordSelfHeartbeat() advances this on its own 30s interval.
+let selfHeartbeatAt = 0;
 const LOCAL_HOST_ID = CONFIG.replicaId;
 
 const REMOTE_ACTIONS = new Set([
@@ -643,6 +678,59 @@ function claimLocalCommands(hostId, now, limit = 8) {
   return claimed;
 }
 
+// The placer reads `lastHeartbeat` out of hostState, and until now the only
+// thing that ever wrote the coordinator's own entry was reportSelfToHa() below
+// — which returns early unless a shared database is configured. On a single
+// host that gate is never open, so the coordinator aged out of its own placer:
+// `hosts` and `host_heartbeats` stayed empty and every scale-up was refused
+// with "last heartbeat 923s ago", counting up from a timestamp nothing was
+// refreshing. The Hosts tab hid it by hardcoding hostStale:false for any runner
+// with no hostId, so the dashboard looked healthy while placement was blocked.
+// Record the beat locally and unconditionally, on its own interval, so a slow
+// fast tick can never starve the signal that decides whether this host may be
+// placed on.
+async function recordSelfHeartbeat() {
+  const report = await collectHostReport({
+    root: CONFIG.root,
+    hostId: LOCAL_HOST_ID,
+    hostName: CONFIG.hostName,
+    labels: CONFIG.hostLabels,
+    limits: settings.limits(),
+  });
+  const now = report.reportedAt;
+  const busy = report.runners.filter((r) => r?.ghBusy || r?.workingLocally).length;
+  stmt.upsertHost.run(
+    LOCAL_HOST_ID,
+    String(report.host?.hostname ?? CONFIG.hostName),
+    String(report.host?.platform ?? ''),
+    String(report.fleetRoot ?? ''),
+    now, now,
+    String(report.version ?? 2),
+    JSON.stringify(report.labels ?? []),
+    JSON.stringify({
+      id: LOCAL_HOST_ID,
+      name: report.name,
+      runners: report.runners,
+      host: report.host,
+      capacity: report.capacity ?? null,
+      repos: report.repos ?? [],
+      drained: Boolean(report.drained),
+    })
+  );
+  stmt.insertHeartbeat.run(
+    LOCAL_HOST_ID, now,
+    num(report.host?.load1), num(report.host?.memFreePct), num(report.host?.diskFreeGb),
+    report.runners.length, busy
+  );
+  // Deliberately NOT written into hostState. That map is the set of REMOTE
+  // agents; putting the coordinator in it makes buildHostList emit this host
+  // twice and double-counts its runners fleet-wide. All the coordinator needs
+  // from this function is a timestamp that is independent of the collection
+  // loop — see selfHeartbeatAt below.
+  selfHeartbeatAt = now;
+  return report;
+}
+
 async function reportSelfToHa() {
   if (!CONFIG.databaseUrl) return;
   const report = await collectHostReport({
@@ -750,6 +838,18 @@ function recordTransitions(runners) {
       r.ghStatus, b(r.ghBusy), r.launchdLabel, r.launchdState, r.pid,
       r.rssMb != null ? r.rssMb * 1024 : null, null, now);
     stmt.updateRunnerDrain.run(r.drainState ?? null, r.version ?? null, now, r.name);
+  }
+
+  // Forget local runners that discovery no longer sees. Every row touched above
+  // carries this pass's `now`, so anything under this host's root still holding
+  // an older timestamp no longer exists on disk.
+  //
+  // Guarded on a non-empty pass: if discovery returns nothing — launchctl
+  // failing, the fleet root unmounted — that is a broken read, not 45 deleted
+  // runners, and wiping the table on it would be the worst possible response.
+  if (runners.length) {
+    const removed = stmt.deleteVanishedRunners.run(`${CONFIG.root}%`, now).changes;
+    if (removed) log(`runner_state: forgot ${removed} runner(s) no longer present on this host`);
   }
 }
 
@@ -1095,6 +1195,7 @@ async function autoscaleTick(forcedPlan = null) {
       coordinatorDrained,
       coordinatorName,
       coordinatorId: CONFIG.replicaId,
+      coordinatorHeartbeat: selfHeartbeatAt || null,
     }
   );
 
@@ -1691,6 +1792,7 @@ async function fastTick() {
       coordinatorDrained: Boolean(hostDrainState(CONFIG.root)),
       coordinatorName: localHostName,
       coordinatorId: CONFIG.replicaId,
+      coordinatorHeartbeat: selfHeartbeatAt || null,
     },
   );
   const fleetCapacity = anyHostHasCapacity(allHosts) ? { ok: true, reasons: [] } : capacity;
@@ -2089,6 +2191,12 @@ async function slowTick() {
     refreshGroups();
     refreshConcurrency();
     for (const r of repoRoster) r.project = groups.of(r.fullName);
+    // Guarded on a non-empty discovery for the same reason as the runner prune:
+    // an empty roster means the listing failed, not that every repo was deleted.
+    if (roster.length) {
+      const gone = stmt.deleteVanishedRepos.run(Date.now() - REPO_FORGET_MS).changes;
+      if (gone) log(`roster: forgot ${gone} repo(s) not seen by discovery in ${REPO_FORGET_MS / 86400000} days`);
+    }
     log(`roster: ${repoRoster.length} repos with workflows, ${withRunners.size} served here`);
     log(`groups: ${groups.order.filter((g) => g !== 'other').join(', ') || 'none inferred'}`);
   } catch (err) {
@@ -3554,16 +3662,47 @@ async function main() {
   // Chained timeouts, not setInterval: the cadence changes with fleet activity,
   // and a slow tick must never overlap itself.
   let fastInFlight = null;
+  let fastInFlightSince = 0;
   const scheduleFast = () => {
     const delay = snapshot.collector?.fastMs ?? CONFIG.fastMs;
     setTimeout(async () => {
       try {
         if (ha.isLeader) {
+          // A tick past its deadline is ABANDONED, not waited on.
+          //
+          // fastInFlight was only ever cleared by the task's own .finally(), so
+          // a promise that never settles ended collection for the life of the
+          // process. fastDeadlineMs existed to prevent exactly that and could
+          // not: it rejects the RACE, which lets this scheduler re-arm, but the
+          // underlying task stays referenced and every later tick skips on it
+          // forever. Observed 2026-09-29: one tick in flight for 82,144s —
+          // 22.8 hours — while the deadline "fired" on the first 120s and
+          // nothing ever reset the slot. What kept the dashboard alive at all
+          // was slowTick() calling fastTick() directly, bypassing this guard.
+          //
+          // Dropping the reference is safe and is the trade the deadline was
+          // written for: every write a tick makes is an upsert keyed by id, so
+          // a late finisher duplicates effort rather than corrupting a row. The
+          // `fastInFlight === task` guard in .finally() below means an
+          // abandoned tick cannot clear a newer one's slot when it lands.
+          if (fastInFlight && Date.now() - fastInFlightSince > CONFIG.fastDeadlineMs) {
+            const stuckS = Math.round((Date.now() - fastInFlightSince) / 1000);
+            warn(`fast tick: abandoning a tick stuck for ${stuckS}s (deadline ${CONFIG.fastDeadlineMs / 1000}s); starting a fresh one`);
+            fastInFlight = null;
+          }
+
           if (fastInFlight) {
-            warn('fast tick: previous timed-out tick is still running; skipping overlap');
+            // Ordinary overrun: the tick is slower than the cadence but still
+            // inside its deadline. This used to read "previous timed-out tick
+            // is still running", which turned normal slowness into 2,683 log
+            // lines claiming a timeout that had not happened — and buried the
+            // real ones. State the elapsed time and let the number speak.
+            const ms = Date.now() - fastInFlightSince;
+            warn(`fast tick: previous tick still running after ${Math.round(ms / 1000)}s; skipping overlap`);
           } else {
             const task = fastTick();
             fastInFlight = task;
+            fastInFlightSince = Date.now();
             task.finally(() => {
               if (fastInFlight === task) fastInFlight = null;
             }).catch(() => {});
@@ -3629,6 +3768,17 @@ async function main() {
   scheduleFast();
   scheduleSlow();
   scheduleAutoscale();
+
+  // Unconditional, and deliberately not inside the fast tick. The heartbeat is
+  // what makes this host placeable; coupling it to the collection loop means a
+  // busy host stops advertising itself at exactly the moment work is queuing up
+  // on it, and the autoscaler then refuses to add the runner that would have
+  // drained the queue. Once at boot so the first autoscale pass 60s later has
+  // something to read, then every 30s against a 120s staleness bound.
+  recordSelfHeartbeat().catch((e) => warn('self heartbeat:', e.message));
+  setInterval(() => {
+    recordSelfHeartbeat().catch((e) => warn('self heartbeat:', e.message));
+  }, 30000).unref?.();
 
   if (CONFIG.databaseUrl) {
     pollSelfCommands().catch((e) => warn('self command poll:', e.message));
