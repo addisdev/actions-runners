@@ -27,6 +27,18 @@ final class AppModel {
     var showLadder = false
     let notifier = Notifier()
 
+    // MARK: control state
+    var catalog: ActionCatalog?
+    /// An action waiting for the person to confirm it (its confirm text is shown inline).
+    var pending: (action: ActionDef, args: [String: String])?
+    var running: String?
+    var lastResult: (label: String, result: ActionResult)?
+    var selectedRunner: PillModel?
+    var runnerDetail: RunnerDetail?
+    var pairingStatus: String?
+    var token: String? { didSet { store.token = token } }
+
+    @ObservationIgnored private var incidents = IncidentTracker()
     @ObservationIgnored private var sentinelTask: Task<Void, Never>?
     @ObservationIgnored private var networkUp = true
     @ObservationIgnored private var lastTargets: SentinelTargets?
@@ -48,12 +60,14 @@ final class AppModel {
         settings = s
         store = GlanceStore(config: s.transport)
         store.onGlance = { [weak self] g in
+            self?.glanceArrived(g)
             self?.lastGoodGlance = g
             self?.lastTargets = SentinelTargets.from(g) ?? self?.lastTargets
             self?.writeSnapshot()
         }
         store.onConnection = { [weak self] state in self?.connectionChanged(state) }
         notifier.requestAuthorization()
+        notifier.onAction = { [weak self] action, info in self?.notificationAction(action, info) }
         // Targets from the last run, so a launch while the host is down can
         // still ask GitHub about the right runners.
         if s.mode != .fixture, let g = (try? SnapshotFile.read())?.glance {
@@ -87,6 +101,141 @@ final class AppModel {
     func copyBrief() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(brief, forType: .string)
+    }
+
+    // MARK: control
+
+    /// Keychain account for this fleet's device token: the coordinator's id.
+    var tokenAccount: String {
+        store.glance?.hosts.first(where: { $0.local == true })?.id ?? settings.aliasList.first ?? "fleet"
+    }
+
+    var isPaired: Bool { token != nil }
+
+    private func glanceArrived(_ g: Glance) {
+        if token == nil, let t = TokenStore.load(account: tokenAccount) { token = t }
+        if catalog == nil, case .live = store.connection { Task { await loadCatalog() } }
+        let hour = Calendar.current.component(.hour, from: Date())
+        for event in incidents.update(g.incidents, prefs: settings.notifications, now: Format.nowMs(), hour: hour) {
+            notifier.incident(event)
+        }
+    }
+
+    func loadCatalog() async {
+        guard let c = store.client else { return }
+        catalog = try? await c.actions()
+    }
+
+    /// Asks first when the catalogue says to; runs straight away otherwise.
+    func request(_ actionId: String, args: [String: String] = [:]) {
+        guard let def = catalog?.action(actionId) ?? ActionCatalog.fallback(actionId) else { return }
+        if def.confirm != nil || def.isHighDanger {
+            pending = (def, args)
+        } else {
+            Task { await run(def, args: args) }
+        }
+    }
+
+    func confirmPending() {
+        guard let p = pending else { return }
+        pending = nil
+        Task { await run(p.action, args: p.args) }
+    }
+
+    func run(_ def: ActionDef, args: [String: String]) async {
+        guard let client = store.client else { return }
+        guard isPaired else {
+            lastResult = (def.label, ActionResult(ok: false, error: "Pair this Mac first (Settings → Control)."))
+            return
+        }
+        running = def.label
+        defer { running = nil }
+        let r = (try? await client.perform(def.id, args: args)) ?? ActionResult(ok: false, error: "No response")
+        lastResult = (def.label, r)
+        // The one two-step flow: a cleanup preview offers the real cleanup.
+        if def.id == "fleet.cleanupPreview", r.ok, let apply = catalog?.action("fleet.cleanupApply") {
+            pending = (apply, [:])
+        }
+        if let name = selectedRunner?.name { await loadRunner(name) }
+    }
+
+    func pair() async {
+        guard let alias = settings.aliasList.first, let client = store.client else {
+            pairingStatus = "Connect to the dashboard over an SSH alias first."
+            return
+        }
+        pairingStatus = "Asking \(alias) for a pairing code…"
+        guard let code = await Pairing.mintCode(alias: alias, fleetRoot: settings.fleetRoot) else {
+            pairingStatus = "Could not get a code: is \(settings.fleetRoot)/dashboard/fleetctl.sh on \(alias)?"
+            return
+        }
+        let name = "Fleet Cockpit on \(Foundation.Host.current().localizedName ?? "this Mac")"
+        do {
+            let t = try await client.pair(code: code, name: name)
+            guard TokenStore.save(t, account: tokenAccount) else {
+                pairingStatus = "Paired, but the token could not be saved to the Keychain."
+                return
+            }
+            token = t
+            pairingStatus = "Paired as “\(name)”. Revoke with ./fleetctl.sh revoke on the host."
+            await loadCatalog()
+        } catch {
+            pairingStatus = "Pairing failed: \(error)"
+        }
+    }
+
+    func forgetPairing() {
+        TokenStore.delete(account: tokenAccount)
+        token = nil
+        pairingStatus = "This Mac's token is forgotten. Revoke it on the host too: ./fleetctl.sh devices"
+    }
+
+    func select(_ pill: PillModel?) {
+        selectedRunner = pill
+        runnerDetail = nil
+        if let name = pill?.name { Task { await loadRunner(name) } }
+    }
+
+    func loadRunner(_ name: String) async {
+        guard let c = store.client else { return }
+        let d = try? await c.runner(name)
+        if selectedRunner?.name == name { runnerDetail = d }
+    }
+
+    func dismiss(_ key: String) async {
+        try? await store.client?.dismiss(key)
+    }
+
+    private func notificationAction(_ action: String, _ info: [String: String]) {
+        switch action {
+        case "repair": request("fleet.healthRepair")
+        case "dismiss": if let k = info["key"] { Task { await dismiss(k) } }
+        case "snooze": if let k = info["key"] { incidents.snooze(k, untilMs: Format.nowMs() + 3_600_000) }
+        case "open": openDashboard(fragment: "#/alerts")
+        default: break // tapping the banner itself: the menu bar is right there
+        }
+    }
+
+    // MARK: URL scheme
+
+    /// fleetcockpit://pair · ://why · ://runner/<name> · ://reconnect · ://fixture/<name>
+    func handle(_ url: URL) {
+        guard url.scheme == "fleetcockpit" else { return }
+        let arg = url.pathComponents.dropFirst().first
+        switch url.host {
+        case "pair": Task { await pair() }
+        case "why": showLadder = true
+        case "reconnect": store.reconnectNow()
+        case "runner":
+            if let name = arg, let g = store.glance {
+                let pill = Presenter.lanes(g, now: clockMs()).flatMap { $0.groups.flatMap(\.pills) }
+                    .first { $0.name == name || $0.shortName == name }
+                select(pill)
+            }
+        case "fixture":
+            if let name = arg { var s = settings; s.mode = .fixture; s.fixture = name; settings = s }
+        default: break
+        }
     }
 
     // MARK: sentinel
@@ -244,9 +393,9 @@ final class AppModel {
     }
 
     /// The full web dashboard, through the same route.
-    func openDashboard() {
+    func openDashboard(fragment: String = "") {
         guard let base = store.route?.baseURL, base.scheme?.hasPrefix("http") == true else { return }
-        NSWorkspace.shared.open(base)
+        NSWorkspace.shared.open(URL(string: base.absoluteString + "/" + fragment) ?? base)
     }
 
     func openTerminal(alias: String? = nil) {

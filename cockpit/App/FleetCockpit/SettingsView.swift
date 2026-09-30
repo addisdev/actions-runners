@@ -30,6 +30,42 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+            Section("Control") {
+                LabeledContent("This Mac") {
+                    Text(model.isPaired ? "Paired — actions enabled" : "Not paired — read-only")
+                        .foregroundStyle(model.isPaired ? .green : .secondary)
+                }
+                HStack {
+                    Button(model.isPaired ? "Pair again" : "Pair this Mac") { Task { await model.pair() } }
+                        .disabled(model.store.client == nil || model.settings.mode != .tunnel)
+                    if model.isPaired { Button("Forget token") { model.forgetPairing() } }
+                }
+                if let s = model.pairingStatus { Text(s).font(.caption).foregroundStyle(.secondary) }
+                Text("Pairing runs fleetctl.sh pair on the host over your first SSH alias and stores this Mac's own revocable token in the Keychain. The master token never leaves the host.")
+                    .font(.caption).foregroundStyle(.secondary)
+                TextField("Fleet root on the host", text: $draft.fleetRoot)
+            }
+            Section("Notifications") {
+                Picker("Notify for", selection: $draft.notifications.minSeverity) {
+                    Text("Critical and warning").tag("warning")
+                    Text("Critical only").tag("critical")
+                }
+                Toggle("Quiet hours (critical only)", isOn: Binding(
+                    get: { draft.notifications.quietStart != nil },
+                    set: { on in
+                        draft.notifications.quietStart = on ? 22 : nil
+                        draft.notifications.quietEnd = on ? 7 : nil
+                    }))
+                if draft.notifications.quietStart != nil {
+                    Stepper("From \(draft.notifications.quietStart ?? 22):00", value: Binding(
+                        get: { draft.notifications.quietStart ?? 22 }, set: { draft.notifications.quietStart = $0 }), in: 0...23)
+                    Stepper("Until \(draft.notifications.quietEnd ?? 7):00", value: Binding(
+                        get: { draft.notifications.quietEnd ?? 7 }, set: { draft.notifications.quietEnd = $0 }), in: 0...23)
+                }
+                TextField("Muted rules (comma-separated, e.g. stuck-queue, runner-unused)", text: Binding(
+                    get: { draft.notifications.mutedRules.sorted().joined(separator: ", ") },
+                    set: { draft.notifications.mutedRules = Set($0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }) }))
+            }
             Section("Display") {
                 Toggle("Show running and queued counts in the menu bar", isOn: $draft.showCounts)
                 Toggle("Compact runner dots", isOn: $draft.dense)

@@ -92,6 +92,39 @@ Below the queue, **Failed in the last 2 hours** lists red runs with the reason
 the daemon recorded, and marks the ones that were the host's or the account's
 doing — lost runner, refused by billing, storage quota — as *not your code*.
 
+## Acting on it
+
+The cockpit is read-only until you pair it. **Settings → Control → Pair this
+Mac** runs `fleetctl.sh pair` on the host over your first SSH alias, exchanges
+the six-digit code for this Mac's own device token, and keeps that token in the
+Keychain. The master token never leaves the host; revoke the cockpit like any
+paired phone with `./fleetctl.sh devices` and `./fleetctl.sh revoke <key>`.
+`open fleetcockpit://pair` does the same from a terminal.
+
+Once paired, buttons come from the dashboard's own action catalogue
+(`GET /api/actions`), with its labels and its confirmation text:
+
+- the verdict's next move — **Health check and repair**, **Preview cleanup**
+  (which then offers **Apply cleanup**, confirmed inline);
+- **click a runner** for its recent jobs and state changes, its last `_diag`
+  error, and **Restart**, **Drain** or **Resume** it.
+
+Registering, duplicating and removing runners are left to the web dashboard's
+Control tab, which previews them.
+
+## Notifications
+
+Alerts from the dashboard notify on transitions, the same ones the dashboard
+itself fires: once when a condition opens, once when it clears with how long it
+lasted. Conditions already open when the app starts are not re-announced, and
+more than five opening at once (a host restart) arrive as one summary.
+
+Notifications carry buttons: **Repair** on dead or offline runners, **Dismiss
+everywhere** (the web dashboard and phone push stop too), **Snooze 1 hour**
+(this Mac only) and **Open dashboard**. Critical alerts are time-sensitive and
+break through Focus. In Settings you can notify for critical only, set quiet
+hours during which only critical alerts notify, and mute rules by name.
+
 ## Getting it
 
 Build it from the repository. It needs Xcode 16 or later, macOS 14 or later,
@@ -151,7 +184,14 @@ swift run cockpit status --json     # the same, for scripts
 swift run cockpit status --fixture saturated
 swift run cockpit sentinel          # the out-of-band check, from this Mac
 swift run cockpit brief             # the markdown incident brief
+swift run cockpit pair              # a separate, revocable token for the command line
+swift run cockpit run fleet.health  # a catalogue action; anything that changes the fleet needs --yes
 ```
+
+The command line keeps its token in
+`~/Library/Application Support/FleetCockpit/cli-token-*` (mode `0600`) rather
+than the Keychain: SwiftPM builds are signed ad hoc, so every rebuild would
+otherwise meet a Keychain prompt.
 
 Exit codes: `0` fine or healthy waiting, `1` a real fault, `3` nothing could be
 read.
