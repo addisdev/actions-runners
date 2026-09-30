@@ -75,7 +75,9 @@ every tick.
 ```
 
 Fields that would be `null` are omitted from runners, queue entries, failures
-and incidents. `runs` carries the active runs and `recent` the runs finished in the last two
+and incidents. Host vitals carry `diskFloorEtaMs` (when free disk reaches the admission
+floor at the current rate: the nearer of a 6-hour and a 72-hour linear fit, or
+absent when the line is flat or rising) and `diskRateGbPerHour`. `runs` carries the active runs and `recent` the runs finished in the last two
 hours, compact (id, repo, workflow, status, conclusion, branch, sha, prNumber,
 url, timing), which is enough to roll a commit's checks into one row. Queue
 entries carry `etaStartMs` and `etaDoneMs` as `[p50, p90]` ranges and
@@ -112,6 +114,29 @@ which usually self-resolves), `held-disk`, `held-slot`, `overdue` (running past
 its workflow's p95), `busy`, `lost` (lost contact mid-job in the last hour) or
 `idle`. Runners registered on machines this daemon does not supervise appear in
 a host with `ghOnly: true`, named after their shared runner-name prefix.
+
+### `GET /api/posture?refresh=1`
+
+Standing risks: conditions that are fine today and have caused an outage before.
+Each item is `{ id, title, ok, detail, fix, who }`, where `ok` is `true`,
+`false`, or `null` when the probe could not answer, and `who` is `owner` (a
+system setting only a person can change, possibly blocked by MDM), `command`
+or `button`. Checked on the slow loop; `refresh=1` checks now. Items: Spotlight
+indexing the fleet root, auto-login, system sleep, admission hooks on every
+runner, runner version drift, the periodic health-repair agent, workflows still
+targeting GitHub-hosted macOS, this checkout behind `origin/main`, and GitHub
+API headroom. Every probe is a read. The glance carries the open ones as
+`posture`.
+
+### `GET /api/timeline?days=7`
+
+History in the verdict's terms: alert intervals (`incidents`, each with the
+ladder `rung` it belongs to), today's job count with queue time against build
+time, admission-held time and jobs lost to the host (`today`), the week's
+incident count, per-rung counts, mean time to clear and longest-waiting repos
+(`week`), runners that lost jobs (`flaky`), and two hours of host samples
+downsampled for sparklines (`samples`: `[ts, load per core, swap-ins/s, disk
+free GB, busy runners]`). `days` is 1–30.
 
 ### `GET /api/runner?name=<runner-name>`
 

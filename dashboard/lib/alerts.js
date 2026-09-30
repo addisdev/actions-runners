@@ -274,6 +274,20 @@ export class Alerts {
       }
     }
 
+    // The trend, before the level: free disk heading for the admission floor
+    // within 12 hours (lib/disk-forecast.js). On 2026-09-28 a line through the
+    // previous six hours called the freeze eight hours before it happened.
+    const floorEta = host.diskFloorEtaMs;
+    if (this.sustained('disk-floor-soon', floorEta != null && floorEta < (c.diskFloorSoonMs ?? 12 * 3600 * 1000),
+      10 * 60 * 1000, now)) {
+      const rate = host.diskForecast?.rate6hGbPerHour ?? host.diskForecast?.rate72hGbPerHour;
+      add('host:disk-floor-soon', 'disk-floor-soon', floorEta < 3 * 3600 * 1000 ? 'critical' : 'warning',
+        `Disk reaches the admission floor in about ${Math.max(1, Math.round(floorEta / 3600000))} h`,
+        `${Math.round(host.diskFreeGb ?? 0)} GB free, falling ${rate != null ? `${Math.abs(rate)} GB/h` : ''}. ` +
+          'When it crosses the floor every job is held at "Set up runner". Preview cleanup now; ' +
+          'CoreSimulator devices and DerivedData are usually the largest.');
+    }
+
     // Swap LEVEL is not a condition. macOS never reclaims swap space, so the
     // number only ever climbs and a level rule eventually fires forever on a
     // machine that is completely healthy — this host sat at 84% with 71% memory

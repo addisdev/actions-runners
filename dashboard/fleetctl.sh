@@ -102,6 +102,7 @@ cmd_install() {
     <key>FLEET_CEILING</key><string>${FLEET_CEILING:-3}</string>
     <!-- The hooks' admission settings, so the verdict and alerts judge holds
          against the limits the hooks actually enforce. -->
+    <key>FLEET_LABEL_PREFIX</key><string>${FLEET_LABEL_PREFIX:-com.runner-fleet}</string>
     <key>FLEET_ADMIT_MODE</key><string>${FLEET_ADMIT_MODE:-off}</string>
     <key>FLEET_ADMIT_MAX_WAIT_S</key><string>${FLEET_ADMIT_MAX_WAIT_S:-600}</string>
     <key>FLEET_ADMIT_MIN_FREE_DISK_GB</key><string>${FLEET_ADMIT_MIN_FREE_DISK_GB:-40}</string>

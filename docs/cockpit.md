@@ -99,6 +99,29 @@ Below the queue, **Failed in the last 2 hours** lists red runs with the reason
 the daemon recorded, and marks the ones that were the host's or the account's
 doing — lost runner, refused by billing, storage quota — as *not your code*.
 
+## History and standing risks
+
+**History** under the verdict opens a timeline of the last 24 hours or 7 days,
+one lane per failure mode, with today's line — how long jobs waited against how
+long they ran, how long admission held them, how many the host lost — the
+week's time to clear, and any runner that keeps losing jobs. Under the
+coordinator's lane, sparklines show two hours of load per core, swap-ins and
+free disk with the floor drawn in, and the disk gauge says when the floor will
+be reached at the current rate. Every Monday at 09:00 a digest notification
+sums up the week.
+
+**Standing risks** (the orange link) are conditions that are fine today and
+have caused an outage before — Spotlight indexing the runner work trees, no
+auto-login, sleep, missing hooks, version drift, workflows still on
+GitHub-hosted macOS. Each says what to do and who can do it; several are
+system settings only you can change.
+
+When disk is a worry, **What is using disk?** runs the cleanup preview (it
+deletes nothing). When the host is busy, **Top CPU on the host** lists the top
+processes over SSH and names Spotlight outright when it is the culprit
+(`cockpit top` does the same). A runner's panel can save its redacted
+**diagnostic bundle** to Downloads.
+
 ## Acting on it
 
 The cockpit is read-only until you pair it. **Settings → Control → Pair this

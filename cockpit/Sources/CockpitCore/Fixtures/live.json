@@ -67,6 +67,7 @@
     "diskTotalGb": 926,
     "diskFloorGb": 40,
     "diskFloorEtaMs": null,
+    "diskRateGbPerHour": null,
     "uptimeSec": 781840
    }
   },
@@ -618,6 +619,27 @@
   }
  ],
  "failures": [],
+ "posture": {
+  "checkedAt": 1790781986956,
+  "items": [
+   {
+    "id": "spotlight",
+    "title": "Spotlight is indexing runner work trees",
+    "ok": false,
+    "detail": "71,636 package.json files under /Users/ci/actions-runners are in the Spotlight index.",
+    "fix": "System Settings → Spotlight → Search Privacy → add the fleet root.",
+    "who": "owner"
+   },
+   {
+    "id": "auto-login",
+    "title": "A reboot strands every runner until someone logs in",
+    "ok": false,
+    "detail": "No auto-login user.",
+    "fix": "Automatically log in, or keep Screen Sharing over the tailnet.",
+    "who": "owner"
+   }
+  ]
+ },
  "incidents": [
   {
    "key": "account:blocked",

@@ -361,3 +361,23 @@ describe('host saturation', () => {
     assert.equal(alerts.open.has('host:saturated'), false);
   });
 });
+
+describe('disk heading for the floor', () => {
+  test('under 12 h to the floor, sustained, opens a warning; under 3 h is critical', () => {
+    const alerts = makeAlerts();
+    const snap = (etaH) => ({ host: { diskFreeGb: 55, diskFloorEtaMs: etaH * 3600000, diskForecast: { rate6hGbPerHour: -2.1 } } });
+    const t0 = Date.now();
+    alerts.evaluate(snap(8), t0);
+    assert.equal(alerts.open.has('host:disk-floor-soon'), false);
+    alerts.evaluate(snap(8), t0 + 11 * 60000);
+    assert.equal(alerts.open.get('host:disk-floor-soon')?.severity, 'warning');
+    assert.match(alerts.open.get('host:disk-floor-soon').body, /falling 2\.1 GB\/h/);
+  });
+
+  test('no forecast, no alert', () => {
+    const alerts = makeAlerts();
+    alerts.evaluate({ host: { diskFreeGb: 55, diskFloorEtaMs: null } });
+    alerts.evaluate({ host: { diskFreeGb: 55, diskFloorEtaMs: null } }, Date.now() + 20 * 60000);
+    assert.equal(alerts.open.has('host:disk-floor-soon'), false);
+  });
+});

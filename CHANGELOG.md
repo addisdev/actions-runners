@@ -64,6 +64,17 @@ Portable, mobile-first dashboard.
   fixture). CLI: `cockpit pair`, `cockpit run <action>` (`--yes` for anything
   that changes the fleet).
 
+- **Disk floor forecast** (`lib/disk-forecast.js`): 6 h and 72 h fits against
+  the admission floor, backtested on the 2026-09-28 freeze (warned 6+ hours
+  ahead); a `disk-floor-soon` alert under 12 hours.
+- **`GET /api/posture`** (`lib/posture.js`): standing risks with the fix and who
+  can apply it. **`GET /api/timeline`** (`lib/timeline.js`): incident intervals
+  per ladder rung, today's queue vs build time, the week, flaky runners,
+  sparkline samples.
+- Cockpit: History panel, sparklines, standing-risks list, weekly digest,
+  "What is using disk?", top CPU with a Spotlight detector (`cockpit top`),
+  diagnostic bundle download.
+
 ### Changed
 
 - The `saturated` verdict no longer fires on a run the headroom gate is

@@ -516,6 +516,7 @@ export function buildGlance(snapshot, result, opts = {}) {
         diskTotalGb: round(v.diskTotalGb, 0),
         diskFloorGb: h.local ? opts.floorGb ?? null : null,
         diskFloorEtaMs: h.local ? snapshot.host?.diskFloorEtaMs ?? null : null,
+        diskRateGbPerHour: h.local ? snapshot.host?.diskForecast?.rate6hGbPerHour ?? null : null,
         uptimeSec: v.uptimeSec ?? null,
       },
     };
@@ -603,6 +604,11 @@ export function buildGlance(snapshot, result, opts = {}) {
       runner: f.runner ?? null,
       at: f.at ?? null,
     })),
+    // Standing risks that are currently open (lib/posture.js), for the
+    // cockpit's posture chip. Checked on the slow loop.
+    posture: opts.posture
+      ? { checkedAt: opts.posture.checkedAt, items: opts.posture.items.filter((i) => i.ok === false).map((i) => strip(i)) }
+      : null,
     incidents: (snapshot.alertState?.open ?? []).map((a) => strip({
       key: a.key,
       rule: a.rule,

@@ -251,7 +251,8 @@ fire on healthy behaviour every day, which is how people learn to ignore
 alerts. The same reasoning removed a swap-level rule.
 
 What does fire: a runner dead, missing its LaunchAgent, or offline; an orphan;
-a sibling label mismatch; a run stuck in the queue; disk low; a job held by
+a sibling label mismatch; a run stuck in the queue; disk low; free disk on
+course to reach the admission floor within 12 hours; a job held by
 the admission disk floor, or held for a slot past the hooks' max wait; two jobs
 losing contact with GitHub inside an hour; sustained paging or kernel-reported
 memory pressure; the collector unable to reach GitHub; and a workflow that was

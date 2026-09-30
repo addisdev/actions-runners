@@ -66,6 +66,7 @@
     "diskTotalGb": 926,
     "diskFloorGb": 40,
     "diskFloorEtaMs": null,
+    "diskRateGbPerHour": null,
     "uptimeSec": 781840
    }
   },
@@ -642,6 +643,7 @@
    "at": 1790780186956
   }
  ],
+ "posture": null,
  "incidents": [
   {
    "key": "account:blocked",

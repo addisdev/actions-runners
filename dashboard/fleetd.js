@@ -25,6 +25,7 @@ import {
   diagSummary,
   runnerVersions,
   hostDrainState,
+  sh,
 } from './lib/local.js';
 import { buildBundle, redact } from './lib/bundle.js';
 import { buildRunners, deriveDrift, shapeRun, shapeJob } from './lib/state.js';
@@ -70,6 +71,9 @@ import { HaCoordinator } from './lib/ha.js';
 import { collectHostReport } from './lib/host-report.js';
 import { createVerdictTracker, computeVerdict, buildGlance, loadFailureFacts } from './lib/verdict.js';
 import { createEtaBaselines, estimateQueue } from './lib/eta.js';
+import { createDiskForecaster } from './lib/disk-forecast.js';
+import { checkPosture } from './lib/posture.js';
+import { timeline } from './lib/timeline.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(HERE, 'public');
@@ -303,6 +307,31 @@ function publish() {
 // offline — so it lives for the life of the process.
 const verdictTracker = createVerdictTracker();
 const etaBaselines = createEtaBaselines(db);
+const diskForecaster = createDiskForecaster(db);
+let postureCache = null;
+
+function lintFindings() {
+  const runnersByRepo = new Map();
+  const addRunner = (repo, labels) => {
+    if (!runnersByRepo.has(repo)) runnersByRepo.set(repo, []);
+    runnersByRepo.get(repo).push({ labels: (labels ?? []).map((l) => String(l).toLowerCase()) });
+  };
+  for (const r of snapshot.runners ?? []) if (r.registered) addRunner(r.repo, r.labels);
+  for (const e of snapshot.elsewhere ?? []) addRunner(e.repo, e.labels);
+  return lintAll({ files: stmt.workflowFiles.all(), runnersByRepo });
+}
+
+// Standing risks, on the slow loop: every probe is a read, none is free.
+async function refreshPosture() {
+  try {
+    postureCache = await checkPosture({
+      sh, root: CONFIG.root, snapshot, lint: (() => { try { return lintFindings(); } catch { return []; } })(),
+      labelPrefix: process.env.FLEET_LABEL_PREFIX ?? 'com.runner-fleet',
+    });
+  } catch (err) {
+    warn('posture:', err.message);
+  }
+}
 let lastVerdict = null;
 let lastFacts = null;
 
@@ -318,6 +347,7 @@ function currentGlance(now = Date.now()) {
     floorGb: diskFloorGb(),
     localHostId: LOCAL_HOST_ID,
     failures: lastFacts?.recentFailures ?? [],
+    posture: postureCache,
   });
 }
 
@@ -1690,6 +1720,11 @@ async function fastTick() {
     totalRssMb: [...processes.listeners.values()].reduce((s, p) => s + p.rssKb, 0) / 1024,
   };
 
+  // Where free disk is heading, against the admission floor.
+  const forecast = diskForecaster(started, diskFloorGb());
+  host.diskForecast = forecast;
+  host.diskFloorEtaMs = forecast?.etaMs ?? null;
+
   const capacity = headroom({ host, runners, limits: settings.limits() });
 
   // Fleet-wide capacity: if any connected, non-stale, non-drained agent has
@@ -2080,6 +2115,7 @@ function activeRefsFor(repo, defaultBranch) {
 
 async function slowTick() {
   const started = Date.now();
+  refreshPosture();
   try {
     const owned = await gh.ownedRepos();
     const withRunners = new Set(dirsCache.map((d) => d.repo));
@@ -2356,6 +2392,16 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url.pathname === '/api/glance') return json(res, currentGlance());
+
+  if (url.pathname === '/api/posture') {
+    if (!postureCache || url.searchParams.get('refresh') === '1') await refreshPosture();
+    return json(res, postureCache ?? { items: [], open: 0 });
+  }
+
+  if (url.pathname === '/api/timeline') {
+    const days = Math.min(Math.max(Number(url.searchParams.get('days') ?? 7) || 7, 1), 30);
+    return json(res, timeline(db, { days, cores: snapshot.host?.cores ?? null }));
+  }
 
   if (url.pathname === '/api/stream') {
     const glance = url.searchParams.get('view') === 'glance';
