@@ -84,27 +84,32 @@ async function fetchAll() {
   const todo = rows.filter((r) => !done.has(r.id));
   console.error(`${rows.length} stale, ${done.size} already fetched, ${todo.length} to go`);
 
+  // A few workers, not one: each `gh api` is a process spawn, and sequential
+  // calls would take hours. Four stays far inside the secondary limit (no more
+  // than 100 concurrent, 900 points a minute); the primary limit is what paces it.
+  const workers = Number(arg('concurrency', 4));
   let n = 0;
-  for (const row of todo) {
-    // rate_limit itself is free; check it every 50 calls.
-    if (n % 50 === 0) {
-      const c = await core();
-      if (c.remaining < floor) {
-        const waitMs = Math.max(0, c.reset * 1000 - Date.now()) + 5_000;
-        console.error(`rate ${c.remaining}/${c.limit} under floor ${floor}; sleeping ${Math.round(waitMs / 1000)}s`);
-        await sleep(waitMs);
-      }
+  let next = 0;
+  let pause = null;
+  const checkRate = async () => {
+    const c = await core();
+    if (c.remaining < floor) {
+      const waitMs = Math.max(0, c.reset * 1000 - Date.now()) + 5_000;
+      console.error(`rate ${c.remaining}/${c.limit} under floor ${floor}; sleeping ${Math.round(waitMs / 1000)}s`);
+      await sleep(waitMs);
     }
-    n++;
+  };
+  const one = async (row) => {
     const res = await ghApi(`repos/${row.repo}/actions/jobs/${row.id}`);
+    n++;
     const out = { id: row.id, repo: row.repo };
     if (res.gone) {
       out.gone = true;
     } else {
       out.job = shapeJob(row.repo, res.data);
       if (out.job.conclusion === 'failure' || out.job.conclusion === 'timed_out') {
-        n++;
         const ann = await ghApi(`repos/${row.repo}/check-runs/${row.id}/annotations`);
+        n++;
         const messages = (Array.isArray(ann.data) ? ann.data : [])
           .filter((a) => a?.annotation_level === 'failure')
           .map((a) => String(a.message ?? '').trim())
@@ -114,9 +119,18 @@ async function fetchAll() {
       }
     }
     appendFileSync(outPath, `${JSON.stringify(out)}\n`);
-    if (n % 250 < 2) console.error(`${n} calls, at job ${row.id}`);
-    await sleep(gapMs);
-  }
+  };
+  await Promise.all(Array.from({ length: workers }, async () => {
+    while (next < todo.length) {
+      const i = next++;
+      // rate_limit itself is free; check it every 50 jobs, all workers waiting on one check.
+      if (i % 50 === 0) pause = checkRate();
+      if (pause) await pause;
+      await one(todo[i]);
+      if (i % 250 === 0) console.error(`${i}/${todo.length} jobs, ${n} calls`);
+      await sleep(gapMs);
+    }
+  }));
   console.error(`fetch done: ${n} calls`);
 }
 
