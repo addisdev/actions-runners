@@ -314,7 +314,8 @@ case "wait":
         case .green(let s): print("✔ \(target.label): \(s.progress)")
         case .red(let s):
             print("✖ \(target.label): \(s.progress)")
-            for f in s.failed { print("  \(f.workflow ?? "?")\(f.url.map { " — \($0)" } ?? "")") }
+            for f in s.failed { print("  \(f.workflow ?? "?")\(f.cancelled ? " (cancelled)" : "")\(f.url.map { " — \($0)" } ?? "")") }
+            if s.failed.contains(where: \.cancelled) { print("  \(WaitDecision.cancelledHint)") }
         case .pointless(let why): print("⏹ \(target.label): not waiting — \(why)")
         case .waiting(let s): print("… \(target.label): timed out\(s.map { " at \($0.progress)" } ?? " (no runs seen)")")
         }

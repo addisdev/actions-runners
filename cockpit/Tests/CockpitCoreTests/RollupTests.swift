@@ -47,6 +47,38 @@ struct RollupTests {
         #expect(s.state == .red && s.failed.map(\.workflow) == ["e2e"])
     }
 
+    /// greenfolio-web PR #399, 2026-10-02: both checks were cancelled (timed out
+    /// in the admission wait) and the rollup read "2 of 2 green".
+    @Test func cancelledChecksAreRedNotGreen() throws {
+        let g = try glance(recent: [run(1, "QA Tests", conclusion: "cancelled"), run(2, "Web E2E", conclusion: "cancelled")])
+        let s = try #require(Rollup.checkSets(g).first)
+        #expect(s.state == .red)
+        #expect(s.progress == "2 cancelled · 2 of 2 done")
+        #expect(s.failed.allSatisfy { $0.cancelled })
+    }
+
+    @Test func aMixOfFailedAndCancelledSaysBoth() throws {
+        let g = try glance(recent: [run(1, "ci", conclusion: "failure"), run(2, "e2e", conclusion: "cancelled"), run(3, "lint")])
+        #expect(Rollup.checkSets(g).first?.progress == "1 failed, 1 cancelled · 3 of 3 done")
+    }
+
+    @Test func skippedAndNeutralStillPass() throws {
+        let g = try glance(recent: [run(1, "ci"), run(2, "deploy", conclusion: "skipped"), run(3, "lint", conclusion: "neutral")])
+        #expect(Rollup.checkSets(g).first?.state == .green)
+    }
+
+    @Test func otherUnfinishedConclusionsAreNotGreen() throws {
+        for c in ["action_required", "stale", "something_new"] {
+            let g = try glance(recent: [run(1, "ci", conclusion: c)])
+            #expect(Rollup.checkSets(g).first?.state == .red, "\(c)")
+        }
+    }
+
+    @Test func aGreenRerunReplacesTheCancelledAttempt() throws {
+        let g = try glance(recent: [run(1, "ci", conclusion: "cancelled", updated: 1_000), run(2, "ci", updated: 2_000)])
+        #expect(Rollup.checkSets(g).first?.state == .green)
+    }
+
     @Test func findMatchesShortRepoAndShaPrefixes() throws {
         let g = try glance(recent: [run(1, "ci", sha: "abc1234")])
         #expect(Rollup.find(g, repo: "comet-web", sha: "abc1234def") != nil)
@@ -62,6 +94,7 @@ struct WaiterTests {
         let quiet = try Fixtures.glance("quiet").verdict
         #expect(Waiter.decide(try glance(recent: [run(1, "ci")]), verdict: quiet, target: target).exitCode == 0)
         #expect(Waiter.decide(try glance(recent: [run(1, "ci", conclusion: "failure")]), verdict: quiet, target: target).exitCode == 1)
+        #expect(Waiter.decide(try glance(recent: [run(1, "ci", conclusion: "cancelled")]), verdict: quiet, target: target).exitCode == 1)
     }
 
     @Test func aDiskFloorHoldMakesWaitingPointless() throws {

@@ -125,7 +125,10 @@ enum MCPServer {
             }
             switch last {
             case .green(let s): return ("green: \(target.label) — \(s.progress)", false)
-            case .red(let s): return ("red: \(target.label) — \(s.progress); failed: \(s.failed.compactMap(\.workflow).joined(separator: ", "))", false)
+            case .red(let s):
+                let names = s.failed.map { "\($0.workflow ?? "?")\($0.cancelled ? " (cancelled)" : "")" }.joined(separator: ", ")
+                let hint = s.failed.contains(where: \.cancelled) ? " — \(WaitDecision.cancelledHint)" : ""
+                return ("red: \(target.label) — \(s.progress); not passed: \(names)\(hint)", false)
             case .pointless(let why): return ("pointless: \(why)", false)
             case .waiting(let s): return ("timeout after \(minutes) min: \(s?.progress ?? "no runs seen")", false)
             }
