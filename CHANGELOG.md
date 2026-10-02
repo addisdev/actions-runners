@@ -93,6 +93,10 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- A public repo queued for GitHub-hosted runners read as configuration drift
+  ("will never be picked up") and made `cockpit wait` give up; it is ordinary
+  waiting on GitHub. Private repos asking for hosted runners still count.
+
 - The verdict counted jobs held by the admission hook as running ("8 running"
   on a host admitting 2); only busy runners count now.
 - A standing-risk check that could not run (Spotlight's `mdfind`, which takes

@@ -78,6 +78,13 @@ describe('estimateQueue', () => {
     }
   });
 
+  test('a public repo on GitHub-hosted runners is GitHub\'s queue, not "never starts"', () => {
+    const eta = estimateQueue({ queue: [queued(1, 'o/public', 'ci', 'github-hosted')], active: [], baselines, now: NOW,
+      publicRepos: new Set(['o/public']) }).get(1);
+    assert.equal(eta.etaStartMs, null);
+    assert.match(eta.basis, /GitHub-hosted runner \(public repo\)/);
+  });
+
   test('no history for the workflow: a start range, no finish', () => {
     const eta = estimateQueue({ queue: [queued(1, 'o/new', 'x', 'repo-capacity')], active: [], baselines, now: NOW }).get(1);
     assert.deepEqual(eta.etaStartMs, [0, 2 * MIN]);

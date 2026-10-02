@@ -126,6 +126,16 @@ describe('what does not count', () => {
     assert.equal(r.runners.get('build-host-comet-web').state, 'held-slot');
   });
 
+  test('a public repo queued for GitHub-hosted runners is waiting, not drift; a private one is drift', () => {
+    const s = SCENARIOS.quiet();
+    const q = { ...SCENARIOS.waiting().snapshot.queue[0], repo: 'acme/public-tool', cause: 'github-hosted', confidence: 'high' };
+    s.snapshot.queue = [q];
+    s.snapshot.repos = [...s.snapshot.repos, { fullName: 'acme/public-tool', private: false, hasRunner: false, workflows: 2 }];
+    assert.equal(computeVerdict(s.snapshot, s.facts, { now: s.now }).verdict.id, 'waiting');
+    s.snapshot.repos.at(-1).private = true;
+    assert.equal(computeVerdict(s.snapshot, s.facts, { now: s.now }).verdict.id, 'config-drift');
+  });
+
   test('a held job is not counted as running, even though GitHub calls it in progress', () => {
     const s = SCENARIOS.quiet();
     s.snapshot.active = [{

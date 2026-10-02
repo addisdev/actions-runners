@@ -153,7 +153,7 @@ public enum Waiter {
         }
         let repoMatch: (String) -> Bool = { $0 == t.repo || $0.hasSuffix("/" + t.repo) }
         if let stuck = (set?.queued ?? g.queue.filter { repoMatch($0.repo) })
-            .first(where: { ["runner-down", "unserved", "role-unserved", "label-mismatch", "github-hosted"].contains($0.cause ?? "") }) {
+            .first(where: { $0.neverStarts }) {
             return .pointless("\(stuck.workflow ?? "a check") is queued with cause \(stuck.cause ?? "?") — it will not start on its own. \(stuck.recommended ?? "")")
         }
         if let dead = g.runners.first(where: { repoMatch($0.repo ?? "") && ($0.state == .dead || $0.state == .offline) }),

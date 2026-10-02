@@ -56,7 +56,7 @@ const startedAt = (run) => Date.parse(run.startedAt ?? run.createdAt) || null;
  * @param {{p50, p90}} p.baselines
  * @returns {Map<number, {etaStartMs: number[]|null, etaDoneMs: number[]|null, basis: string}>}
  */
-export function estimateQueue({ queue = [], active = [], baselines, now = Date.now() }) {
+export function estimateQueue({ queue = [], active = [], baselines, now = Date.now(), publicRepos = new Set() }) {
   const out = new Map();
   const running = active.filter((r) => r.status === 'in_progress');
   const remaining = (run) => {
@@ -84,6 +84,11 @@ export function estimateQueue({ queue = [], active = [], baselines, now = Date.n
 
   for (const q of queue) {
     const own = range(baselines, q.repo, q.workflowName);
+    if (q.cause === 'github-hosted' && publicRepos.has(q.repo)) {
+      // GitHub's own queue, intentionally: this fleet has no history to time it by.
+      out.set(q.id, { etaStartMs: null, etaDoneMs: null, basis: 'waiting for a GitHub-hosted runner (public repo)' });
+      continue;
+    }
     if (NEVER_STARTS.has(q.cause)) {
       out.set(q.id, { etaStartMs: null, etaDoneMs: null, basis: `${q.cause}: will not start on its own` });
       continue;
