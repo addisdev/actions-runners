@@ -89,6 +89,16 @@ struct WaiterTests {
         #expect(why.contains("runner-down"))
     }
 
+    @Test func aPublicRepoOnHostedRunnersIsWorthWaitingFor() throws {
+        var q = queued(4, cause: "github-hosted")
+        q.etaBasis = "waiting for a GitHub-hosted runner (public repo)"
+        let g = try glance(runs: [run(4, "e2e", status: "queued")], queue: [q])
+        guard case .waiting = Waiter.decide(g, verdict: g.verdict, target: target) else {
+            Issue.record("a public repo's hosted queue is not pointless"); return
+        }
+        #expect(Presenter.queue(g).first?.eta == "waiting on GitHub")
+    }
+
     @Test func aQuotaIsNotABlockButBillingIs() throws {
         let live = try Fixtures.glance("live") // storage quota only
         var g = live

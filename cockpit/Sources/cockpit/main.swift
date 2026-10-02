@@ -268,7 +268,7 @@ case "why":
         if !queue.isEmpty {
             print("\nQueued:")
             for q in queue {
-                let eta = q.etaStartMs.map { "starts in \(Presenter.range($0))" } ?? (q.cause.map { ["runner-down","unserved","role-unserved","label-mismatch","github-hosted"].contains($0) } == true ? "will not start on its own" : "no estimate")
+                let eta = q.etaStartMs.map { "starts in \(Presenter.range($0))" } ?? (q.neverStarts ? "will not start on its own" : q.etaBasis ?? "no estimate")
                 print("  \(q.workflow ?? "?") — \(Format.short(ms: q.queuedMs ?? 0)), \(Presenter.causeLabel(q.cause)) (\(q.confidence ?? "?")); \(eta)")
                 for e in q.evidence ?? [] { print("    · \(e)") }
                 if let r = q.recommended { print("    → \(r)") }

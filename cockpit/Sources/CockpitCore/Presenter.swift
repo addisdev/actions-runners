@@ -297,9 +297,8 @@ public enum Presenter {
                     if let d = q.etaDoneMs, d.count == 2 { s += " · done in \(range(d))" }
                     return s
                 }
-                if ["runner-down", "unserved", "role-unserved", "label-mismatch", "github-hosted"].contains(q.cause ?? "") {
-                    return "won't start on its own"
-                }
+                if q.neverStarts { return "won't start on its own" }
+                if let b = q.etaBasis, b.contains("GitHub-hosted") { return "waiting on GitHub" }
                 return nil
             }()
             return QueueRowModel(

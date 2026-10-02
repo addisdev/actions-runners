@@ -407,8 +407,14 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
     });
   }
 
+  // A public repo that asks for GitHub-hosted runners does it on purpose (the
+  // minutes are free): its queued run is waiting on GitHub, not misconfigured.
+  // Seen 2026-10-02 while this repo's own dependabot PRs ran CI.
+  const publicRepos = new Set((snapshot.repos ?? []).filter((r) => r.private === false).map((r) => r.fullName));
+  const isStructural = (q) => o.driftCauses.includes(q.cause)
+    && !(q.cause === 'github-hosted' && publicRepos.has(q.repo));
   const drifted = [...driftBy('orphan'), ...driftBy('label-mismatch')];
-  const structural = queue.filter((q) => o.driftCauses.includes(q.cause));
+  const structural = queue.filter(isStructural);
   if (drifted.length || structural.length) {
     push('config-drift', {
       sentence: 'Some work can never be picked up as configured. Waiting will not clear it.',
@@ -429,8 +435,7 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
 
   // Queued runs a fault above already explains are that fault's evidence, not
   // a second finding that says "working" next to "down".
-  const explained = new Set(['runner-down', ...o.driftCauses]);
-  const plainQueue = queue.filter((q) => !explained.has(q.cause));
+  const plainQueue = queue.filter((q) => q.cause !== 'runner-down' && !isStructural(q));
   if (plainQueue.length || slotHeld.length) {
     const oldest = plainQueue.reduce((m, q) => Math.max(m, q.queuedSinceMs ?? 0), 0);
     const causes = [...new Set(plainQueue.map((q) => q.cause))];

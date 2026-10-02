@@ -1963,7 +1963,8 @@ async function fastTick() {
     },
   };
   try {
-    const etas = estimateQueue({ queue: snapshot.queue, active, baselines: etaBaselines(started), now: started });
+    const publicRepos = new Set((repoRoster ?? []).filter((r) => r.private === false).map((r) => r.fullName));
+    const etas = estimateQueue({ queue: snapshot.queue, active, baselines: etaBaselines(started), now: started, publicRepos });
     for (const q of snapshot.queue) {
       const e = etas.get(q.id);
       if (e) Object.assign(q, { etaStartMs: e.etaStartMs, etaDoneMs: e.etaDoneMs, etaBasis: e.basis });

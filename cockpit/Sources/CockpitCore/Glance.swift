@@ -227,6 +227,15 @@ public struct QueueItem: Codable, Sendable, Equatable, Identifiable {
     public var etaStartMs: [Double]?
     public var etaDoneMs: [Double]?
     public var etaBasis: String?
+
+    /// This run will not start without someone acting. The daemon says so in
+    /// `etaBasis` (it knows, for example, that a public repo on GitHub-hosted
+    /// runners is merely waiting on GitHub); an older daemon without it falls
+    /// back to the causes that never clear.
+    public var neverStarts: Bool {
+        if let b = etaBasis { return b.contains("will not start") }
+        return ["runner-down", "unserved", "role-unserved", "label-mismatch", "github-hosted"].contains(cause ?? "")
+    }
 }
 
 public struct RunRow: Codable, Sendable, Equatable, Identifiable {
