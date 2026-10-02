@@ -93,6 +93,15 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- The verdict counted jobs held by the admission hook as running ("8 running"
+  on a host admitting 2); only busy runners count now.
+- A standing-risk check that could not run (Spotlight's `mdfind`, which takes
+  ~14 s over the fleet root and timed out under load) was dropped from the
+  glance, which read as fixed. The probe now has a minute, and unchecked items
+  are carried and shown as "unchecked".
+- Workflows on hosted macOS in public repos (free) no longer count as a
+  billing risk.
+
 - **Disk-floor deadlock.** `cleanup.sh` counted runners held by the admission
   hook as busy, so during a disk-floor freeze the held jobs stopped the one
   script that frees disk (seen live 2026-09-30). Held runners are no longer

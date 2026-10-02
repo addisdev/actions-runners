@@ -32,10 +32,13 @@ export async function checkPosture({ sh, root, snapshot, lint = [], labelPrefix 
   // mds is chewing through every npm ci.
   // An empty answer is a probe that did not run, not a count of zero.
   const num = (s) => (s.trim() === '' ? NaN : Number(s.trim()));
-  const indexed = num(await sh('/usr/bin/mdfind', ['-onlyin', root, '-count', 'kMDItemFSName == "package.json"'], 20000));
+  // A minute, not twenty seconds: over 77,000 matches the count takes ~14 s on
+  // an idle host, and on a busy one the 20 s probe timed out and the item read
+  // "could not check" while the index was very much on (2026-10-01).
+  const indexed = num(await sh('/usr/bin/mdfind', ['-onlyin', root, '-count', 'kMDItemFSName == "package.json"'], 60000));
   if (!Number.isFinite(indexed) || (await sh('/usr/bin/mdutil', ['-s', '/'], 5000)).includes('disabled')) {
     items.push(Number.isFinite(indexed) ? OK('spotlight', 'Spotlight is not indexing runner work trees', 'indexing is disabled')
-      : UNKNOWN('spotlight', 'Spotlight indexing of runner work trees', 'mdfind did not answer'));
+      : UNKNOWN('spotlight', 'Spotlight indexing of runner work trees', 'mdfind did not answer within a minute — not checked'));
   } else if (indexed > 0) {
     items.push(RISK('spotlight', 'Spotlight is indexing runner work trees',
       `${indexed.toLocaleString('en-US')} package.json files under ${root} are in the Spotlight index. On 2026-09-12 mds indexing _work starved the host until jobs lost contact mid-step.`,
@@ -96,7 +99,10 @@ export async function checkPosture({ sh, root, snapshot, lint = [], labelPrefix 
 
   // Workflows still asking for GitHub-hosted macOS: every one of their jobs
   // bills, and a spending limit refuses self-hosted jobs along with them.
-  const hosted = lint.filter((f) => f.rule === 'hosted-macos');
+  // Public repos run hosted macOS for free; only private ones bill and hit the
+  // spending limit. A repo whose visibility is unknown counts, to be safe.
+  const isPublic = new Map((snapshot.repos ?? []).map((r) => [r.fullName, r.private === false]));
+  const hosted = lint.filter((f) => f.rule === 'hosted-macos' && !isPublic.get(f.repo));
   if (hosted.length) {
     const repos = [...new Set(hosted.map((f) => f.repo.split('/').pop()))];
     items.push(RISK('hosted-runners', `${hosted.length} workflow job(s) still target GitHub-hosted macOS`,

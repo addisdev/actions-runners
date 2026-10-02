@@ -347,6 +347,17 @@ public enum Presenter {
         }
     }
 
+    /// "2 standing risks · 1 unchecked": a probe that could not run is said
+    /// out loud, never folded into "nothing to report".
+    public static func postureChip(_ items: [PostureItem]) -> String? {
+        let risks = items.filter { $0.ok == false }.count
+        let unchecked = items.filter { $0.ok == nil }.count
+        var parts: [String] = []
+        if risks > 0 { parts.append("\(risks) standing risk\(risks == 1 ? "" : "s")") }
+        if unchecked > 0 { parts.append("\(unchecked) unchecked") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
     // MARK: menu bar
 
     public static func symbol(for tone: Tone, verdictId: String) -> String {

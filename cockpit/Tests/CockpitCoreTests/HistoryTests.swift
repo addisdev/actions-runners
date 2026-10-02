@@ -80,3 +80,13 @@ struct ReplayTests {
         }
     }
 }
+
+@Suite("posture chip")
+struct PostureChipTests {
+    @Test func uncheckedIsNamedNotHidden() {
+        let item = { (id: String, ok: Bool?) in PostureItem(id: id, title: id, ok: ok, detail: nil, fix: nil, who: nil) }
+        #expect(Presenter.postureChip([item("a", false), item("b", false), item("s", nil)]) == "2 standing risks · 1 unchecked")
+        #expect(Presenter.postureChip([item("s", nil)]) == "1 unchecked")
+        #expect(Presenter.postureChip([]) == nil)
+    }
+}

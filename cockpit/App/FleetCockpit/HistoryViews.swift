@@ -129,14 +129,15 @@ struct PostureList: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Standing risks").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+            Text("Standing risks and checks that could not run").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
             ForEach(items) { i in
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Image(systemName: "exclamationmark.shield").foregroundStyle(.orange)
+                        Image(systemName: i.ok == nil ? "questionmark.circle" : "exclamationmark.shield")
+                            .foregroundStyle(i.ok == nil ? Color.secondary : Color.orange)
                         Text(i.title).font(.system(size: 12, weight: .semibold))
                         Spacer()
-                        Text(whoLabel(i.who)).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                        Text(i.ok == nil ? "not checked" : whoLabel(i.who)).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
                     }
                     if let d = i.detail { Text(d).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                     if let f = i.fix {
