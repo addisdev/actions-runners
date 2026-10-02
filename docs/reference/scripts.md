@@ -976,6 +976,26 @@ curl -s localhost:7878/api/state > /tmp/live.json
 node scripts/scrub-snapshot.mjs /tmp/live.json test/fixtures/snapshots/new.json --map ~/scrub-map.json
 ```
 
+### `dashboard/scripts/settle-stale-jobs.mjs`
+
+One-off repair for job rows that froze before their run completed (no
+conclusion, `completed_at` or duration under a completed run). The daemon now
+settles these itself through `lib/settle.js`, a few hundred per backfill pass;
+this clears the existing history in one go. `fetch` runs wherever `gh` is signed
+in (over SSH the runner host's `gh` cannot read its keychain), re-fetches each
+job by id with a few workers, sleeps to the reset below `--floor` and backs off
+on the secondary rate limit, and resumes from its output file. `sql` emits
+updates guarded by `conclusion IS NULL`, so it never overwrites a row the
+daemon settled meanwhile.
+Source: [`dashboard/scripts/settle-stale-jobs.mjs`](https://github.com/addisdev/actions-runners/blob/main/dashboard/scripts/settle-stale-jobs.mjs).
+
+```bash
+cd dashboard
+ssh runner-host "/usr/bin/sqlite3 -json ~/actions-runners/dashboard/fleet.db \"$(node scripts/settle-stale-jobs.mjs query)\"" > stale.json
+node scripts/settle-stale-jobs.mjs fetch --in stale.json --out fetched.ndjson
+node scripts/settle-stale-jobs.mjs sql --in fetched.ndjson | ssh runner-host /usr/bin/sqlite3 ~/actions-runners/dashboard/fleet.db
+```
+
 ### `dashboard/scripts/make-glance-fixtures.mjs`
 
 Writes one `/api/glance` payload per scenario in

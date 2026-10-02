@@ -324,6 +324,22 @@ function addColumn(db, table, column, type) {
   if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
 }
 
+// The one write path for a job row, shared with the tests. started_at and
+// runner_id are kept when the new snapshot lacks them, but filled in when a job
+// first seen queued is seen again having started: before that they stayed NULL
+// for good, and lib/settle.js depends on a re-fetch filling every field.
+export const UPSERT_JOB = `
+    INSERT INTO jobs (id, run_id, repo, name, status, conclusion, created_at, started_at,
+                      completed_at, runner_name, runner_id, labels, queued_ms, duration_ms,
+                      html_url, seen_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET
+      status=excluded.status, conclusion=excluded.conclusion,
+      started_at=COALESCE(excluded.started_at, jobs.started_at),
+      runner_id=COALESCE(excluded.runner_id, jobs.runner_id),
+      completed_at=excluded.completed_at, runner_name=excluded.runner_name,
+      queued_ms=excluded.queued_ms, duration_ms=excluded.duration_ms, seen_at=excluded.seen_at`;
+
 export function openDb(path) {
   mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);

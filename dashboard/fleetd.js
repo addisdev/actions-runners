@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 
-import { openDb, setMeta, getMeta } from './lib/db.js';
+import { openDb, setMeta, getMeta, UPSERT_JOB } from './lib/db.js';
 import { GitHub, isActiveRunStatus } from './lib/github.js';
 import {
   discoverRunnerDirs,
@@ -116,6 +116,8 @@ const CONFIG = {
   // several passes rather than one greedy sweep that starves the fast loop.
   backfillCalls: Number(process.env.FLEET_BACKFILL_CALLS ?? 350),
   backfillFloor: Number(process.env.FLEET_BACKFILL_FLOOR ?? 1500),
+  // Per fast tick: re-fetches of jobs whose run just completed (lib/settle.js).
+  settleCalls: Number(process.env.FLEET_SETTLE_CALLS ?? 12),
   tokenFile: process.env.FLEET_TOKEN_FILE ?? join(HERE, '.fleet-token'),
   // Agent token is separate from the browser control token so operators can
   // rotate them independently. Falls back to the control token if unset, for
@@ -370,15 +372,7 @@ const stmt = {
       pr_number=COALESCE(excluded.pr_number, runs.pr_number),
       actor=COALESCE(excluded.actor, runs.actor),
       head_commit_msg=COALESCE(excluded.head_commit_msg, runs.head_commit_msg)`),
-  upsertJob: db.prepare(`
-    INSERT INTO jobs (id, run_id, repo, name, status, conclusion, created_at, started_at,
-                      completed_at, runner_name, runner_id, labels, queued_ms, duration_ms,
-                      html_url, seen_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(id) DO UPDATE SET
-      status=excluded.status, conclusion=excluded.conclusion,
-      completed_at=excluded.completed_at, runner_name=excluded.runner_name,
-      queued_ms=excluded.queued_ms, duration_ms=excluded.duration_ms, seen_at=excluded.seen_at`),
+  upsertJob: db.prepare(UPSERT_JOB),
   upsertRunner: db.prepare(`
     INSERT INTO runner_state (name, repo, dir, labels, gh_id, gh_status, gh_busy,
                               launchd_label, launchd_state, pid, rss_kb, work_kb, updated_at)
@@ -1536,6 +1530,21 @@ async function classifyRecentFailures(runs, maxCalls = 4) {
   }
 }
 
+// A run's final jobs were last fetched while the run was still active, so
+// their rows still read queued or in progress. Settle them on the tick the run
+// is first seen completed — typically one call per run. Whatever this tick's
+// budget leaves, and anything that completed while the daemon was down, the
+// backfill's settle phase picks up.
+async function settleCompletedRuns(runs) {
+  const ids = runs.filter((r) => r.status === 'completed').map((r) => r.id);
+  if (!ids.length) return;
+  await backfill.settler.settle(backfill.settler.staleForRuns(ids), {
+    persistJob,
+    maxCalls: CONFIG.settleCalls,
+    minRemaining: CONFIG.backfillFloor,
+  });
+}
+
 async function fastTick() {
   const started = Date.now();
   await resetExpiredCommands().catch((err) => warn('command retry cleanup:', err.message));
@@ -1695,6 +1704,9 @@ async function fastTick() {
   }
 
   for (const r of allRuns) persistRun(r);
+  // Before the failure pass, so a job that just settled as failed is classified
+  // on this tick rather than ten minutes later.
+  await settleCompletedRuns(allRuns).catch((err) => warn('settle jobs:', err.message));
   await classifyRecentFailures(allRuns).catch((err) => warn('fast failure classification:', err.message));
   recordTransitions(runners);
 

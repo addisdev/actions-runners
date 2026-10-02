@@ -93,6 +93,16 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- Job rows froze at their last in-progress snapshot. The fast loop fetches
+  jobs only for active runs and the backfill only for runs with no job rows, so
+  a run's final jobs never got a conclusion, `completed_at` or duration once
+  the run completed — about a third of the history (5,966 rows on runner-host),
+  which made every build-hours figure undercount. `lib/settle.js` re-fetches
+  each such job by id: on the tick its run is first seen completed, and in a
+  new backfill phase for anything missed. The job upsert also now fills
+  `started_at` and `runner_id` for a job first seen queued.
+  `scripts/settle-stale-jobs.mjs` clears existing history in one go.
+
 - A public repo queued for GitHub-hosted runners read as configuration drift
   ("will never be picked up") and made `cockpit wait` give up; it is ordinary
   waiting on GitHub. Private repos asking for hosted runners still count.

@@ -306,6 +306,13 @@ export class GitHub {
     return data?.jobs ?? [];
   }
 
+  // One job by id. Uncached: it is asked once, about a job whose row stopped
+  // moving (lib/settle.js), and the answer is final.
+  async job(repo, jobId) {
+    const { data } = await this.get(`repos/${repo}/actions/jobs/${jobId}`, { etag: false });
+    return data;
+  }
+
   async runners(repo) {
     const { data } = await this.get(`repos/${repo}/actions/runners?per_page=100`);
     return data?.runners ?? [];
