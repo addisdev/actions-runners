@@ -130,6 +130,16 @@ final class AppModel {
         observeSystem()
         Renderer.runIfRequested(self)
         AppModel.shared = self
+        // A one-shot "open at login" request from a script or setup step:
+        //   defaults write io.github.addisdev.fleetcockpit pending.loginItem -bool YES
+        // Applied through the same SMAppService call as the Settings toggle,
+        // then cleared. Deliberately not a URL route: a web page can open a
+        // fleetcockpit:// link, and it should not be able to add a login item.
+        if let want = UserDefaults.standard.object(forKey: "pending.loginItem") as? Bool {
+            UserDefaults.standard.removeObject(forKey: "pending.loginItem")
+            launchAtLogin = want
+            Self.log.info("login item requested=\(want, privacy: .public) now=\(self.launchAtLogin, privacy: .public)")
+        }
         Hotkey.shared.register { [weak self] in self?.togglePanel() }
     }
 

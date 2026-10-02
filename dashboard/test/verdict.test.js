@@ -126,6 +126,23 @@ describe('what does not count', () => {
     assert.equal(r.runners.get('build-host-comet-web').state, 'held-slot');
   });
 
+  test('a held job is not counted as running, even though GitHub calls it in progress', () => {
+    const s = SCENARIOS.quiet();
+    s.snapshot.active = [{
+      id: 7, repo: 'acme/ember-ios', workflowName: 'ios-ci', status: 'in_progress',
+      jobs: [{ status: 'in_progress', runnerName: 'build-host-ember-ios', name: 'test', startedAt: new Date(s.now - 60000).toISOString() }],
+    }];
+    s.snapshot.admission.waiting = [{
+      runner: 'build-host-ember-ios', repo: 'acme/ember-ios', since: Math.floor(s.now / 1000) - 60,
+      reason: '2 job(s) already running, at the limit of 2', busy: 2, limit: 2,
+    }];
+    const r = computeVerdict(s.snapshot, s.facts, { now: s.now, floorGb: 40 });
+    assert.equal(r.runners.get('build-host-ember-ios').state, 'held-slot');
+    assert.equal(r.counts.running, 0);
+    assert.equal(r.counts.held, 1);
+    assert.match(r.verdict.sentence, /^0 running, 1 waiting for an admission slot/);
+  });
+
   test('a held row older than the slot TTL is a dead hook, not a wait', () => {
     const s = SCENARIOS.diskHold();
     for (const w of s.snapshot.admission.waiting) w.since -= 7 * 3600;
@@ -243,6 +260,17 @@ describe('the glance payload', () => {
     const { s, r } = run('saturated');
     const g = buildGlance(s.snapshot, r, { now: s.now, failures: s.facts.recentFailures });
     assert.deepEqual(g.failures.map((f) => [f.cls, f.notYourCode]), [['runner-lost', true], ['job-failed', false]]);
+  });
+
+  test('posture carries risks and unchecked items, never the passing ones', () => {
+    const { s, r } = run('quiet');
+    const posture = { checkedAt: s.now, items: [
+      { id: 'spotlight', title: 'Spotlight indexing', ok: null, detail: 'mdfind did not answer' },
+      { id: 'auto-login', title: 'No auto-login', ok: false },
+      { id: 'sleep', title: 'Does not sleep', ok: true },
+    ] };
+    const g = buildGlance(s.snapshot, r, { now: s.now, posture });
+    assert.deepEqual(g.posture.items.map((i) => [i.id, i.ok ?? null]), [['spotlight', null], ['auto-login', false]]);
   });
 
   test('a snapshot older than the stale window says so', () => {

@@ -227,6 +227,13 @@ xcodebuild -project FleetCockpit.xcodeproj -scheme FleetCockpit -configuration R
 Without `Local.xcconfig` the app is signed ad hoc, which runs on the Mac that
 built it.
 
+To have it open at login, use **Settings → System → Open at login**, or from a
+setup script (applied once at the next launch, then cleared):
+
+```bash
+defaults write io.github.addisdev.fleetcockpit pending.loginItem -bool YES
+```
+
 ## Reaching the dashboard
 
 The dashboard binds to loopback on the runner host. The cockpit's default route

@@ -420,7 +420,10 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
     });
   }
 
-  const running = states.filter((r) => r.job || r.state === 'busy' || r.state === 'overdue').length;
+  // A job held by the admission hook is in_progress to GitHub and has a runner,
+  // but nothing is building: counting it read "8 running" on a host admitting 2
+  // (seen live 2026-10-01). Only the busy states count.
+  const running = states.filter((r) => r.state === 'busy' || r.state === 'overdue').length;
   const slotHeld = waiting.filter((w) => !w.disk);
   const counts = { running, queued: queue.length, held: waiting.length, runners: states.length };
 
@@ -616,7 +619,9 @@ export function buildGlance(snapshot, result, opts = {}) {
     // Standing risks that are currently open (lib/posture.js), for the
     // cockpit's posture chip. Checked on the slow loop.
     posture: opts.posture
-      ? { checkedAt: opts.posture.checkedAt, items: opts.posture.items.filter((i) => i.ok === false).map((i) => strip(i)) }
+      // Risks AND checks that could not run: dropping the unknowns made a
+      // timed-out Spotlight probe look like a fixed Spotlight problem.
+      ? { checkedAt: opts.posture.checkedAt, items: opts.posture.items.filter((i) => i.ok !== true).map((i) => strip(i)) }
       : null,
     incidents: (snapshot.alertState?.open ?? []).map((a) => strip({
       key: a.key,

@@ -15,6 +15,20 @@ const snapshot = {
 };
 const byId = (r) => Object.fromEntries(r.items.map((i) => [i.id, i]));
 
+describe('hosted macOS on public repos', () => {
+  test('is free, so it is not a risk; private ones are', async () => {
+    const base = { sh: async () => '', root: '/r' };
+    const lint = [{ rule: 'hosted-macos', repo: 'acme/public-tool' }, { rule: 'hosted-macos', repo: 'acme/app-ios' }];
+    const repos = [{ fullName: 'acme/public-tool', private: false }, { fullName: 'acme/app-ios', private: true }];
+    const r = await checkPosture({ ...base, snapshot: { repos }, lint });
+    const item = r.items.find((i) => i.id === 'hosted-runners');
+    assert.equal(item.ok, false);
+    assert.match(item.detail, /In app-ios\./);
+    const pub = await checkPosture({ ...base, snapshot: { repos }, lint: lint.slice(0, 1) });
+    assert.equal(pub.items.find((i) => i.id === 'hosted-runners').ok, true);
+  });
+});
+
 describe('checkPosture', () => {
   test('the host as measured on 2026-09-30: Spotlight indexing _work, no auto-login', async () => {
     const r = await checkPosture({

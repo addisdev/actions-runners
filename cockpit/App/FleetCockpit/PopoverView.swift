@@ -114,11 +114,11 @@ struct PopoverView: View {
                     if model.showHistory { Task { await model.refreshTimeline() } }
                 }
             }
-            if let risks = model.store.glance?.posture?.items, !risks.isEmpty {
+            if let items = model.store.glance?.posture?.items, let chip = Presenter.postureChip(items) {
                 if isRendering {
-                    Text("\(risks.count) standing risk\(risks.count == 1 ? "" : "s")").foregroundStyle(.orange)
+                    Text(chip).foregroundStyle(.orange)
                 } else {
-                    Button("\(risks.count) standing risk\(risks.count == 1 ? "" : "s")") { model.showPosture.toggle() }
+                    Button(chip) { model.showPosture.toggle() }
                         .foregroundStyle(.orange)
                 }
             }
