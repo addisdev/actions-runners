@@ -112,6 +112,7 @@ that `fleetctl.sh install` writes. To change after install:
 | `FLEET_BACKFILL_MS` | `600000` (10 min) | How often a backfill pass runs, until it has caught up. | No |
 | `FLEET_BACKFILL_CALLS` | `350` | API calls one pass may spend. Bounded on purpose: ~1,100 runs need ~1,100 job calls, and a greedy sweep starves the fast loop. | No |
 | `FLEET_BACKFILL_FLOOR` | `1500` | Rate-limit budget the backfill will not dip below, so the fast loop always has calls left. | No |
+| `FLEET_SETTLE_CALLS` | `12` | Per fast tick: re-fetches of jobs whose run just completed but whose row still has no conclusion (`lib/settle.js`). The backfill's settle phase catches anything over budget. | No |
 | `FLEET_BACKUP_DIR` | `dashboard/backups` | Destination directory for `./fleetctl.sh backup`. | No |
 | `FLEET_COLLECTOR_STALE_MS` | `240000` (4 min) | Snapshot age after which `/api/health` reports `stale: true` and metrics mark the collector stale. | No |
 | `FLEET_AUTOFIX_STATUS_URL` | `http://127.0.0.1:7879/status` | Loopback bridge status endpoint proxied by `/api/autofix/status` for remediation health in the dashboard. | No |
