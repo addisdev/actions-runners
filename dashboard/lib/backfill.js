@@ -16,6 +16,7 @@
 
 import { shapeRun, shapeJob } from './state.js';
 import { classifyAnnotations } from './failures.js';
+import { JobSettler } from './settle.js';
 
 // Stands in for a run GitHub will never return job detail for, so the pending
 // query stops offering it. The negative id keeps it out of the cause phase,
@@ -35,8 +36,10 @@ export class Backfill {
     this.warn = warn;
     this.running = false;
     this.progress = {
-      phase: 'idle', calls: 0, runs: 0, jobs: 0, pending: null, unclassified: null, done: false,
+      phase: 'idle', calls: 0, runs: 0, jobs: 0, settled: 0,
+      pending: null, stale: null, unclassified: null, done: false,
     };
+    this.settler = new JobSettler({ db, gh, warn });
 
     this.hasJobs = db.prepare('SELECT 1 FROM jobs WHERE run_id = ? LIMIT 1');
     this.insertStep = db.prepare(`
@@ -85,7 +88,9 @@ export class Backfill {
   // "complete, 0 pending". Asking the database is both correct and cheaper than
   // being wrong.
   hasWork() {
-    return this.countPending.get().n > 0 || this.countUnclassified.get().n > 0;
+    return this.countPending.get().n > 0
+      || this.settler.countStale() > 0
+      || this.countUnclassified.get().n > 0;
   }
 
   budgetLeft(minRemaining) {
@@ -200,6 +205,30 @@ export class Backfill {
         if (!advanced) break;
       }
 
+      // Phase 2b — job rows that froze before their run completed (see
+      // lib/settle.js). The fast loop settles new ones as runs finish; this
+      // catches what it missed while the daemon was down or over budget. Before
+      // the cause phase, because a job only becomes a failure to classify once
+      // it has a conclusion.
+      //
+      // Each job is tried once per pass: one that errored stays stale, and
+      // without this the next batch would hand it straight back.
+      this.progress.phase = 'settle';
+      const tried = new Set();
+      while (spent() < maxCalls && this.budgetLeft(minRemaining)) {
+        const batch = this.settler.stale(25 + tried.size)
+          .filter((row) => !tried.has(row.id))
+          .slice(0, 25);
+        if (!batch.length) break;
+        for (const row of batch) tried.add(row.id);
+        const { calls, settled } = await this.settler.settle(batch, {
+          persistJob, maxCalls: maxCalls - spent(), minRemaining,
+        });
+        this.progress.calls += calls;
+        this.progress.settled += settled;
+        if (!calls) break;
+      }
+
       // Phase 3 — why the failures failed. One call per failed job, and the
       // answer is only available here: `conclusion = 'failure'` covers a broken
       // test and an account-level billing block equally, and those need
@@ -225,13 +254,16 @@ export class Backfill {
 
       const pending = this.countPending.get().n;
       const unclassified = this.countUnclassified.get().n;
+      const stale = this.settler.countStale();
       this.progress.pending = pending;
+      this.progress.stale = stale;
       this.progress.unclassified = unclassified;
-      this.progress.done = pending === 0 && unclassified === 0;
+      this.progress.done = pending === 0 && stale === 0 && unclassified === 0;
       this.progress.phase = this.progress.done ? 'complete' : 'paused';
       this.log(
         `backfill pass: ${spent()} calls, ${this.progress.jobs} jobs total, `
-        + `${classified} causes classified, ${pending} runs and ${unclassified} failures still pending`
+        + `${this.progress.settled} stale jobs settled, ${classified} causes classified, `
+        + `${pending} runs, ${stale} stale jobs and ${unclassified} failures still pending`
       );
     } finally {
       this.running = false;
