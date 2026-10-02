@@ -256,7 +256,16 @@ public struct RunRow: Codable, Sendable, Equatable, Identifiable {
     public var expectedMs: Double?
 
     public var isActive: Bool { status != "completed" }
-    public var failed: Bool { ["failure", "timed_out", "startup_failure"].contains(conclusion ?? "") }
+    /// A pass. Only these three: a finished run with any other conclusion
+    /// proves nothing about the commit.
+    public var passed: Bool { ["success", "skipped", "neutral"].contains(conclusion ?? "") }
+    /// Finished without passing. This includes `cancelled`, which used to count
+    /// as neither failed nor active and so rolled up as green. That happened on
+    /// greenfolio-web PR #399 (2026-10-02), where both checks timed out in the
+    /// admission wait on a saturated host. `action_required`, `stale` and any
+    /// conclusion GitHub adds later land here too.
+    public var failed: Bool { !isActive && !passed }
+    public var cancelled: Bool { conclusion == "cancelled" }
 }
 
 public struct Incident: Codable, Sendable, Equatable, Identifiable {

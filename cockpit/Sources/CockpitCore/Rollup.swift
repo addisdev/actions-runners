@@ -26,10 +26,16 @@ public struct CheckSet: Identifiable, Sendable, Equatable {
         return repoShort
     }
 
+    /// "1 failed", "2 cancelled", or "1 failed, 1 cancelled".
+    var notPassed: String {
+        let c = failed.filter(\.cancelled).count, f = failed.count - c
+        return [f > 0 ? "\(f) failed" : nil, c > 0 ? "\(c) cancelled" : nil].compactMap { $0 }.joined(separator: ", ")
+    }
+
     public var progress: String {
         switch state {
         case .green: "\(total) of \(total) green"
-        case .red: "\(failed.count) failed · \(done) of \(total) done"
+        case .red: "\(notPassed) · \(done) of \(total) done"
         case .pending: "\(done) of \(total) done"
         }
     }
@@ -100,6 +106,10 @@ public enum Rollup {
 
 /// What `cockpit wait` (and a watch) should do with the latest glance.
 public enum WaitDecision: Sendable, Equatable {
+    /// Said under a red result with a cancelled check: it is not a pass, and
+    /// usually not the code either.
+    public static let cancelledHint = "cancelled is not a pass: usually a timeout under load or a newer push. Check `cockpit why`, then `gh run rerun <id> --failed`."
+
     case waiting(CheckSet?)
     case green(CheckSet)
     case red(CheckSet)
