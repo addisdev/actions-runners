@@ -1,7 +1,7 @@
 # Fleet Cockpit
 
 The macOS menu bar client for the fleet dashboard. Documentation:
-[docs/cockpit.md](../docs/cockpit.md).
+[docs/cockpit/](../docs/cockpit/index.md).
 
 ```
 Package.swift            CockpitCore (models, transport, SSE, store, presenter) + the `cockpit` CLI
