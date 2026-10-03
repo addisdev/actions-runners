@@ -178,6 +178,8 @@ dashboard/.fleet-vapid.json
 !docs/design/*.md
 !docs/reference/
 !docs/reference/*.md
+!docs/cockpit/
+!docs/cockpit/*.md
 
 # The site's stylesheet and its rendered images. docs/img/ is output — every
 # file in it is produced by `npm run assets`, `npm run shoot` or `npm run

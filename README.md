@@ -71,7 +71,7 @@ queue with start and finish estimates. When the dashboard itself stops
 answering it checks the host out of band (SSH, GitHub's view of the runners, a
 runner on another machine) and still tells you which of those it is. A
 `cockpit` command line and an MCP server give agent sessions the same answers.
-See [Fleet Cockpit](docs/cockpit.md).
+See [Fleet Cockpit](docs/cockpit/index.md).
 
 ## Documentation
 
