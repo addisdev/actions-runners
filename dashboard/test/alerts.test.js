@@ -66,16 +66,18 @@ describe('transitions', () => {
     assert.equal(announced().length, 0, 'nor announce again — this is the 240-an-hour bug');
   });
 
+  // Orphan rather than offline: offline alerts are debounced (see below), and
+  // this is the plain transition every other rule follows.
   test('a condition that goes away closes, and recurring opens a fresh interval', async () => {
     const alerts = makeAlerts();
-    await alerts.run(driftSnapshot(drift('offline', 'runner-a')));
+    await alerts.run(driftSnapshot(drift('orphan', 'runner-a')));
 
     const closing = await alerts.run(driftSnapshot());
     assert.equal(closing.closed, 1);
 
-    const again = await alerts.run(driftSnapshot(drift('offline', 'runner-a')));
+    const again = await alerts.run(driftSnapshot(drift('orphan', 'runner-a')));
     assert.equal(again.opened, 1);
-    const rows = db.prepare("SELECT * FROM alerts WHERE key = 'drift:offline:runner-a'").all();
+    const rows = db.prepare("SELECT * FROM alerts WHERE key = 'drift:orphan:runner-a'").all();
     assert.equal(rows.length, 2, 'two intervals, so how long each outage lasted stays a fact');
   });
 
@@ -167,15 +169,15 @@ describe('dismissing', () => {
 describe('a dismissal lasts until the condition clears', () => {
   test('it is forgotten when the condition goes away', async () => {
     const alerts = makeAlerts();
-    await alerts.run(driftSnapshot(drift('offline', 'runner-a')));
-    alerts.dismiss('drift:offline:runner-a');
+    await alerts.run(driftSnapshot(drift('orphan', 'runner-a')));
+    alerts.dismiss('drift:orphan:runner-a');
 
     await alerts.run(driftSnapshot());
     assert.equal(alerts.dismissals().size, 0, 'nothing to expire, because clearing IS the expiry');
 
     logged = [];
-    await alerts.run(driftSnapshot(drift('offline', 'runner-a')));
-    assert.deepEqual(announced(), ['Runner is offline: runner-a'],
+    await alerts.run(driftSnapshot(drift('orphan', 'runner-a')));
+    assert.deepEqual(announced(), ['Orphan runner: runner-a'],
       'a recurrence after clearing is new news, not a continuation of what was waved away');
   });
 
@@ -226,9 +228,10 @@ describe('dismissal follows the condition, not the run', () => {
 });
 
 describe('the storm guard', () => {
+  // Not offline runners: three of those at once are one host alert now.
   const six = () => driftSnapshot(
     drift('orphan', 'r1'), drift('orphan', 'r2'), drift('orphan', 'r3'),
-    drift('offline', 'r4'), drift('offline', 'r5'), drift('offline', 'r6'));
+    drift('label-mismatch', 'r4'), drift('label-mismatch', 'r5'), drift('label-mismatch', 'r6'));
 
   test('collapses a genuine storm into one message', async () => {
     const alerts = makeAlerts({ stormThreshold: 5 });
@@ -249,6 +252,158 @@ describe('the storm guard', () => {
     await alerts.run(six());
     assert.equal(announced().length, 3);
     assert.ok(!announced().some((t) => /alerts opened/.test(t)));
+  });
+});
+
+describe('offline: one host outage is one alert', () => {
+  const MIN = 60 * 1000;
+  const T0 = Date.parse('2026-09-20T03:00:00Z');
+  const offline = (...names) => ({ drift: names.map((n) => drift('offline', n)), host: { runnerCount: 54 } });
+  const runners = (n) => Array.from({ length: n }, (_, i) => `r${i + 1}`);
+  const keys = (alerts) => [...alerts.open.keys()].sort();
+  const rows = (rule) => db.prepare('SELECT * FROM alerts WHERE rule = ? ORDER BY id').all(rule);
+
+  test('a host-wide outage opens one critical naming the count, not one per runner', async () => {
+    const alerts = makeAlerts();
+    await alerts.run(offline(...runners(39)));
+
+    assert.deepEqual(keys(alerts), ['host:offline']);
+    const [host] = alerts.snapshot().open;
+    assert.equal(host.rule, 'offline-host');
+    assert.equal(host.severity, 'critical');
+    assert.equal(host.title, '39 of 54 runners offline — host unreachable or saturated');
+    assert.match(host.body, /r1, r2, .*…and 31 more/);
+    assert.deepEqual(announced(), ['39 of 54 runners offline — host unreachable or saturated']);
+    assert.equal(rows('offline').length, 0);
+  });
+
+  test('one runner offline still gets its own alert, and so do two', () => {
+    const alerts = makeAlerts();
+    alerts.evaluate(offline('runner-a'), T0);
+    assert.deepEqual(keys(alerts), ['drift:offline:runner-a']);
+
+    alerts.evaluate(offline('runner-a', 'runner-b'), T0 + MIN);
+    assert.deepEqual(keys(alerts), ['drift:offline:runner-a', 'drift:offline:runner-b']);
+    assert.equal(rows('offline-host').length, 0);
+  });
+
+  test('runners already alerting on their own fold into the host alert when it opens', () => {
+    const alerts = makeAlerts();
+    alerts.evaluate(offline('r1'), T0);
+    const { opened, closed } = alerts.evaluate(offline(...runners(6)), T0 + MIN);
+
+    assert.deepEqual(opened.map((a) => a.key), ['host:offline']);
+    assert.deepEqual(closed.map((a) => a.key), ['drift:offline:r1'],
+      'replaced at once, not left to sit out a debounce for a condition reported elsewhere');
+    assert.deepEqual(keys(alerts), ['host:offline']);
+  });
+
+  test('runners reconnecting one by one do not each open an alert on the way down', () => {
+    const alerts = makeAlerts();
+    alerts.evaluate(offline(...runners(39)), T0);
+    for (let left = 20, t = T0 + MIN; left >= 0; left -= 5, t += MIN) {
+      const { opened } = alerts.evaluate(offline(...runners(left)), t);
+      assert.deepEqual(opened, [], `${left} still offline is the tail of the same outage`);
+    }
+    assert.deepEqual(keys(alerts), ['host:offline']);
+  });
+
+  test('a host that flaps inside the window stays one alert for the whole episode', () => {
+    const alerts = makeAlerts();
+    // The 2026-09-20 shape: everything down, back, down, back, minutes apart.
+    for (let i = 0; i < 6; i++) {
+      alerts.evaluate(offline(...runners(39)), T0 + i * 8 * MIN);
+      alerts.evaluate(offline(), T0 + i * 8 * MIN + 4 * MIN);
+    }
+    assert.equal(rows('offline-host').length, 1);
+    assert.equal(rows('offline').length, 0);
+
+    const lastClear = T0 + 5 * 8 * MIN + 4 * MIN;
+    const { closed } = alerts.evaluate(offline(), lastClear + 15 * MIN);
+    assert.deepEqual(closed.map((a) => a.key), ['host:offline']);
+    assert.equal(rows('offline-host')[0].closed_at, lastClear,
+      'closed when the host came back, not when the window ran out');
+  });
+
+  test('a runner still offline after the host recovers is a runner problem again', () => {
+    const alerts = makeAlerts();
+    alerts.evaluate(offline(...runners(10)), T0);
+    alerts.evaluate(offline('r7'), T0 + MIN);
+    assert.deepEqual(keys(alerts), ['host:offline'], 'folded while the host alert is open');
+
+    const { opened, closed } = alerts.evaluate(offline('r7'), T0 + MIN + 15 * MIN);
+    assert.deepEqual(closed.map((a) => a.key), ['host:offline']);
+    assert.deepEqual(opened, []);
+    const next = alerts.evaluate(offline('r7'), T0 + 17 * MIN);
+    assert.deepEqual(next.opened.map((a) => a.key), ['drift:offline:r7']);
+  });
+
+  test('the threshold is configurable', () => {
+    const alerts = makeAlerts({ offlineHostThreshold: 5 });
+    alerts.evaluate(offline(...runners(4)), T0);
+    assert.equal(keys(alerts).length, 4);
+    alerts.evaluate(offline(...runners(5)), T0 + MIN);
+    assert.deepEqual(keys(alerts), ['host:offline']);
+  });
+});
+
+describe('offline: a flapping runner is one alert', () => {
+  const MIN = 60 * 1000;
+  const T0 = Date.parse('2026-09-20T03:00:00Z');
+  const offline = (...names) => ({ drift: names.map((n) => drift('offline', n)) });
+  const rows = () => db.prepare("SELECT * FROM alerts WHERE key = 'drift:offline:runner-a' ORDER BY id").all();
+
+  test('dropping and reconnecting inside the window re-opens nothing and resolves nothing', () => {
+    const alerts = makeAlerts();
+    let opened = 0;
+    let closed = 0;
+    for (let i = 0; i < 8; i++) {
+      const down = alerts.evaluate(offline('runner-a'), T0 + i * 5 * MIN);
+      const up = alerts.evaluate(offline(), T0 + i * 5 * MIN + 2 * MIN);
+      opened += down.opened.length;
+      closed += down.closed.length + up.closed.length;
+    }
+    assert.equal(opened, 1, 'eight drops, one alert');
+    assert.equal(closed, 0, 'and no "Resolved" between them');
+    assert.equal(rows().length, 1);
+  });
+
+  test('a clearing alert says so, and goes back to plain open if the runner drops again', () => {
+    const alerts = makeAlerts();
+    alerts.evaluate(offline('runner-a'), T0);
+    alerts.evaluate(offline(), T0 + MIN);
+    assert.equal(alerts.snapshot().open[0].clearing_since, T0 + MIN,
+      'autofix reads this and leaves a recovered listener alone');
+
+    alerts.evaluate(offline('runner-a'), T0 + 3 * MIN);
+    assert.equal(alerts.snapshot().open[0].clearing_since, undefined);
+  });
+
+  test('it closes once the window passes, dated when the runner actually came back', () => {
+    const alerts = makeAlerts();
+    alerts.evaluate(offline('runner-a'), T0);
+    alerts.evaluate(offline(), T0 + 2 * MIN);
+    assert.equal(alerts.evaluate(offline(), T0 + 16 * MIN).closed.length, 0, 'still inside the window');
+
+    const { closed } = alerts.evaluate(offline(), T0 + 17 * MIN);
+    assert.equal(closed.length, 1);
+    assert.equal(rows()[0].closed_at, T0 + 2 * MIN);
+  });
+
+  test('dropping again after the window is a new alert', () => {
+    const alerts = makeAlerts();
+    alerts.evaluate(offline('runner-a'), T0);
+    alerts.evaluate(offline(), T0 + MIN);
+    alerts.evaluate(offline(), T0 + 16 * MIN);
+    const { opened } = alerts.evaluate(offline('runner-a'), T0 + 20 * MIN);
+    assert.equal(opened.length, 1);
+    assert.equal(rows().length, 2);
+  });
+
+  test('other rules are not debounced', () => {
+    const alerts = makeAlerts();
+    alerts.evaluate(driftSnapshot(drift('orphan', 'runner-b')), T0);
+    assert.equal(alerts.evaluate(driftSnapshot(), T0 + 15 * 1000).closed.length, 1);
   });
 });
 

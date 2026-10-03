@@ -30,6 +30,8 @@
   "swapSustainMs": 600000,
   "diskSustainMs": 300000,
   "stormThreshold": 5,
+  "offlineHostThreshold": 3,
+  "offlineDebounceMs": 900000,
 
   "macos": true,
   "webhook": null

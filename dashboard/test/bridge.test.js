@@ -127,3 +127,40 @@ describe('reconcile — fleet health gate', () => {
     assert.equal(saved.__fleetStale, undefined, 'stale marker cleared after recovery');
   });
 });
+
+describe('consider — debounced offline alerts', () => {
+  beforeEach(() => {
+    bridge.replaceState({});
+    bridge.saveState({});
+  });
+
+  // fleetd keeps an offline alert open for a while after the runner reconnects,
+  // so a flap is one alert. Repairing in that window would restart a listener
+  // that is already back.
+  test('an offline alert that is only clearing is not repaired', async () => {
+    const now = Date.now();
+    const calls = [];
+    globalThis.fetch = async (url) => {
+      calls.push(String(url));
+      if (String(url).includes('/api/health')) {
+        return { ok: true, json: async () => ({ ok: true, stale: false, ageMs: 1000 }) };
+      }
+      if (String(url).includes('/api/alerts')) {
+        return { ok: true, json: async () => ({ open: [{
+          key: 'drift:offline:runner-a', rule: 'offline', severity: 'critical',
+          title: 'Runner is offline: runner-a', opened_at: now - 20 * 60_000, clearing_since: now - 60_000,
+        }] }) };
+      }
+      if (String(url).includes('/api/remediation-candidates')) {
+        return { ok: true, json: async () => ([]) };
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    };
+
+    await bridge.reconcile('test-clearing');
+
+    assert.equal(calls.filter((u) => !/\/api\/(health|alerts|remediation-candidates)/.test(u)).length, 0,
+      'no repair action was requested');
+    assert.equal(bridge.loadState()['drift:offline:runner-a']?.attempts ?? 0, 0);
+  });
+});

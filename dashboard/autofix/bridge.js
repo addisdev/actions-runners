@@ -490,6 +490,10 @@ async function consider(alert, now, openCount) {
     return;
   }
 
+  // Held open by the offline debounce after the runner came back. There is
+  // nothing to repair; the alert is only waiting to see whether it flaps.
+  if (alert.clearing_since != null) return;
+
   const age = now - alert.opened_at;
   if (age < route.minOpenMs) return;             // not yet real; the sweep will return
   if (st.attempts >= route.maxAttempts) {
