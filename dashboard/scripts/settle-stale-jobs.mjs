@@ -40,14 +40,46 @@ function arg(name, fallback) {
   return i > 0 ? process.argv[i + 1] : fallback;
 }
 
-async function ghApi(path) {
+// The rate limit as GitHub reports it on each response. Read from the response
+// headers, not `gh api rate_limit`: on 2026-10-02 that endpoint kept answering
+// 5000/5000 while four workers ran the quota out, and the quota is per USER —
+// the fleet daemon's token on the runner host shares it and was penalised for
+// ~45 minutes. Every worker waits on one shared pause.
+const rate = { remaining: null, reset: null, pause: null };
+
+function readHeaders(text) {
+  const head = text.split(/\r?\n\r?\n/, 1)[0];
+  const h = (name) => head.match(new RegExp(`^${name}:\\s*(\\S+)`, 'im'))?.[1];
+  const remaining = h('x-ratelimit-remaining');
+  const reset = h('x-ratelimit-reset');
+  if (remaining != null) rate.remaining = Number(remaining);
+  if (reset != null) rate.reset = Number(reset) * 1000;
+  return text.slice(head.length).trim();
+}
+
+async function waitForRoom(floor) {
+  if (rate.pause) return rate.pause;
+  if (rate.remaining == null || rate.remaining >= floor) return;
+  const waitMs = Math.max(0, (rate.reset ?? Date.now()) - Date.now()) + 5_000;
+  console.error(`rate ${rate.remaining} under floor ${floor}; sleeping ${Math.round(waitMs / 1000)}s`);
+  rate.pause = sleep(waitMs).then(() => { rate.pause = null; rate.remaining = null; });
+  return rate.pause;
+}
+
+async function ghApi(path, floor) {
   for (let attempt = 1; ; attempt++) {
+    await waitForRoom(floor);
     try {
-      const { stdout } = await run('gh', ['api', path], { maxBuffer: 16 << 20 });
-      return { data: JSON.parse(stdout) };
+      const { stdout } = await run('gh', ['api', '-i', path], { maxBuffer: 16 << 20 });
+      return { data: JSON.parse(readHeaders(stdout)) };
     } catch (err) {
+      if (err.stdout) readHeaders(err.stdout);
       const msg = `${err.stderr ?? ''}${err.stdout ?? ''}`;
       if (/HTTP 404/.test(msg)) return { gone: true };
+      if (/API rate limit exceeded/i.test(msg) && attempt <= 3) {
+        rate.remaining = 0;
+        continue;
+      }
       if (/secondary rate limit|HTTP 429|abuse/i.test(msg) && attempt <= 5) {
         console.error(`secondary rate limit on ${path}; sleeping ${60 * attempt}s`);
         await sleep(60_000 * attempt);
@@ -62,15 +94,11 @@ async function ghApi(path) {
   }
 }
 
-async function core() {
-  const { stdout } = await run('gh', ['api', 'rate_limit', '--jq', '.resources.core']);
-  return JSON.parse(stdout);
-}
-
 async function fetchAll() {
   const inPath = arg('in');
   const outPath = arg('out');
-  const floor = Number(arg('floor', 1000));
+  // High on purpose: the daemon needs its share of the same per-user quota.
+  const floor = Number(arg('floor', 2500));
   const gapMs = Number(arg('gap-ms', 250));
   if (!inPath || !outPath) throw new Error('fetch needs --in and --out');
 
@@ -84,23 +112,14 @@ async function fetchAll() {
   const todo = rows.filter((r) => !done.has(r.id));
   console.error(`${rows.length} stale, ${done.size} already fetched, ${todo.length} to go`);
 
-  // A few workers, not one: each `gh api` is a process spawn, and sequential
-  // calls would take hours. Four stays far inside the secondary limit (no more
-  // than 100 concurrent, 900 points a minute); the primary limit is what paces it.
-  const workers = Number(arg('concurrency', 4));
+  // One worker by default. More finish sooner (each call is a process spawn)
+  // but spend the shared quota faster than the daemon expects; raise it only
+  // with the floor high.
+  const workers = Number(arg('concurrency', 1));
   let n = 0;
   let next = 0;
-  let pause = null;
-  const checkRate = async () => {
-    const c = await core();
-    if (c.remaining < floor) {
-      const waitMs = Math.max(0, c.reset * 1000 - Date.now()) + 5_000;
-      console.error(`rate ${c.remaining}/${c.limit} under floor ${floor}; sleeping ${Math.round(waitMs / 1000)}s`);
-      await sleep(waitMs);
-    }
-  };
   const one = async (row) => {
-    const res = await ghApi(`repos/${row.repo}/actions/jobs/${row.id}`);
+    const res = await ghApi(`repos/${row.repo}/actions/jobs/${row.id}`, floor);
     n++;
     const out = { id: row.id, repo: row.repo };
     if (res.gone) {
@@ -108,7 +127,7 @@ async function fetchAll() {
     } else {
       out.job = shapeJob(row.repo, res.data);
       if (out.job.conclusion === 'failure' || out.job.conclusion === 'timed_out') {
-        const ann = await ghApi(`repos/${row.repo}/check-runs/${row.id}/annotations`);
+        const ann = await ghApi(`repos/${row.repo}/check-runs/${row.id}/annotations`, floor);
         n++;
         const messages = (Array.isArray(ann.data) ? ann.data : [])
           .filter((a) => a?.annotation_level === 'failure')
@@ -123,11 +142,8 @@ async function fetchAll() {
   await Promise.all(Array.from({ length: workers }, async () => {
     while (next < todo.length) {
       const i = next++;
-      // rate_limit itself is free; check it every 50 jobs, all workers waiting on one check.
-      if (i % 50 === 0) pause = checkRate();
-      if (pause) await pause;
       await one(todo[i]);
-      if (i % 250 === 0) console.error(`${i}/${todo.length} jobs, ${n} calls`);
+      if (i % 250 === 0) console.error(`${i}/${todo.length} jobs, ${n} calls, rate ${rate.remaining}`);
       await sleep(gapMs);
     }
   }));

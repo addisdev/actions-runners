@@ -983,8 +983,10 @@ conclusion, `completed_at` or duration under a completed run). The daemon now
 settles these itself through `lib/settle.js`, a few hundred per backfill pass;
 this clears the existing history in one go. `fetch` runs wherever `gh` is signed
 in (over SSH the runner host's `gh` cannot read its keychain), re-fetches each
-job by id with a few workers, sleeps to the reset below `--floor` and backs off
-on the secondary rate limit, and resumes from its output file. `sql` emits
+job by id (one worker unless `--concurrency` says otherwise), reads the rate
+limit from each response's `X-RateLimit-*` headers and sleeps to the reset below
+`--floor` (default 2500, because the quota is per user and the daemon shares it),
+backs off on the secondary rate limit, and resumes from its output file. `sql` emits
 updates guarded by `conclusion IS NULL`, so it never overwrites a row the
 daemon settled meanwhile.
 Source: [`dashboard/scripts/settle-stale-jobs.mjs`](https://github.com/addisdev/actions-runners/blob/main/dashboard/scripts/settle-stale-jobs.mjs).

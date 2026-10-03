@@ -103,6 +103,17 @@ Portable, mobile-first dashboard.
   `started_at` and `runner_id` for a job first seen queued.
   `scripts/settle-stale-jobs.mjs` clears existing history in one go.
 
+- Runs froze too. A run that finished after it dropped off GitHub's active
+  lists and its repo's newest page kept its last active status (23 on
+  runner-host, back to 2026-08-06), so its jobs never qualified for settling.
+  The fast tick now refreshes up to four runs a tick that are active in the
+  database but unseen for 10 minutes (`RunSettler`), then settles their jobs.
+- `settle-stale-jobs.mjs` read its budget from `gh api rate_limit`, which kept
+  answering 5000/5000 while four workers spent the per-user quota and got the
+  daemon's token penalised for ~45 minutes. It now reads each response's
+  rate-limit headers, defaults to one worker and a 2500 floor, and waits out a
+  primary-limit error instead of exiting.
+
 - A public repo queued for GitHub-hosted runners read as configuration drift
   ("will never be picked up") and made `cockpit wait` give up; it is ordinary
   waiting on GitHub. Private repos asking for hosted runners still count.

@@ -306,6 +306,12 @@ export class GitHub {
     return data?.jobs ?? [];
   }
 
+  // One run by id, for a run the fast loop lost sight of (lib/settle.js).
+  async run(repo, runId) {
+    const { data } = await this.get(`repos/${repo}/actions/runs/${runId}`, { etag: false });
+    return data;
+  }
+
   // One job by id. Uncached: it is asked once, about a job whose row stopped
   // moving (lib/settle.js), and the answer is final.
   async job(repo, jobId) {
