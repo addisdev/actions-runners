@@ -82,3 +82,55 @@ export class JobSettler {
     return { calls, settled };
   }
 }
+
+// Runs that stopped moving. The fast loop sees a run while it is on GitHub's
+// queued/in-progress lists or on the newest page of its repo; one that finishes
+// after it fell off both — a busy repo, a tick outage, a status the active query
+// does not ask for (`pending`) — keeps its last active status in the database
+// for good, and its jobs never become stale in the sense above. Measured on
+// runner-host 2026-10-03: 23 such runs back to 2026-08-06, all completed on
+// GitHub, one from the night before.
+//
+// Stranded = not completed here and not seen for STRANDED_MS. A refresh writes
+// seen_at, so a run GitHub still reports active (or no longer has) is asked
+// about again only after another STRANDED_MS.
+export const STRANDED_MS = 10 * 60 * 1000;
+
+export class RunSettler {
+  constructor({ db, gh, warn = () => {} }) {
+    this.gh = gh;
+    this.warn = warn;
+    this.stranded = db.prepare(`
+      SELECT id, repo FROM runs
+      WHERE status != 'completed' AND (seen_at IS NULL OR seen_at < ?)
+      ORDER BY seen_at
+      LIMIT ?`);
+    this.touch = db.prepare('UPDATE runs SET seen_at = ? WHERE id = ?');
+  }
+
+  find(now = Date.now(), limit = 25) {
+    return this.stranded.all(now - STRANDED_MS, limit);
+  }
+
+  // persistRun takes (repo, raw) so the caller shapes it with its own groups.
+  async settle(rows, { persistRun, maxCalls = Infinity, minRemaining = 0 }) {
+    let calls = 0;
+    const completed = [];
+    for (const row of rows) {
+      if (calls >= maxCalls) break;
+      const rem = this.gh.rate.remaining;
+      if (rem != null && rem <= minRemaining) break;
+      try {
+        calls++;
+        const raw = await this.gh.run(row.repo, row.id);
+        persistRun(row.repo, raw);
+        if (raw.status === 'completed') completed.push(row.id);
+      } catch (err) {
+        if (err?.rateLimited) break;
+        if (err?.status === 404) this.touch.run(Date.now(), row.id);
+        else this.warn(`settle run ${row.repo}#${row.id}: ${err.message}`);
+      }
+    }
+    return { calls, completed };
+  }
+}

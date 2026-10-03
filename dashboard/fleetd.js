@@ -31,6 +31,7 @@ import { buildBundle, redact } from './lib/bundle.js';
 import { buildRunners, deriveDrift, shapeRun, shapeJob } from './lib/state.js';
 import { deriveGroups } from './lib/groups.js';
 import { Backfill } from './lib/backfill.js';
+import { RunSettler } from './lib/settle.js';
 import { analytics, repoDetail } from './lib/analytics.js';
 import { buildActions, ActionError } from './lib/actions.js';
 import { loadOrCreateToken, authorize, bearerToken, tokenMatches } from './lib/auth.js';
@@ -179,6 +180,7 @@ const db = openDb(CONFIG.db);
 const settings = createSettings(db);
 const gh = new GitHub({ log });
 const backfill = new Backfill({ db, gh, log, warn });
+const runSettler = new RunSettler({ db, gh, warn });
 const CONTROL_TOKEN = CONFIG.readOnly ? null : loadOrCreateToken(CONFIG.tokenFile, log);
 // Agent token authenticates remote host agents (heartbeat / results routes).
 // A separate token lets operators rotate agent credentials without invalidating
@@ -1535,12 +1537,22 @@ async function classifyRecentFailures(runs, maxCalls = 4) {
 // is first seen completed — typically one call per run. Whatever this tick's
 // budget leaves, and anything that completed while the daemon was down, the
 // backfill's settle phase picks up.
+//
+// Runs still active in the database but missing from this tick are refreshed
+// first (a few per tick): a run that finished out of sight would otherwise keep
+// its last active status, and its jobs would never qualify for settling.
 async function settleCompletedRuns(runs) {
-  const ids = runs.filter((r) => r.status === 'completed').map((r) => r.id);
+  const stranded = await runSettler.settle(runSettler.find(Date.now(), 4), {
+    persistRun: (repo, raw) => persistRun(shapeRun(repo, raw, groups)),
+    maxCalls: 4,
+    minRemaining: CONFIG.backfillFloor,
+  });
+  const ids = runs.filter((r) => r.status === 'completed').map((r) => r.id)
+    .concat(stranded.completed);
   if (!ids.length) return;
   await backfill.settler.settle(backfill.settler.staleForRuns(ids), {
     persistJob,
-    maxCalls: CONFIG.settleCalls,
+    maxCalls: Math.max(0, CONFIG.settleCalls - stranded.calls),
     minRemaining: CONFIG.backfillFloor,
   });
 }
