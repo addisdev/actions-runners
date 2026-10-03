@@ -47,6 +47,16 @@ export const DEFAULTS = {
   swapSustainMs: 10 * 60 * 1000,
   diskSustainMs: 5 * 60 * 1000,
   stormThreshold: 5,
+  // Offline runners in one tick that read as the host rather than the runners.
+  // Every offline alert means the listener is running here and GitHub cannot
+  // hear it, so several at once is the network or a starved host, and one
+  // alert saying so replaces one per runner. See offlineFindings().
+  offlineHostThreshold: 3,
+  // How long an offline alert stays open after its condition clears, so a
+  // runner that drops and reconnects inside it is one alert, not one per flap.
+  // On 2026-10-03, 5,873 of the 7,646 offline re-opens came within an hour of
+  // the same runner's previous alert closing.
+  offlineDebounceMs: 15 * 60 * 1000,
   // How long a runner must have run zero jobs before the unused-runner alert fires.
   unusedRunnerWindowMs: 7 * 24 * 60 * 60 * 1000,
   // Long-running in-progress runs vs historical p95 baselines (see lib/long-running.js).
@@ -85,6 +95,11 @@ const DRIFT_ALERTS = {
   'stuck-queue': { severity: 'warning', title: 'Run is stuck in the queue' },
   'no-listener': { severity: 'warning', title: 'Runner has no listener process' },
 };
+
+// The one alert a host-wide offline condition raises, and the rules whose
+// alerts wait out offlineDebounceMs before closing.
+const OFFLINE_HOST_KEY = 'host:offline';
+const DEBOUNCED_RULES = new Set(['offline', 'offline-host']);
 
 // One entry per queue cause, because the severity of a stuck job depends
 // entirely on why it is stuck.
@@ -131,6 +146,7 @@ export class Alerts {
     this.warn = warn;
     this.open = new Map(); // key -> alert
     this.pending = new Map(); // key -> first time the condition was seen
+    this.clearing = new Map(); // key -> when a debounced condition was first seen gone
     this.ticks = 0;
 
     this.insert = db.prepare(`
@@ -224,10 +240,15 @@ export class Alerts {
     const c = this.config;
     const found = new Map();
     const add = (key, rule, severity, title, body) => found.set(key, { key, rule, severity, title, body });
+    const offline = [];
 
     for (const d of snapshot.drift ?? []) {
       const meta = DRIFT_ALERTS[d.kind];
       if (!meta) continue;
+      if (d.kind === 'offline') {
+        offline.push(d);
+        continue;
+      }
 
       // A stuck queue is not one condition, it is seven, and they do not all
       // deserve the same words or the same severity. Before the classifier every
@@ -261,6 +282,7 @@ export class Alerts {
     }
 
     const host = snapshot.host ?? {};
+    const superseded = this.offlineFindings(offline, host, add);
 
     if (host.diskFreeGb != null) {
       const critical = host.diskFreeGb < c.diskCriticalGb;
@@ -478,7 +500,52 @@ export class Alerts {
     // the condition closes exactly when a newer green run appears.
     for (const f of this.newlyFailing(now)) found.set(f.key, f);
 
-    return this.reconcile(found, now);
+    return this.reconcile(found, now, superseded);
+  }
+
+  // Offline runners, one alert per host outage instead of one per runner.
+  //
+  // Measured on this fleet before this rule: 7,706 offline alerts in two months,
+  // 2,763 of them opened 31-or-more in the same tick. On 2026-09-20 alone 39
+  // runners opened 1,284 between them while the host came and went — each one a
+  // critical, every one saying the same thing about a different runner.
+  //
+  // While the host alert is open, including the debounce after the count drops,
+  // every offline runner is folded into it. Once it closes, a runner still
+  // offline is a runner problem again and gets its own alert. Returns the keys
+  // of per-runner alerts the host alert replaces, which close at once rather
+  // than sitting out a debounce for a condition that is now reported elsewhere.
+  offlineFindings(offline, host, add) {
+    const c = this.config;
+    const threshold = c.offlineHostThreshold ?? DEFAULTS.offlineHostThreshold;
+    const hostWide = offline.length >= threshold;
+
+    if (hostWide) {
+      const names = offline.map((d) => d.subject);
+      const of = host.runnerCount ? ` of ${host.runnerCount}` : '';
+      add(OFFLINE_HOST_KEY, 'offline-host', 'critical',
+        `${offline.length}${of} runners offline — host unreachable or saturated`,
+        `Every one of these listeners is running on this host, and GitHub reports them offline ` +
+          'at the same time. That is the host or its network, not the runners: check ' +
+          `connectivity, \`uptime\` and memory pressure (now ${host.memPressure ?? 'unknown'}) ` +
+          'before repairing any one runner.\n' +
+          `Offline: ${names.slice(0, 8).join(', ')}${names.length > 8 ? `, …and ${names.length - 8} more` : ''}.`);
+    }
+
+    const superseded = new Set();
+    if (hostWide || this.open.has(OFFLINE_HOST_KEY)) {
+      for (const key of this.open.keys()) {
+        if (key.startsWith('drift:offline:')) superseded.add(key);
+      }
+      return superseded;
+    }
+
+    const meta = DRIFT_ALERTS.offline;
+    for (const d of offline) {
+      add(`drift:offline:${d.subject}`, 'offline', meta.severity, `${meta.title}: ${d.subject}`,
+        `${d.detail}${d.hint ? `\n${d.hint}` : ''}`);
+    }
+    return superseded;
   }
 
   // The cause worth putting in an alert title, or null.
@@ -550,12 +617,18 @@ export class Alerts {
     return out;
   }
 
-  reconcile(found, now) {
+  reconcile(found, now, superseded = new Set()) {
     const opened = [];
     const closed = [];
+    const debounceMs = this.config.offlineDebounceMs ?? DEFAULTS.offlineDebounceMs;
 
     for (const [key, a] of found) {
-      if (this.open.has(key)) continue;
+      const existing = this.open.get(key);
+      if (existing) {
+        // Back inside the debounce: the same alert carries on.
+        if (this.clearing.delete(key)) delete existing.clearing_since;
+        continue;
+      }
       this.insert.run(key, a.rule, a.severity, a.title, a.body, now, null, 0);
       this.open.set(key, { ...a, opened_at: now });
       opened.push(a);
@@ -563,8 +636,22 @@ export class Alerts {
 
     for (const key of [...this.open.keys()]) {
       if (found.has(key)) continue;
-      this.close.run(now, key);
-      closed.push(this.open.get(key));
+      const alert = this.open.get(key);
+
+      // A debounced rule stays open, marked as clearing, until its condition
+      // has been gone for the whole window. The interval is then closed at the
+      // moment it actually cleared, so the recorded duration stays the outage
+      // and not the outage plus the wait.
+      const since = this.clearing.get(key) ?? now;
+      if (DEBOUNCED_RULES.has(alert.rule) && !superseded.has(key) && now - since < debounceMs) {
+        this.clearing.set(key, since);
+        alert.clearing_since = since;
+        continue;
+      }
+
+      this.clearing.delete(key);
+      this.close.run(since, key);
+      closed.push(alert);
       this.open.delete(key);
     }
 

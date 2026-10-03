@@ -90,6 +90,15 @@ Portable, mobile-first dashboard.
 
 - The `saturated` verdict no longer fires on a run the headroom gate is
   holding; on a busy host that is most of the day, and it is `waiting`.
+- **Offline alerts: one per host outage, one per flap episode.** Three or more
+  runners offline in the same tick (`offlineHostThreshold`) now open a single
+  `offline-host` critical, "N of M runners offline — host unreachable or
+  saturated", and every offline runner folds into it while it is open. One or
+  two runners still alert on their own. Offline alerts stay open for
+  `offlineDebounceMs` (15 min) after the runner reconnects and close dated at
+  the reconnect, so a runner that flaps is one alert; autofix skips an alert
+  that is only clearing. Replayed over the recorded intervals, 2026-09-20 goes
+  from 1,284 offline alerts (264 notifications) to 21 (41).
 
 ### Fixed
 
