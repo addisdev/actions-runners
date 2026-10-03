@@ -54,7 +54,7 @@ Portable, mobile-first dashboard.
   that dies with the app; reconnects on wake and network change; keeps a stale
   view greyed rather than green. Bundled incident fixtures, `--render` for
   screenshots, a `cockpit` CLI, and a snapshot file for other tools. See
-  [docs/cockpit.md](docs/cockpit.md).
+  [docs/cockpit/](docs/cockpit/index.md).
 - `scripts/make-glance-fixtures.mjs` keeps the cockpit's fixtures in step with
   the daemon (checked in CI).
 - **Out-of-band sentinel** in the cockpit: when the dashboard does not answer it
