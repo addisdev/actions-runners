@@ -367,6 +367,33 @@ admit_reap_waiters() {
   done
 }
 
+# True when the Runner.Worker this hook belongs to has exited. GitHub cancels a
+# job whose timeout runs out at "Set up runner"; the worker goes, the hook is
+# reparented to launchd, and admit_run_completed keeps answering "no" because
+# the RUN is still in progress (other jobs, or a re-run). Such a hook used to
+# wait forever, holding a place in the line for a job that no longer exists.
+# Only a worker owner counts: a fallback owner is just the parent shell, and
+# reading its exit as "the job is gone" would let a live job run unthrottled.
+#
+# The owner is resolved once, before the wait, into its own variables: the
+# ADMIT_OWNER_* pair is what a log line reports as the owner of a claimed slot,
+# and a hold claims nothing.
+ADMIT_WAIT_OWNER_PID=""
+ADMIT_WAIT_OWNER_KIND=""
+admit_resolve_wait_owner() {
+  admit_resolve_owner
+  ADMIT_WAIT_OWNER_PID="$ADMIT_OWNER_PID"
+  ADMIT_WAIT_OWNER_KIND="$ADMIT_OWNER_KIND"
+  ADMIT_OWNER_PID=""
+  ADMIT_OWNER_KIND=""
+}
+
+admit_owner_gone() {
+  [ "$ADMIT_WAIT_OWNER_KIND" = "worker" ] || return 1
+  [ -n "$ADMIT_WAIT_OWNER_PID" ] || return 1
+  ! kill -0 "$ADMIT_WAIT_OWNER_PID" 2>/dev/null
+}
+
 admit_waiter_is_first_eligible() {
   local simulator_busy="$1" f first="" runner
   [ -n "$ADMIT_WAITER" ] || return 1
