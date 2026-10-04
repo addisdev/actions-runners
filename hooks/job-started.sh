@@ -103,12 +103,18 @@ ADMIT_WAIT_START="$(admit_now)"
 ANNOUNCED=0
 TIMEOUT_ANNOUNCED=0
 LAST_CANCEL_CHECK=-1
+admit_resolve_wait_owner
 while :; do
   WAITED=$(($(admit_now) - ADMIT_WAIT_START))
   BUSY=0
   SIMULATOR_BUSY=0
   STRICT_LIMIT=0
   BLOCKER=""
+  if admit_owner_gone; then
+    admit_leave_waiters
+    admit_log orphaned 'its Runner.Worker exited while it waited' "$WAITED" "$BUSY"
+    exit 0
+  fi
   if admit_waiting_behind_older; then
     BLOCKER="an older job is waiting for the next host slot"
   elif admit_lock; then

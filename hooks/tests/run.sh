@@ -487,6 +487,86 @@ ok "contended job did not claim a slot" \
 kill "$LIVE" 2>/dev/null
 end_jobs
 
+# A stand-in Runner.Worker: a script whose command line says Runner.Worker, so
+# admit_resolve_owner picks it as the owner exactly as it does in production.
+# It starts the hook as its child and waits; killing it leaves the hook
+# reparented, which is what GitHub cancelling a held job does to the real one.
+fake_worker() {
+  cat > "$BIN/Runner.Worker" <<EOF
+#!/usr/bin/env bash
+FLEET_ROOT="$ROOT" RUNNER_NAME="\$1" GITHUB_REPOSITORY="acme/\$1" \\
+  GITHUB_RUN_ID=300 GITHUB_JOB=build FAKE_RUN_STATUS="$RUN_STATUS" \\
+  PATH="$BIN:\$PATH" bash "$HOOKS/job-started.sh" >/dev/null 2>&1 &
+echo \$! > "$ROOT/hook-\$1.pid"
+wait
+EOF
+  chmod +x "$BIN/Runner.Worker"
+  bash "$BIN/Runner.Worker" "$1" >/dev/null 2>&1 &
+  echo $!
+}
+
+# A waiter file for a job that is ahead in line, owned by $2 (a pid).
+fake_waiter() {
+  mkdir -p "$ROOT/.admission/waiters"
+  printf 'pid=%s\nts=1\nrunner=%s\nrepo=acme/%s\nrun=1\njob=build\n' "$2" "$1" "$1" \
+    > "$ROOT/.admission/waiters/00000000000000000001-0000000001-$1"
+}
+
+echo "== a waiter whose Runner.Worker is gone leaves the line =="
+setup enforce 1 30 1
+LIVE=$(fake_slot occupied)
+WORKER=$(fake_worker orphan)
+wait_for "1" "events held" 10
+HOOK=$(cat "$ROOT/hook-orphan.pid")
+kill -9 "$WORKER" 2>/dev/null
+wait_for "1" "events orphaned" 10
+ok "orphaned hook logged and left" "$(events orphaned)" "1"
+ok "orphaned hook exited" "$(kill -0 "$HOOK" 2>/dev/null && echo alive || echo gone)" "gone"
+ok "orphaned hook left no waiter" "$(ls -1 "$ROOT/.admission/waiters" 2>/dev/null | wc -l | tr -d ' ')" "0"
+ok "orphaned hook claimed no slot" \
+  "$([ -f "$ROOT/.admission/slots/orphan" ] && echo yes || echo no)" "no"
+kill "$LIVE" 2>/dev/null
+
+echo "== a dead head of the line does not stall the jobs behind it =="
+setup enforce 1 30 1
+sleep 300 >/dev/null 2>&1 &
+GONE=$!
+kill "$GONE" 2>/dev/null
+wait "$GONE" 2>/dev/null
+fake_waiter ghost "$GONE"
+BEFORE=$(date +%s)
+start alive
+AFTER=$(date +%s)
+ok "job behind a dead head admitted" "$(events admitted)" "1"
+ok "job behind a dead head got in promptly" \
+  "$([ $((AFTER - BEFORE)) -le 5 ] && echo prompt || echo slow)" "prompt"
+
+echo "== a job behind a live head does not take the mutex every poll =="
+setup enforce 1 30 1
+LIVE=$(fake_slot occupied)
+sleep 300 >/dev/null 2>&1 &
+HEAD=$!
+fake_waiter head "$HEAD"
+# Counts every attempt to create the mutex directory; bash has no builtin mkdir.
+cat > "$BIN/mkdir" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do [ "\${a##*/}" = mutex ] && echo x >> "$ROOT/mutex-attempts"; done
+exec /bin/mkdir "\$@"
+EOF
+chmod +x "$BIN/mkdir"
+start_bg behind
+wait_for "1" "events held" 10
+: > "$ROOT/mutex-attempts"
+sleep 5
+ok "waiter behind a live head skipped the mutex" \
+  "$(wc -l < "$ROOT/mutex-attempts" | tr -d ' ')" "0"
+kill "$HEAD" 2>/dev/null
+wait "$HEAD" 2>/dev/null
+kill "$LIVE" 2>/dev/null
+wait_for "1" "events admitted" 10
+ok "it is admitted once the head is gone and a slot frees" "$(events admitted)" "1"
+end_jobs
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]
