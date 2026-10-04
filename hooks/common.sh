@@ -388,6 +388,32 @@ admit_waiter_is_first_eligible() {
   [ "$first" = "$ADMIT_WAITER" ]
 }
 
+# True when this job already has its place in the queue and a live waiter that
+# could take the next slot stands ahead of it. Checked WITHOUT the mutex, and
+# that is the point: only the oldest waiter can be admitted, so a later one has
+# nothing to decide under the lock. When every waiter polled through the mutex,
+# each critical section cost a sed, a kill and a ps per waiter, the lock was
+# never free, and the oldest waiter won it about once in N tries — on a loaded
+# host with 40 waiters, nothing was admitted for a day while every slot sat
+# empty (2026-10-03/04, logged as `held` with an empty reason). A stale read
+# here costs one poll: anything it cannot vouch for (no queue place, a dead
+# head, a Simulator job at the head, which the locked check may skip past)
+# falls through to the locked path, which reaps and decides as before.
+admit_waiting_behind_older() {
+  local first pid runner
+  [ -n "$ADMIT_WAITER" ] && [ -f "$ADMIT_WAITER" ] || return 1
+  first="$(LC_ALL=C ls -1 "$ADMIT_WAITERS" 2>/dev/null | head -1)"
+  [ -n "$first" ] || return 1
+  [ "$ADMIT_WAITERS/$first" = "$ADMIT_WAITER" ] && return 1
+  pid="$(sed -n 's/^pid=//p' "$ADMIT_WAITERS/$first" 2>/dev/null | head -1)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+  if [ "$ADMIT_SIMULATOR_MAX" -gt 0 ]; then
+    runner="$(sed -n 's/^runner=//p' "$ADMIT_WAITERS/$first" 2>/dev/null | head -1)"
+    admit_runner_matches "$runner" && return 1
+  fi
+  return 0
+}
+
 # Returns the GitHub Actions run status string, or empty when unknown.
 # gh is preferred; curl + GITHUB_TOKEN/GH_TOKEN is the fallback because the
 # hook environment is not guaranteed to ship the CLI even though the token is.

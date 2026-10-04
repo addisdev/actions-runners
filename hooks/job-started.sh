@@ -109,7 +109,9 @@ while :; do
   SIMULATOR_BUSY=0
   STRICT_LIMIT=0
   BLOCKER=""
-  if admit_lock; then
+  if admit_waiting_behind_older; then
+    BLOCKER="an older job is waiting for the next host slot"
+  elif admit_lock; then
     admit_join_waiters "$KEY" || true
     BUSY="$(admit_live_slots)"
     SIMULATOR_BUSY="$(admit_live_simulator_slots)"

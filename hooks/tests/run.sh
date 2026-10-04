@@ -207,6 +207,82 @@ SECOND="$(grep '"event":"admitted"' "$LOG" | sed -n 's/.*"runner":"\([^"]*\)".*/
 ok "second waiter admitted next" "$SECOND" "gamma"
 end_jobs
 
+echo "== a later waiter leaves the mutex to the oldest one =="
+# Only the oldest waiter can be admitted. When every waiter polled through the
+# mutex, 40 of them on a loaded host kept it permanently busy and the oldest
+# almost never won it: nothing was admitted for a day with every slot empty.
+# A mkdir shim records who asks for the mutex; once both have joined, the later
+# waiter must stop asking while the older one is alive and ahead of it.
+setup enforce 1 30 1
+SHIM="$ROOT/bin-mutex-shim"
+mkdir -p "$SHIM"
+cat > "$SHIM/mkdir" <<'EOF2'
+#!/usr/bin/env bash
+case "${*: -1}" in
+  */.admission/mutex) echo "${RUNNER_NAME:-?}" >> "$MUTEX_TRACE" ;;
+esac
+exec /bin/mkdir "$@"
+EOF2
+chmod +x "$SHIM/mkdir"
+TRACE="$ROOT/mutex-trace"
+: > "$TRACE"
+LIVE=$(fake_slot occupied)
+for r in beta gamma; do
+  (
+    FLEET_ROOT="$ROOT" RUNNER_NAME="$r" GITHUB_REPOSITORY="acme/$r" \
+      GITHUB_RUN_ID=100 GITHUB_JOB=build FAKE_RUN_STATUS="$RUN_STATUS" \
+      MUTEX_TRACE="$TRACE" PATH="$SHIM:$BIN:$PATH" \
+      bash "$HOOKS/job-started.sh"
+    sleep 120
+  ) >/dev/null 2>&1 &
+  JOBPIDS+=("$!")
+  sleep 1
+done
+wait_for "2" "ls -1 '$ROOT/.admission/waiters' 2>/dev/null | wc -l | tr -d ' '" 10
+sleep 1
+GAMMA_BEFORE="$(grep -c '^gamma$' "$TRACE")"
+BETA_BEFORE="$(grep -c '^beta$' "$TRACE")"
+sleep 4
+ok "the later waiter stopped asking for the mutex" \
+  "$(( $(grep -c '^gamma$' "$TRACE") - GAMMA_BEFORE ))" "0"
+ok "the oldest waiter kept asking" \
+  "$([ "$(grep -c '^beta$' "$TRACE")" -gt "$BETA_BEFORE" ] && echo yes || echo no)" "yes"
+kill "$LIVE" 2>/dev/null
+wait_for "1" "events admitted" 15
+FIRST="$(grep '"event":"admitted"' "$LOG" | sed -n 's/.*"runner":"\([^"]*\)".*/\1/p' | head -1)"
+ok "the oldest waiter was still admitted first" "$FIRST" "beta"
+end_jobs
+
+echo "== the lockless check defers to the locked one whenever unsure =="
+setup enforce 1 30 1
+echo 'FLEET_SIMULATOR_RUNNERS=*-ios' >> "$ROOT/fleet.env"
+W="$ROOT/.admission/waiters"
+mkdir -p "$W"
+behind() {
+  # $1 = this waiter's file name, $2 = FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT
+  FLEET_ROOT="$ROOT" FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT="${2:-0}" bash -c '
+    ROOT="$FLEET_ROOT"; set -a; . "$ROOT/fleet.env"; set +a
+    . "'"$HOOKS"'/common.sh"
+    ADMIT_WAITER="$ADMIT_WAITERS/'"$1"'"
+    admit_waiting_behind_older && echo behind || echo decide
+    trap - EXIT'
+}
+sleep 300 >/dev/null 2>&1 &
+HEAD_PID=$!
+printf 'pid=%s\nrunner=alpha\n' "$HEAD_PID" > "$W/00000000000000000001-0000000001-alpha"
+printf 'pid=%s\nrunner=beta\n' "$$" > "$W/00000000000000000002-0000000002-beta"
+ok "behind a live older waiter" "$(behind 00000000000000000002-0000000002-beta)" "behind"
+ok "the oldest waiter decides" "$(behind 00000000000000000001-0000000001-alpha)" "decide"
+ok "a job with no place in the queue decides" "$(behind 00000000000000000009-0000000009-zeta)" "decide"
+printf 'pid=%s\nrunner=alpha-ios\n' "$HEAD_PID" > "$W/00000000000000000001-0000000001-alpha"
+ok "a Simulator job at the head is left to the locked check" \
+  "$(behind 00000000000000000002-0000000002-beta 1)" "decide"
+ok "...unless the Simulator limit is off" "$(behind 00000000000000000002-0000000002-beta 0)" "behind"
+kill "$HEAD_PID" 2>/dev/null
+wait "$HEAD_PID" 2>/dev/null
+ok "a dead head is left to the locked check, which reaps it" \
+  "$(behind 00000000000000000002-0000000002-beta)" "decide"
+
 echo "== Simulator limit does not serialize unrelated jobs =="
 setup enforce 3 30 1
 {

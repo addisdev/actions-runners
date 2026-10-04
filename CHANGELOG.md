@@ -102,6 +102,12 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- **Admission stalled with every slot free.** Every held job polled through the
+  admission mutex, and each holder spent seconds reading the whole waiter queue
+  on a loaded host, so the lock was never free and the oldest waiter, the only
+  one that can be admitted, almost never won it. runner-host admitted nothing
+  for a day with 40 jobs held, `busy=0` and an empty reason (2026-10-03/04). A
+  waiter with a live, non-Simulator waiter ahead of it now skips the mutex.
 - Job rows froze at their last in-progress snapshot. The fast loop fetches
   jobs only for active runs and the backfill only for runs with no job rows, so
   a run's final jobs never got a conclusion, `completed_at` or duration once
