@@ -117,6 +117,11 @@ if [ -x "$ROOT/hooks/job-started.sh" ] && [ -x "$ROOT/hooks/job-completed.sh" ];
   printf 'ACTIONS_RUNNER_HOOK_JOB_STARTED=%s\nACTIONS_RUNNER_HOOK_JOB_COMPLETED=%s\n' \
     "$ROOT/hooks/job-started.sh" "$ROOT/hooks/job-completed.sh" >> .env
 fi
+# Jobs run as the same user as the interactive Claude Code and Cursor sessions
+# on this host, so an agent inside a job loads their user-level hooks. WB_SKIP
+# makes the Waiting Board hooks do nothing, so CI never files waits or inbox
+# items on the operator's board.
+printf 'WB_SKIP=1\n' >> .env
 
 echo "==> registering with $REPO"
 # RUNNER_TOKEN lets a caller supply the registration token instead of minting it
