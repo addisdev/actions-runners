@@ -84,6 +84,10 @@ cmd_install() {
   # is how AUTOFIX_FIX_REPOS could be set in fleet.env, documented, and still
   # leave AI fixes switched off, with nothing anywhere reporting the mismatch.
   #
+  # WB_SKIP is always set: the fix and escalation agents run the Cursor SDK's
+  # local runtime as this user, which loads the operator's ~/.cursor hooks, and
+  # an automated diagnosis must not file waits on the operator's Waiting Board.
+  #
   # Only variables that actually have a value are emitted, so an unset one
   # keeps the default compiled into bridge.js instead of arriving as an empty
   # string — which for the numeric settings would parse as 0 and turn every
@@ -119,6 +123,7 @@ cmd_install() {
     <key>HOME</key><string>$HOME</string>
     <key>AUTOFIX_PORT</key><string>$PORT</string>
     <key>FLEET_URL</key><string>http://127.0.0.1:$FLEET_PORT</string>
+    <key>WB_SKIP</key><string>1</string>
 ${env_extra}  </dict>
   <key>KeepAlive</key><true/>
   <key>RunAtLoad</key><true/>

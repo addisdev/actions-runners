@@ -88,6 +88,12 @@ Portable, mobile-first dashboard.
 
 ### Changed
 
+- **Automated agents stay off the operator's Waiting Board.** `register.sh`
+  writes `WB_SKIP=1` into each new runner's `.env`, and `autofixctl.sh install`
+  sets it for the bridge, so CI jobs and the Cursor SDK fix and escalation
+  agents, which load the same user-level Claude Code and Cursor hooks as
+  interactive sessions, never file waits or inbox items. Existing runners need
+  the line added once; `install-hooks.sh` preserves it.
 - The `saturated` verdict no longer fires on a run the headroom gate is
   holding; on a busy host that is most of the day, and it is `waiting`.
 - **Offline alerts: one per host outage, one per flap episode.** Three or more
