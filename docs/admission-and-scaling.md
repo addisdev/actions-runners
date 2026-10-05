@@ -89,8 +89,10 @@ When a job starts on any runner, `hooks/job-started.sh` runs first. In
    long queue on a loaded host kept it busy so the oldest almost never won it.
 4. If there is room, it claims a slot owned by its `Runner.Worker`, leaves the
    waiter queue, and starts the workflow.
-5. While blocked, it polls GitHub for run cancellation (`gh` or `curl` with the
-   job token) and returns immediately when the run has ended.
+5. While blocked, it polls for run cancellation and returns immediately when
+   the run has ended. It asks the dashboard daemon (`/api/run-status`) first:
+   runner LaunchAgents set `SessionCreate`, so `gh` inside a job cannot read
+   the keychain token. `gh`, then `curl` with a job token, are the fallbacks.
 6. At `FLEET_ADMIT_MAX_WAIT_S`, `FLEET_ADMIT_TIMEOUT_ACTION` either admits the
    job (`admit`, the compatibility default) or keeps the limit strict (`hold`).
 

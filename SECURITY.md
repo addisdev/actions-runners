@@ -52,6 +52,7 @@ The following routes serve data without a bearer token, intentionally:
 | `GET /api/billing` | GitHub billing snapshot |
 | `GET /api/autoscale` | Autoscale decision log |
 | `GET /api/admission` | Job admission log |
+| `GET /api/run-status?repo=X&run=N` | Status and conclusion of one run, for this fleet's repos only |
 | Static files | The browser UI assets |
 
 On the default loopback deployment, any process on the runner host can read

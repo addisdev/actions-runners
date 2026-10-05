@@ -39,6 +39,7 @@ setup() {
     echo "FLEET_ADMIT_MAX_WAIT_S=${3:-6}"
     echo "FLEET_ADMIT_POLL_S=${4:-1}"
     echo "FLEET_ADMIT_MIN_FREE_DISK_GB=${5:-1}"
+    echo "FLEET_ADMIT_STATUS_URL="
   } > "$ROOT/fleet.env"
   echo in_progress > "$RUN_STATUS"
   cat > "$BIN/gh" <<'EOF'
@@ -471,6 +472,62 @@ ok "curl cancellation event logged" "$(events cancelled)" "1"
 ok "curl path claimed no slot" \
   "$([ -f "$ROOT/.admission/slots/curl-runner" ] && echo yes || echo no)" "no"
 ok "curl path returned promptly" \
+  "$([ $((AFTER - BEFORE)) -lt 10 ] && echo prompt || echo slow)" "prompt"
+
+# The production shape since runners got SessionCreate: gh has no token and
+# fails, and the dashboard daemon is the one that can answer.
+fake_daemon_bin() {
+  DAEMON_BIN="$ROOT/bin-daemon"
+  mkdir -p "$DAEMON_BIN"
+  cat > "$DAEMON_BIN/gh" <<EOF
+#!/usr/bin/env bash
+$1
+EOF
+  cat > "$DAEMON_BIN/curl" <<EOF
+#!/usr/bin/env bash
+if [[ "\$*" == *fleet.test/api/run-status* && "\$*" == *repo=acme/daemon-runner* && "\$*" == *run=400* ]]; then
+  $2
+fi
+exit 7
+EOF
+  chmod +x "$DAEMON_BIN/gh" "$DAEMON_BIN/curl"
+}
+run_daemon_case() {
+  setup enforce 1 30 1
+  {
+    echo "FLEET_ADMIT_CANCEL_POLL_S=1"
+    echo "FLEET_ADMIT_STATUS_URL=http://fleet.test/api/run-status"
+  } >> "$ROOT/fleet.env"
+  LIVE=$(fake_slot occupied)
+  ( sleep 2; echo completed > "$RUN_STATUS" ) &
+  STATUS_WRITER=$!
+  fake_daemon_bin "$1" "$2"
+  BEFORE=$(date +%s)
+  PATH="$DAEMON_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    FLEET_ROOT="$ROOT" RUNNER_NAME=daemon-runner \
+    GITHUB_REPOSITORY="acme/daemon-runner" GITHUB_RUN_ID=400 GITHUB_JOB=build \
+    FAKE_RUN_STATUS="$RUN_STATUS" \
+    bash "$HOOKS/job-started.sh"
+  AFTER=$(date +%s)
+  wait "$STATUS_WRITER"
+  kill "$LIVE" 2>/dev/null
+}
+
+echo "== cancellation works through the daemon when gh has no token =="
+# shellcheck disable=SC2016
+run_daemon_case 'echo "gh: HTTP 401: Bad credentials" >&2; exit 1' \
+  'printf "{\"status\":\"%s\",\"conclusion\":null}" "$(cat "$FAKE_RUN_STATUS")"; exit 0'
+ok "daemon cancellation event logged" "$(events cancelled)" "1"
+ok "daemon path claimed no slot" \
+  "$([ -f "$ROOT/.admission/slots/daemon-runner" ] && echo yes || echo no)" "no"
+ok "daemon path returned promptly" \
+  "$([ $((AFTER - BEFORE)) -lt 10 ] && echo prompt || echo slow)" "prompt"
+
+echo "== an unreachable daemon falls back to gh =="
+# shellcheck disable=SC2016
+run_daemon_case 'cat "$FAKE_RUN_STATUS"' 'exit 7'
+ok "gh fallback cancellation event logged" "$(events cancelled)" "1"
+ok "gh fallback returned promptly" \
   "$([ $((AFTER - BEFORE)) -lt 10 ] && echo prompt || echo slow)" "prompt"
 
 echo "== enforce mode does not fail open on mutex contention =="

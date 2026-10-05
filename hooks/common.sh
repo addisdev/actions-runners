@@ -442,11 +442,28 @@ admit_waiting_behind_older() {
 }
 
 # Returns the GitHub Actions run status string, or empty when unknown.
-# gh is preferred; curl + GITHUB_TOKEN/GH_TOKEN is the fallback because the
-# hook environment is not guaranteed to ship the CLI even though the token is.
+#
+# The dashboard daemon is asked first. Runner LaunchAgents set SessionCreate,
+# so a job runs without the login keychain and `gh` here has no token: it goes
+# out anonymously, cannot see a private repo, and hits the anonymous rate limit.
+# Until 2026-10-05 that meant no held job ever noticed its run had ended, and
+# waits for runs cancelled hours earlier held places in the queue. The daemon
+# holds a token resolved outside that session. FLEET_ADMIT_STATUS_URL= (empty)
+# skips it, e.g. on a host whose daemon is elsewhere. gh, then curl with
+# GITHUB_TOKEN/GH_TOKEN, remain for hosts where those do work.
+ADMIT_STATUS_URL="${FLEET_ADMIT_STATUS_URL-http://127.0.0.1:${FLEET_PORT:-7878}/api/run-status}"
 admit_run_status() {
   local status repo="${GITHUB_REPOSITORY:-}" run_id="${GITHUB_RUN_ID:-}"
   [ -n "$repo" ] && [ -n "$run_id" ] || return 1
+  if [ -n "$ADMIT_STATUS_URL" ] && command -v curl >/dev/null 2>&1; then
+    status="$(curl -fsS --max-time 5 -G "$ADMIT_STATUS_URL" \
+      --data-urlencode "repo=$repo" --data-urlencode "run=$run_id" 2>/dev/null \
+      | sed -n 's/.*"status":"\([a-z_]*\)".*/\1/p' | head -1)"
+    if [ -n "$status" ]; then
+      printf '%s' "$status"
+      return 0
+    fi
+  fi
   if command -v gh >/dev/null 2>&1; then
     status="$(gh api "repos/${repo}/actions/runs/${run_id}" --jq .status 2>/dev/null)"
     if [ -n "$status" ]; then

@@ -121,6 +121,18 @@ Portable, mobile-first dashboard.
   and re-pushed, so that result waits for the new run. Within a commit, the
   newest run of a workflow is now chosen by run id, not `updatedAt`: a run that
   concurrency cancelled after its replacement was created used to win.
+- **Held jobs never noticed their run had ended.** Runner LaunchAgents set
+  `SessionCreate`, so `gh` inside a job has no keychain token; the hook's
+  cancellation poll went out anonymously and never saw `completed`. No held
+  job had ever logged `cancelled`, and waits for runs that ended hours earlier
+  stayed in the queue. The hook now asks the daemon first
+  (`GET /api/run-status`, cached 20 s, fleet repos only), then `gh`, then
+  `curl`. `FLEET_ADMIT_STATUS_URL=` (empty) skips the daemon.
+- **`cleanup.sh` missed superseded runner versions.** A runner self-update
+  leaves the previous `bin.<version>` and `externals.<version>` in place. At
+  59 runners that was 25 GB, and it held the 40 GB disk floor shut for most of
+  2026-10-05. Cleanup now removes pairs older than the linked version and
+  leaves a newer, unlinked pair (an update in progress) alone.
 - **Admission stalled with every slot free.** Every held job polled through the
   admission mutex, and each holder spent seconds reading the whole waiter queue
   on a loaded host, so the lock was never free and the oldest waiter, the only

@@ -32,6 +32,7 @@ import { buildRunners, deriveDrift, shapeRun, shapeJob } from './lib/state.js';
 import { deriveGroups } from './lib/groups.js';
 import { Backfill } from './lib/backfill.js';
 import { RunSettler } from './lib/settle.js';
+import { RunStatus } from './lib/run-status.js';
 import { analytics, repoDetail } from './lib/analytics.js';
 import { buildActions, ActionError } from './lib/actions.js';
 import { loadOrCreateToken, authorize, bearerToken, tokenMatches } from './lib/auth.js';
@@ -181,6 +182,13 @@ const settings = createSettings(db);
 const gh = new GitHub({ log });
 const backfill = new Backfill({ db, gh, log, warn });
 const runSettler = new RunSettler({ db, gh, warn });
+const runStatus = new RunStatus({
+  fetchRun: (repo, runId) => gh.run(repo, runId),
+  knownRepo: (repo) => {
+    const want = repo.toLowerCase();
+    return (snapshot.repos ?? []).some((r) => r.fullName?.toLowerCase() === want);
+  },
+});
 const CONTROL_TOKEN = CONFIG.readOnly ? null : loadOrCreateToken(CONFIG.tokenFile, log);
 // Agent token authenticates remote host agents (heartbeat / results routes).
 // A separate token lets operators rotate agent credentials without invalidating
@@ -2684,6 +2692,15 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       warn('admission api:', err.message);
       return json(res, { error: err.message }, 500);
+    }
+  }
+
+  if (url.pathname === '/api/run-status') {
+    try {
+      return json(res, await runStatus.lookup(url.searchParams.get('repo'), url.searchParams.get('run')));
+    } catch (err) {
+      if (!err.status) warn('run-status api:', err.message);
+      return json(res, { error: err.message }, err.status ?? 502);
     }
   }
 

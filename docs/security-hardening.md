@@ -117,6 +117,7 @@ The following routes do not require a bearer token, by design:
 - `GET /api/stream` — SSE stream
 - `GET /api/runner?name=X` — runner detail (log tail is redacted)
 - `GET /api/analytics`, `/api/billing`, `/api/autoscale`, `/api/admission`
+- `GET /api/run-status` — one run's status, limited to repos this fleet serves
 - `GET /api/actions` — action catalogue (knowing which buttons exist ≠ pressing them)
 - All static files under `/public/`
 
