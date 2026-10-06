@@ -178,6 +178,14 @@ Recent autoscale decisions.
 
 Job admission decisions. `limit` defaults to 60, max 500.
 
+### `GET /api/run-status?repo=owner/name&run=123`
+
+`{ "status": "completed", "conclusion": "cancelled" }` for one workflow run,
+fetched with the daemon's token and cached for 20 s. Held admission hooks poll
+this to notice a run that ended while they waited: runner LaunchAgents set
+`SessionCreate`, so `gh` inside a job cannot read the keychain token. 400 for a
+malformed query, 404 for a repo this fleet does not serve.
+
 ### `GET /api/simulate` (POST)
 
 Replay historical job data against a hypothetical runner configuration.

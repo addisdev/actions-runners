@@ -129,6 +129,41 @@ done < <(find "$ROOT"/*/_diag -type f -mtime +${DIAG_AGE_DAYS} 2>/dev/null)
 say "    ${n} files"
 
 # ---------------------------------------------------------------------------
+# Superseded runner versions. The runner self-updates into bin.<version> and
+# externals.<version> beside the old pair and only repoints the bin/externals
+# links, so every runner keeps a dead copy of the version before. At 59 runners
+# that was 25 GB, and it was what held the disk floor shut on 2026-10-05. Only
+# versions OLDER than the linked one go: a newer unlinked pair is an update in
+# progress.
+# ---------------------------------------------------------------------------
+version_older() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    na = split(a, x, "."); nb = split(b, y, "."); n = na > nb ? na : nb
+    for (i = 1; i <= n; i++) { if (x[i] + 0 < y[i] + 0) exit 0; if (x[i] + 0 > y[i] + 0) exit 1 }
+    exit 1 }'
+}
+say "==> superseded runner versions"
+n=0
+for d in "$ROOT"/*/; do
+  d="${d%/}"
+  [ -f "$d/.runner" ] && [ -L "$d/bin" ] && [ -L "$d/externals" ] || continue
+  current="$(basename "$(readlink "$d/bin")")"
+  current="${current#bin.}"
+  [ -d "$d/bin.$current" ] && [ "$(basename "$(readlink "$d/externals")")" = "externals.$current" ] \
+    || continue
+  for old in "$d"/bin.* "$d"/externals.*; do
+    [ -d "$old" ] && [ ! -L "$old" ] || continue
+    v="${old##*/}"; v="${v#*.}"
+    version_older "$v" "$current" || continue
+    pgrep -f "$old/" >/dev/null 2>&1 && continue
+    say "    $(du -sh "$old" 2>/dev/null | cut -f1)  $(basename "$d")/$(basename "$old")"
+    run rm -rf "$old"
+    n=$((n + 1))
+  done
+done
+say "    ${n} directories"
+
+# ---------------------------------------------------------------------------
 # Playwright browser caches and stale install locks. Browsers are large and the
 # default cache is shared unless workflows set PLAYWRIGHT_BROWSERS_PATH to each
 # runner's tool cache. A crashed install leaves __dirlock behind; the next job
