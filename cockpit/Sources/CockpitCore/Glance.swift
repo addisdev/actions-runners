@@ -254,6 +254,9 @@ public struct RunRow: Codable, Sendable, Equatable, Identifiable {
     public var updatedAt: Double?
     public var elapsedMs: Double?
     public var expectedMs: Double?
+    /// The head commit of `prNumber` when the daemon last fetched this run
+    /// (every tick). Nil for push runs, and from a daemon older than 10-06.
+    public var prHead: String? = nil
 
     public var isActive: Bool { status != "completed" }
     /// A pass. Only these three: a finished run with any other conclusion

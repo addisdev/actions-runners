@@ -42,7 +42,9 @@ cockpit wait <repo> --pr <n> [--timeout 45m]
 Exit codes: `0` green, `1` red (failed checks listed), `2` waiting is pointless (host
 down, disk floor, billing block, or a check queued with a cause that never clears) — stop
 and report the reason, `3` timed out or nothing readable. Prefer this to
-`gh pr checks --watch`, which waits forever on a check that will never start.
+`gh pr checks --watch`, which waits forever on a check that will never start. `--pr`
+judges the PR's head commit only, so a red from a commit you pushed over (or force-pushed
+off) does not end the wait.
 
 ## When the dashboard itself does not answer
 

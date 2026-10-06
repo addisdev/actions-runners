@@ -18,6 +18,10 @@ public struct CheckSet: Identifiable, Sendable, Equatable {
     /// Until every check is finished, as a p50…p90-ish range; nil when unknown.
     public var etaGreenMs: [Double]?
     public var state: State
+    /// This commit's own result for these checks is stale: the PR's branch
+    /// moved to another commit after they ran and has since come back, so a
+    /// new run is due (taylab-launch-kit PR #79, 2026-10-03).
+    public var superseded: [RunRow] = []
 
     public var label: String {
         let repoShort = repo.split(separator: "/").last.map(String.init) ?? repo
@@ -36,7 +40,9 @@ public struct CheckSet: Identifiable, Sendable, Equatable {
         switch state {
         case .green: "\(total) of \(total) green"
         case .red: "\(notPassed) · \(done) of \(total) done"
-        case .pending: "\(done) of \(total) done"
+        case .pending:
+            superseded.isEmpty ? "\(done) of \(total) done"
+                : "\(done) of \(total) done; waiting for \(superseded.map { $0.workflow ?? "?" }.joined(separator: ", ")) to run again on this commit"
         }
     }
 }
@@ -44,30 +50,47 @@ public struct CheckSet: Identifiable, Sendable, Equatable {
 public enum Rollup {
     /// Groups active and recent runs by commit (or branch when a run carries no
     /// sha). Within a commit the newest run of each workflow wins, so a re-run
-    /// that went green replaces the red attempt it retried.
+    /// that went green replaces the red attempt it retried. Newest is by run
+    /// id, which GitHub only ever increases: by `updatedAt`, a run cancelled
+    /// by concurrency after its replacement was created beat the replacement.
     public static func checkSets(_ g: Glance) -> [CheckSet] {
-        let all = (g.runs ?? []) + (g.recent ?? [])
+        let all = ((g.runs ?? []) + (g.recent ?? [])).sorted { $0.id < $1.id }
         var groups: [String: [RunRow]] = [:]
         for r in all {
             let key = "\(r.repo)@\(r.sha ?? r.branch ?? String(r.id))"
             groups[key, default: []].append(r)
         }
+        // Per PR: its head, and the newest run of each workflow on any commit.
+        var heads: [String: String] = [:], newestInPR: [String: Int] = [:]
+        for r in all {
+            guard let pr = r.prNumber else { continue }
+            if let h = r.prHead { heads["\(r.repo)#\(pr)"] = h }
+            newestInPR["\(r.repo)#\(pr)|\(r.workflow ?? "")"] = r.id
+        }
         let queueById = Dictionary(g.queue.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         return groups.map { key, runs in
             var latest: [String: RunRow] = [:]
-            for r in runs.sorted(by: { ($0.updatedAt ?? 0, $0.id) < ($1.updatedAt ?? 0, $1.id) }) {
-                latest[r.workflow ?? String(r.id)] = r
-            }
+            for r in runs { latest[r.workflow ?? String(r.id)] = r }
             let rs = latest.values.sorted { ($0.workflow ?? "") < ($1.workflow ?? "") }
-            let active = rs.filter(\.isActive)
-            let failed = rs.filter(\.failed)
-            let queued = active.compactMap { queueById[$0.id] }
-            let state: CheckSet.State = !active.isEmpty ? .pending : failed.isEmpty ? .green : .red
             let head = rs.first { $0.prNumber != nil } ?? rs.first!
+            // This commit is its PR's head, yet a workflow ran on another of
+            // the PR's commits after it last ran here: the branch left and came
+            // back (a force-push), so the result here predates the head.
+            let prKey = head.prNumber.map { "\(head.repo)#\($0)" }
+            let isHead = prKey.flatMap { heads[$0] }.map { sameCommit($0, head.sha) } ?? false
+            let superseded = !isHead ? [] : rs.filter { r in
+                !r.isActive && (newestInPR["\(prKey!)|\(r.workflow ?? "")"] ?? r.id) > r.id
+            }
+            let active = rs.filter(\.isActive)
+            let failed = rs.filter { $0.failed && !superseded.contains($0) }
+            let queued = active.compactMap { queueById[$0.id] }
+            let state: CheckSet.State = !active.isEmpty || !superseded.isEmpty ? .pending : failed.isEmpty ? .green : .red
             return CheckSet(
                 id: key, repo: head.repo, prNumber: head.prNumber, branch: head.branch, sha: head.sha,
-                title: head.title, runs: rs, total: rs.count, done: rs.count - active.count, failed: failed,
-                queued: queued, etaGreenMs: state == .pending ? eta(active, queueById) : nil, state: state
+                title: head.title, runs: rs, total: rs.count, done: rs.count - active.count - superseded.count,
+                failed: failed, queued: queued,
+                etaGreenMs: state == .pending && superseded.isEmpty ? eta(active, queueById) : nil, state: state,
+                superseded: superseded
             )
         }
         .sorted { a, b in
@@ -94,13 +117,32 @@ public enum Rollup {
         return [lo, hi]
     }
 
+    /// A PR's checks are its HEAD commit's checks. Until the head has a run
+    /// this is nil (still waiting), never an older commit's result: on
+    /// taylab-launch-kit PR #79 a wait read "red" from a commit the branch had
+    /// been force-pushed off. Without a known head (an older daemon), the
+    /// commit with the newest run stands in for it.
     public static func find(_ g: Glance, repo: String, pr: Int? = nil, sha: String? = nil, branch: String? = nil) -> CheckSet? {
-        checkSets(g).first { s in
-            (s.repo == repo || s.repo.hasSuffix("/" + repo))
+        let repoMatch: (String) -> Bool = { $0 == repo || $0.hasSuffix("/" + repo) }
+        let sets = checkSets(g).filter { s in
+            repoMatch(s.repo)
                 && (pr == nil || s.prNumber == pr)
-                && (sha == nil || (s.sha.map { sha!.hasPrefix($0) || $0.hasPrefix(sha!) } ?? false))
+                && (sha == nil || sameCommit(sha!, s.sha))
                 && (branch == nil || s.branch == branch)
         }
+        guard let pr else { return sets.first }
+        let head = ((g.runs ?? []) + (g.recent ?? []))
+            .filter { repoMatch($0.repo) && $0.prNumber == pr && $0.prHead != nil }
+            .max { $0.id < $1.id }?.prHead
+        if let head { return sets.first { sameCommit(head, $0.sha) } }
+        return sets.max { ($0.runs.map(\.id).max() ?? 0) < ($1.runs.map(\.id).max() ?? 0) }
+    }
+
+    /// Shas arrive at different lengths (7 from the daemon, 12 for heads, 40
+    /// from a caller), so one is a prefix of the other.
+    static func sameCommit(_ a: String, _ b: String?) -> Bool {
+        guard let b, !a.isEmpty, !b.isEmpty else { return false }
+        return a.hasPrefix(b) || b.hasPrefix(a)
     }
 }
 

@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { roleLabel, deriveDrift, extraLabels } from '../lib/state.js';
+import { roleLabel, deriveDrift, extraLabels, shapeRun } from '../lib/state.js';
 import { makeRunner, makeRunner2 } from './fixtures/index.js';
 
 // ---- roleLabel ---------------------------------------------------------------
@@ -106,5 +106,25 @@ describe('extraLabels', () => {
       extraLabels([{ name: 'self-hosted' }, { name: 'macOS' }, { name: 'ui-web' }]),
       ['ui-web']
     );
+  });
+});
+
+// ---- shapeRun ----------------------------------------------------------------
+
+describe('shapeRun — the PR head', () => {
+  // taylab-launch-kit PR #79, 2026-10-03: a wait on the PR read "red" from a
+  // commit the branch had been force-pushed off. The head is what tells them apart.
+  test('keeps the head commit of the PR the run belongs to', () => {
+    const r = shapeRun('acme/web', {
+      id: 3, name: 'ci', head_sha: 'caf600e1234567', status: 'completed', conclusion: 'failure',
+      pull_requests: [{ number: 79, head: { ref: 'fix', sha: '16c0536773bcd1c6' } }],
+    });
+    assert.equal(r.prNumber, 79);
+    assert.equal(r.prHeadSha, '16c0536773bcd1c6');
+  });
+
+  test('a push run has no PR head', () => {
+    const r = shapeRun('acme/web', { id: 4, name: 'ci', head_sha: 'abc', status: 'queued', pull_requests: [] });
+    assert.equal(r.prHeadSha, null);
   });
 });

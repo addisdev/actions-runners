@@ -300,6 +300,11 @@ the disk floor is holding jobs, GitHub is refusing jobs for billing, or one of
 the checks is queued with a cause that never clears — and `3` on timeout
 (`--timeout 45m` by default).
 
+With `--pr`, the answer is the PR's **head** commit, never an older commit's
+result. Until the head has a run, the wait keeps waiting. After a force-push
+back to an earlier commit, that commit's old result waits for the new run
+("waiting for kit-ci to run again on this commit").
+
 Exit codes for `status` and `why`: `0` fine or healthy waiting, `1` a real
 fault, `3` nothing could be read.
 
