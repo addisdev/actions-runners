@@ -317,6 +317,10 @@ export function shapeRun(repo, run, groups = FLAT) {
     displayTitle: run.display_title ?? null,
     // First PR linked to this run — present on pull_request events.
     prNumber: run.pull_requests?.[0]?.number ?? null,
+    // That PR's head commit when GitHub answered. Every tick re-fetches the
+    // runs page, so this is the PR's current head, and it is what a wait on
+    // the PR has to judge: an older commit's red is not the PR's verdict.
+    prHeadSha: run.pull_requests?.[0]?.head?.sha ?? null,
     // Who triggered the run.
     actor: run.actor?.login ?? run.triggering_actor?.login ?? null,
     // First line of the commit message. Truncated on the way in so the DB row

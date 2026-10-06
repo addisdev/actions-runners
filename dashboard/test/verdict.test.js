@@ -261,6 +261,16 @@ describe('the glance payload', () => {
     assert.ok((g.runs.find((r) => r.status === 'in_progress')?.sha?.length ?? 0) >= 7);
   });
 
+  test("a PR run carries the PR's head commit, so a wait judges the head", () => {
+    const { s, r } = run('live');
+    const active = s.snapshot.active ?? [];
+    assert.ok(active.length > 0);
+    const snapshot = { ...s.snapshot, active: [{ ...active[0], prNumber: 79, prHeadSha: '16c0536773bcd1c6cb6a' }, ...active.slice(1)] };
+    const g = buildGlance(snapshot, r, { now: s.now, staleMs: 240000, floorGb: 40, localHostId: 'build-host' });
+    assert.equal(g.runs.find((x) => x.id === active[0].id).prHead, '16c0536773bc');
+    assert.ok(g.runs.slice(1).every((x) => x.prHead === undefined || x.prHead === null));
+  });
+
   test('is small enough to stream every tick over a phone link', () => {
     const bytes = Buffer.byteLength(JSON.stringify(glanceOf('live')));
     assert.ok(bytes < 16 * 1024, `${bytes} bytes`);

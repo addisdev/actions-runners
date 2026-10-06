@@ -108,6 +108,19 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- **`cockpit wait --pr` read red from a commit that was no longer the PR.** It
+  picked whichever of the PR's commits had the latest update, and nothing said
+  which commit was the head. On taylab-launch-kit PR #79 (2026-10-03) the branch
+  was force-pushed back off a failing commit, and before the daemon saw the new
+  run, the wait answered "red" from the old commit. A wait on the re-pushed sha
+  answered "cancelled" from that sha's first run. The glance's runs now carry
+  `prHead`, the PR's head as GitHub reported it on that tick (from
+  `pull_requests[].head.sha`, no extra API call). A PR's checks are the head's
+  checks, and a head with no run yet is still waiting. A head whose result is
+  older than a run of the same workflow on another of the PR's commits was left
+  and re-pushed, so that result waits for the new run. Within a commit, the
+  newest run of a workflow is now chosen by run id, not `updatedAt`: a run that
+  concurrency cancelled after its replacement was created used to win.
 - **Admission stalled with every slot free.** Every held job polled through the
   admission mutex, and each holder spent seconds reading the whole waiter queue
   on a loaded host, so the lock was never free and the oldest waiter, the only
