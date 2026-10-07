@@ -91,12 +91,21 @@ say "==> $(date '+%F %T')  free ${FREE_NOW} GB, pressure line ${PRESSURE_GB} GB$
 # only the runners that are building. Refusing everything while any job ran
 # meant this never ran on a busy day, which is when the disk runs out.
 # ---------------------------------------------------------------------------
+rm -f /tmp/.cleanup-gh-failed
 for d in "$ROOT"/*/; do
   [ -f "$d/.runner" ] || continue
   repo=$(python3 -c "import json;print(json.load(open('$d/.runner',encoding='utf-8-sig'))['gitHubUrl'].split('github.com/')[-1])" 2>/dev/null) || continue
   echo "$repo"
 done | sort -u | while read -r repo; do
-  gh api "repos/$repo/actions/runners" --jq '.runners[] | select(.busy) | .name' 2>/dev/null
+  # On failure gh prints GitHub's error body to stdout ({"message": "Requires
+  # authentication", ...} over SSH, where it has no keychain token), which used
+  # to land in this list as runner names. Only a successful call counts, and
+  # only lines shaped like a runner name.
+  if out="$(gh api "repos/$repo/actions/runners" --jq '.runners[] | select(.busy) | .name' 2>/dev/null)"; then
+    printf '%s\n' "$out" | grep -E '^[A-Za-z0-9._-]+$'
+  else
+    : > /tmp/.cleanup-gh-failed
+  fi
 done > /tmp/.cleanup-busy 2>/dev/null
 # A runner held by the admission hook is "busy" to GitHub but is running
 # nothing: its job is parked before its first step, waiting for a slot or for
@@ -129,6 +138,21 @@ sort -u -o /tmp/.cleanup-building /tmp/.cleanup-building
   && say "(runners held by admission are waiting, not building — not counted)"
 BUILDING=" $(tr '\n' ' ' < /tmp/.cleanup-building) "
 HOST_IDLE=1
+ALL_BUSY=0
+# Without GitHub's answer the admission slots still know every admitted job,
+# but only where the hook runs. With admission off nothing local does, so
+# every runner counts as building and nothing is deleted.
+if [ -f /tmp/.cleanup-gh-failed ]; then
+  case "${FLEET_ADMIT_MODE:-off}" in
+    enforce | observe) say "(GitHub's busy check failed; going by the admission slots)" ;;
+    *)
+      say "GitHub's busy check failed and admission is off: every runner counts as building"
+      ALL_BUSY=1
+      HOST_IDLE=0
+      ;;
+  esac
+  rm -f /tmp/.cleanup-gh-failed
+fi
 if [ -n "$(tr -d '[:space:]' < /tmp/.cleanup-building)" ]; then
   HOST_IDLE=0
   say "a runner is BUSY:"
@@ -136,7 +160,11 @@ if [ -n "$(tr -d '[:space:]' < /tmp/.cleanup-building)" ]; then
   say "(host-wide steps wait for an idle fleet; per-runner steps skip these runners)"
 fi
 rm -f /tmp/.cleanup-busy /tmp/.cleanup-building
-building() { case "$BUILDING" in *" $1 "*) return 0 ;; esac; return 1; }
+building() {
+  [ "$ALL_BUSY" = 1 ] && return 0
+  case "$BUILDING" in *" $1 "*) return 0 ;; esac
+  return 1
+}
 host_idle() {
   [ "$HOST_IDLE" = 1 ] && return 0
   say "    (skipped: a job is running)"

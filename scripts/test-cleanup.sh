@@ -141,6 +141,35 @@ clean --apply > "$T/out"
 ok "a lock left by a killed run is taken over" "$(calls 'simctl erase U-WEB')" "1"
 ok "the lock is released afterwards" "$(gone "$T/.cleanup-lock")" "removed"
 
+echo "== a failed GitHub check is not read as runner names =="
+setup 7
+echo 45 > "$T/free"
+# What gh does over SSH with no token: the error body on stdout, exit 1.
+printf '#!/usr/bin/env bash\nprintf %s\nexit 1\n' "'{\n  \"message\": \"Requires authentication\",\n  \"status\": \"401\"\n}\n'" > "$T/bin/gh"
+chmod +x "$T/bin/gh"
+echo "FLEET_ADMIT_MODE=enforce" > "$T/fleet.env"
+mkdir -p "$T/.admission/slots"
+sleep 300 >/dev/null 2>&1 &
+SLOT=$!
+printf 'pid=%s\nrunner=RL-android\n' "$SLOT" > "$T/.admission/slots/RL-android"
+clean --apply > "$T/out"
+ok "the stub really prints an error body" "$("$T/bin/gh" | grep -c 'Requires authentication')" "1"
+ok "no error text listed as a busy runner" "$(grep -c -E '"status"|"message"|^ *[{}]' "$T/out")" "0"
+ok "said it went by the slots" "$(grep -c 'going by the admission slots' "$T/out")" "1"
+ok "the slot-holding runner kept its device" "$(calls 'U-ANDROID')" "0"
+ok "an idle runner's device was still erased" "$(calls 'simctl erase U-WEB')" "1"
+{ kill "$SLOT"; wait "$SLOT"; } 2>/dev/null
+
+echo "== with admission off, a failed GitHub check deletes nothing =="
+setup 8
+echo 45 > "$T/free"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$T/bin/gh"
+chmod +x "$T/bin/gh"
+clean --apply > "$T/out"
+ok "said every runner counts as building" "$(grep -c 'every runner counts as building' "$T/out")" "1"
+ok "erased no device" "$(calls 'simctl erase')" "0"
+ok "kept every runner's browsers" "$(gone "$T/ios/_work/_tool/ms-playwright")" "kept"
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]
