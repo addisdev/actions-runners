@@ -108,6 +108,12 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- **A cancelled job held by admission kept its runner for minutes.** The
+  worker never signals the job-started hook, and GitHub keeps the run and the
+  job `in_progress` until it force-completes the job, about four minutes later
+  (measured 2026-10-07, homelab-map run 37236945666), so the run-status poll
+  could not fire sooner. The hook now reads its worker's `_diag` log every
+  poll and leaves as soon as the worker logs the cancel.
 - **`cockpit wait --pr` read red from a commit that was no longer the PR.** It
   picked whichever of the PR's commits had the latest update, and nothing said
   which commit was the head. On taylab-launch-kit PR #79 (2026-10-03) the branch

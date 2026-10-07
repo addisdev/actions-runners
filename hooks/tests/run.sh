@@ -547,7 +547,9 @@ end_jobs
 # A stand-in Runner.Worker: a script whose command line says Runner.Worker, so
 # admit_resolve_owner picks it as the owner exactly as it does in production.
 # It starts the hook as its child and waits; killing it leaves the hook
-# reparented, which is what GitHub cancelling a held job does to the real one.
+# reparented, which is what a worker that dies mid-hold (a job timeout, a
+# runner restart) does to the real one. A cancel does not kill the worker: it
+# only writes to the worker's log (see the next case but one).
 fake_worker() {
   cat > "$BIN/Runner.Worker" <<EOF
 #!/usr/bin/env bash
@@ -583,6 +585,61 @@ ok "orphaned hook left no waiter" "$(ls -1 "$ROOT/.admission/waiters" 2>/dev/nul
 ok "orphaned hook claimed no slot" \
   "$([ -f "$ROOT/.admission/slots/orphan" ] && echo yes || echo no)" "no"
 kill "$LIVE" 2>/dev/null
+
+echo "== a cancel the worker logged releases the hook at once =="
+# Measured 2026-10-07: GitHub keeps a cancelled run in_progress for minutes
+# while its job is held here, and the worker never signals the hook. The
+# worker's log is the only prompt sign, so the hook reads it every poll.
+setup enforce 1 30 1
+echo "FLEET_ADMIT_CANCEL_POLL_S=600" >> "$ROOT/fleet.env"
+mkdir -p "$ROOT/_diag"
+echo "[2026-10-07 11:25:33Z INFO Worker] Waiting for the job to complete or for a cancel message from the channel." \
+  > "$ROOT/_diag/Worker_20261007-112532-utc.log"
+LIVE=$(fake_slot occupied)
+WORKER=$(fake_worker cancelme)
+wait_for "1" "events held" 10
+HOOK=$(cat "$ROOT/hook-cancelme.pid")
+sleep 2
+ok "still held while the log says nothing" "$(kill -0 "$HOOK" 2>/dev/null && echo alive || echo gone)" "alive"
+echo "[2026-10-07 11:26:32Z INFO Worker] Cancellation/Shutdown message received." \
+  >> "$ROOT/_diag/Worker_20261007-112532-utc.log"
+BEFORE=$(date +%s)
+wait_for "1" "events cancelled" 10
+AFTER=$(date +%s)
+ok "cancel logged" "$(events cancelled)" "1"
+ok "reason names the worker" "$(grep -c 'the runner was told to cancel this job' "$LOG")" "1"
+ok "released within a poll or two" "$([ $((AFTER - BEFORE)) -le 3 ] && echo prompt || echo slow)" "prompt"
+ok "hook exited" "$(kill -0 "$HOOK" 2>/dev/null && echo alive || echo gone)" "gone"
+ok "cancelled hook left no waiter" "$(ls -1 "$ROOT/.admission/waiters" 2>/dev/null | wc -l | tr -d ' ')" "0"
+ok "cancelled hook claimed no slot" \
+  "$([ -f "$ROOT/.admission/slots/cancelme" ] && echo yes || echo no)" "no"
+kill "$WORKER" "$LIVE" 2>/dev/null
+
+echo "== the worker's log is found under a versioned bin directory =="
+# Production runners run <runner>/bin.<version>/Runner.Worker after a
+# self-update; the log is in <runner>/_diag either way.
+setup enforce 1 30 1
+R="$ROOT/runner-x"
+mkdir -p "$R/bin.2.337.0" "$R/_diag"
+# A script, not a copy of /bin/sleep: macOS kills a renamed copy of a system
+# binary on launch.
+printf '#!/bin/bash\nsleep "$1"\n' > "$R/bin.2.337.0/Runner.Worker"
+chmod +x "$R/bin.2.337.0/Runner.Worker"
+"$R/bin.2.337.0/Runner.Worker" 300 >/dev/null 2>&1 &
+WPID=$!
+touch -t 202610070000 "$R/_diag/Worker_20261007-000000-utc.log"
+touch "$R/_diag/Worker_20261007-112532-utc.log"
+FOUND="$(FLEET_ROOT="$ROOT" bash -c '
+  ROOT="$FLEET_ROOT"; . "'"$HOOKS"'/common.sh"
+  ADMIT_WAIT_OWNER_KIND=worker ADMIT_WAIT_OWNER_PID='"$WPID"'
+  admit_resolve_worker_log && echo "$ADMIT_WORKER_LOG"; trap - EXIT')"
+ok "newest worker log of that runner" "$FOUND" "$R/_diag/Worker_20261007-112532-utc.log"
+NONE="$(FLEET_ROOT="$ROOT" bash -c '
+  ROOT="$FLEET_ROOT"; . "'"$HOOKS"'/common.sh"
+  ADMIT_WAIT_OWNER_KIND=fallback ADMIT_WAIT_OWNER_PID='"$WPID"'
+  admit_resolve_worker_log && echo found || echo none; trap - EXIT')"
+ok "no worker, no log" "$NONE" "none"
+kill "$WPID" 2>/dev/null
 
 echo "== a dead head of the line does not stall the jobs behind it =="
 setup enforce 1 30 1

@@ -104,6 +104,7 @@ ANNOUNCED=0
 TIMEOUT_ANNOUNCED=0
 LAST_CANCEL_CHECK=-1
 admit_resolve_wait_owner
+admit_resolve_worker_log || true
 while :; do
   WAITED=$(($(admit_now) - ADMIT_WAIT_START))
   BUSY=0
@@ -113,6 +114,14 @@ while :; do
   if admit_owner_gone; then
     admit_leave_waiters
     admit_log orphaned 'its Runner.Worker exited while it waited' "$WAITED" "$BUSY"
+    exit 0
+  fi
+  # Every poll, not every cancel poll: it is a local grep, and GitHub shows
+  # nothing for minutes after a cancel (see admit_resolve_worker_log).
+  if admit_worker_cancelled; then
+    admit_leave_waiters
+    admit_log cancelled 'the runner was told to cancel this job' "$WAITED" "$BUSY"
+    echo "fleet: job cancelled while waiting — releasing this runner"
     exit 0
   fi
   if admit_waiting_behind_older; then
@@ -142,9 +151,9 @@ while :; do
     :
   fi
 
-  # Runner.Worker does not reliably interrupt a hook that is sleeping when its
-  # run is cancelled. Polling lets the hook return so the worker can observe the
-  # cancellation and become available for another job.
+  # Runner.Worker never interrupts this hook when its run is cancelled. The
+  # worker's log above usually answers first; this catches a run that ended
+  # some other way, and a host where the log cannot be found.
   if [ "$LAST_CANCEL_CHECK" -lt 0 ] \
     || [ $((WAITED - LAST_CANCEL_CHECK)) -ge "$ADMIT_CANCEL_POLL" ]; then
     LAST_CANCEL_CHECK="$WAITED"
