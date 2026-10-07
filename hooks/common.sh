@@ -95,8 +95,14 @@ ADMIT_CANCEL_POLL="$(admit_int "${FLEET_ADMIT_CANCEL_POLL_S:-}" 30)"
 # Matches minFreeDiskGb in lib/capacity.js. Unlike the concurrency limit this
 # one cannot be satisfied by waiting unless cleanup runs, so it relies on the
 # bounded wait above rather than blocking indefinitely.
+#
+# The floor is on USABLE space, counting what macOS can purge (see
+# free-disk.sh); a lower hard floor on plain df free covers the time a purge
+# takes.
 # shellcheck disable=SC2034  # used by the files that source this
 ADMIT_MIN_DISK_GB="$(admit_int "${FLEET_ADMIT_MIN_FREE_DISK_GB:-}" 40)"
+# shellcheck disable=SC2034  # used by the files that source this
+ADMIT_MIN_PLAIN_DISK_GB="$(admit_int "${FLEET_ADMIT_MIN_PLAIN_FREE_GB:-}" 15)"
 
 # Never zero: a zero poll with a non-zero wait is a busy loop on a machine that
 # is by definition already under load.
@@ -533,9 +539,23 @@ admit_run_completed() {
   [ "$(admit_run_status)" = "completed" ]
 }
 
-admit_free_disk_gb() {
-  local avail
-  avail="$(df -k / 2>/dev/null | tail -1 | awk '{print $4}')"
-  [ -n "$avail" ] || return 1
-  printf '%s' "$((avail / 1048576))"
-}
+# A host updated without free-disk.sh keeps df's number rather than failing:
+# job-started runs under -e, and a failed source there admits without a slot.
+# Checked before sourcing: under bash 3.2 with -e a missing file is fatal even
+# inside an `if`.
+ADMIT_FREE_DISK_LIB="$(dirname "${BASH_SOURCE[0]}")/free-disk.sh"
+if [ -f "$ADMIT_FREE_DISK_LIB" ]; then
+  # shellcheck source=hooks/free-disk.sh
+  . "$ADMIT_FREE_DISK_LIB"
+else
+  fleet_plain_free_gb() {
+    local kb
+    kb="$(df -k / 2>/dev/null | tail -1 | awk '{print $4}')"
+    case "$kb" in '' | *[!0-9]*) return 1 ;; esac
+    printf '%s' "$((kb / 1048576))"
+  }
+  fleet_usable_free_gb() { fleet_plain_free_gb; }
+fi
+
+admit_free_disk_gb() { fleet_usable_free_gb; }
+admit_plain_free_disk_gb() { fleet_plain_free_gb; }

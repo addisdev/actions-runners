@@ -25,12 +25,20 @@ setup() {
   T="$BASE/case-$1"
   rm -rf "$T"
   mkdir -p "$T/bin" "$T/home/Library/Developer/Xcode/DerivedData"
+  mkdir -p "$T/hooks"
   cp "$HERE/cleanup.sh" "$T/"
+  cp "$HERE/hooks/free-disk.sh" "$T/hooks/"
   for r in web android ios; do
     mkdir -p "$T/$r/_work/_tool/ms-playwright/chromium" "$T/$r/_diag"
     printf '{"agentName":"RL-%s","gitHubUrl":"https://github.com/acme/%s"}' "$r" "$r" > "$T/$r/.runner"
   done
   echo 60 > "$T/free"
+  # Usable space (purgeable counted) follows the same file unless a case sets
+  # $T/usable: osascript is what macOS answers, df is plain free.
+  cat > "$T/bin/osascript" <<EOF
+#!/usr/bin/env bash
+if [ -f "$T/usable" ]; then cat "$T/usable"; else cat "$T/free"; fi
+EOF
   : > "$T/busy"
   : > "$T/calls"
   cat > "$T/sims.json" <<'EOF'
@@ -43,10 +51,13 @@ setup() {
     {"name": "iPhone 17", "udid": "U-PERSON", "state": "Shutdown", "dataPathSize": 12884901888}
   ]}}
 EOF
+  # Honours -k (KB) and -g (GB) like the real df: free-disk.sh asks in KB.
   cat > "$T/bin/df" <<EOF
 #!/usr/bin/env bash
-echo "Filesystem 1G-blocks Used Available Capacity Mounted"
-echo "/dev/disk3s1s1 926 12 \$(cat "$T/free") 16% /"
+f=\$(cat "$T/free")
+case "\$*" in *-k*) f=\$((f * 1048576)) ;; esac
+echo "Filesystem blocks Used Available Capacity Mounted"
+echo "/dev/disk3s1s1 926 12 \$f 16% /"
 EOF
   cat > "$T/bin/xcrun" <<EOF
 #!/usr/bin/env bash
@@ -169,6 +180,27 @@ clean --apply > "$T/out"
 ok "said every runner counts as building" "$(grep -c 'every runner counts as building' "$T/out")" "1"
 ok "erased no device" "$(calls 'simctl erase')" "0"
 ok "kept every runner's browsers" "$(gone "$T/ios/_work/_tool/ms-playwright")" "kept"
+
+echo "== purgeable space keeps --auto quiet, a low plain free does not =="
+setup 9
+echo 50 > "$T/free"
+echo 160 > "$T/usable"
+date +%s > "$T/.cleanup-last-full"
+OUT="$(clean --apply --auto)"
+ok "50 GB plain but 160 usable: nothing to do" "$OUT" ""
+echo 20 > "$T/free"
+clean --apply --auto > "$T/out"
+ok "plain free near the hard floor is pressure" "$(grep -c 'UNDER PRESSURE' "$T/out")" "1"
+ok "the log shows both numbers" "$(grep -c 'free 160 GB (20 GB without purgeable)' "$T/out")" "1"
+
+echo "== without free-disk.sh it still reads df =="
+setup 10
+rm "$T/hooks/free-disk.sh"
+echo 45 > "$T/free"
+echo 160 > "$T/usable"
+clean --apply > "$T/out"
+ok "no missing-file noise" "$(grep -c -E 'No such file|command not found' "$T/out")" "0"
+ok "went by df, so under pressure" "$(grep -c 'UNDER PRESSURE' "$T/out")" "1"
 
 echo
 echo "passed $PASS, failed $FAIL"

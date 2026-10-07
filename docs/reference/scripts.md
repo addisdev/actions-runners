@@ -783,8 +783,9 @@ Four checks, and it exits non-zero if any fails:
    mentioned in `docs/configuration.md`.
 4. Example workflows target `self-hosted` and pin actions to a full SHA.
 
-Three files are named as deliberate exceptions to check 2 — `hooks/common.sh`,
-`hooks/tests/install.sh` and `autofix/escalate/run.mjs` — because each is
+A short list of files are named as deliberate exceptions to check 2 — the
+sourced hook libraries (`hooks/common.sh`, `hooks/free-disk.sh`), the hook test
+helpers under `hooks/tests/` and `autofix/escalate/run.mjs` — because each is
 sourced or spawned by something else rather than run by a person. They are
 listed individually rather than matched by a pattern, so that adding one is a
 decision somebody makes in a diff.

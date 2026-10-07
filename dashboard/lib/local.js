@@ -193,6 +193,33 @@ function parseVmStat(text) {
   };
 }
 
+// Free disk as a build gets it: plain free plus what macOS can purge
+// (NSURLVolumeAvailableCapacityForImportantUsageKey). df counts purgeable caches
+// as used; on runner-host it said 101 GB while macOS offered 163, and a floor
+// read from df held every job while macOS saw no reason to purge anything.
+// Same measure as hooks/free-disk.sh, so the dashboard's floor and the
+// admission hook's agree. Cached a minute: it is an osascript, not a syscall.
+const USABLE_SCRIPT =
+  'ObjC.import("Foundation"); var out = Ref(); ' +
+  '$.NSURL.fileURLWithPath("/").getResourceValueForKeyError(' +
+  'out, "NSURLVolumeAvailableCapacityForImportantUsageKey", null); ObjC.unwrap(out[0])';
+let usableCache = { at: 0, gb: null };
+
+export function parseUsableBytes(raw) {
+  const text = String(raw ?? '').trim();
+  if (!/^\d+$/.test(text)) return null;
+  const bytes = Number(text);
+  return bytes > 0 ? bytes / 1073741824 : null;
+}
+
+async function usableFreeGb(now = Date.now()) {
+  if (process.platform !== 'darwin') return null;
+  if (now - usableCache.at < 60000) return usableCache.gb;
+  const raw = await sh('osascript', ['-l', 'JavaScript', '-e', USABLE_SCRIPT], 5000);
+  usableCache = { at: now, gb: parseUsableBytes(raw) };
+  return usableCache.gb;
+}
+
 function parseDf(text) {
   const line = text.trim().split('\n').pop() ?? '';
   const cols = line.split(/\s+/);
@@ -227,7 +254,7 @@ async function macosVersion() {
 // pressure level, the free percentage it reports, and the swap-in RATE. Swap
 // level is kept for context, not for judgement.
 export async function hostVitals() {
-  const [swapRaw, vmRaw, dfRaw, osVersion, pressureRaw, freePctRaw] = await Promise.all([
+  const [swapRaw, vmRaw, dfRaw, osVersion, pressureRaw, freePctRaw, usableGb] = await Promise.all([
     sh('sysctl', ['-n', 'vm.swapusage']),
     sh('vm_stat', []),
     sh('df', ['-k', '/']),
@@ -236,6 +263,7 @@ export async function hostVitals() {
     // itself broadcasts to applications, and it costs about 6ms.
     sh('sysctl', ['-n', 'kern.memorystatus_vm_pressure_level']),
     sh('memory_pressure', []),
+    usableFreeGb(),
   ]);
   const swap = parseSwap(swapRaw);
   const mem = parseVmStat(vmRaw);
@@ -263,7 +291,9 @@ export async function hostVitals() {
     // Cumulative since boot. The collector turns these into a rate.
     swapins: mem.swapins,
     swapouts: mem.swapouts,
-    diskFreeGb: disk.freeGb,
+    // The floors compare against this; df's own figure is kept beside it.
+    diskFreeGb: usableGb ?? disk.freeGb,
+    diskPlainFreeGb: disk.freeGb,
     diskTotalGb: disk.totalGb,
   };
 }

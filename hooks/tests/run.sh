@@ -65,7 +65,7 @@ start() {
   FLEET_ROOT="$ROOT" RUNNER_NAME="$1" GITHUB_REPOSITORY="acme/$1" \
     GITHUB_RUN_ID="${2:-100}" GITHUB_JOB="build" FAKE_RUN_STATUS="$RUN_STATUS" \
     PATH="$BIN:$PATH" \
-    bash "$HOOKS/job-started.sh"
+    bash -e "$HOOKS/job-started.sh"
 }
 
 # Starts a hook whose PARENT outlives it, which is the production shape: the
@@ -80,7 +80,7 @@ start_bg() {
     FLEET_ROOT="$ROOT" RUNNER_NAME="$1" GITHUB_REPOSITORY="acme/$1" \
       GITHUB_RUN_ID="${2:-100}" GITHUB_JOB="build" \
       FAKE_RUN_STATUS="$RUN_STATUS" PATH="$BIN:$PATH" \
-      bash "$HOOKS/job-started.sh"
+      bash -e "$HOOKS/job-started.sh"
     sleep 120
   ) >/dev/null 2>&1 &
   JOBPIDS+=("$!")
@@ -233,7 +233,7 @@ for r in beta gamma; do
     FLEET_ROOT="$ROOT" RUNNER_NAME="$r" GITHUB_REPOSITORY="acme/$r" \
       GITHUB_RUN_ID=100 GITHUB_JOB=build FAKE_RUN_STATUS="$RUN_STATUS" \
       MUTEX_TRACE="$TRACE" PATH="$SHIM:$BIN:$PATH" \
-      bash "$HOOKS/job-started.sh"
+      bash -e "$HOOKS/job-started.sh"
     sleep 120
   ) >/dev/null 2>&1 &
   JOBPIDS+=("$!")
@@ -368,6 +368,57 @@ start alpha
 ok "held on the disk floor" "$(events held)" "1"
 ok "disk reason recorded" "$(grep -c 'below the 999999 GB floor' "$LOG")" "2"
 
+# The runner runs the hook as `bash -e`, so the tests do too: a failed command
+# there exits the hook, and its EXIT trap admits the job without a slot.
+#
+# Real df on the test host is far below this floor; the osascript stub plays
+# macOS reporting that much usable once purgeable caches are counted.
+usable_stub() {
+  printf '#!/usr/bin/env bash\necho %s\n' "$1" > "$BIN/osascript"
+  chmod +x "$BIN/osascript"
+}
+
+echo "== purgeable space counts toward the disk floor =="
+# runner-host 2026-10-07: df 101 GB, macOS 163 GB available. A floor read from
+# df held every job while macOS had 62 GB it would purge on demand.
+setup enforce 8 3 1 400000
+usable_stub 500000
+start alpha
+ok "admitted on what macOS will provide" "$(events admitted)" "1"
+ok "not held" "$(events held)" "0"
+
+echo "== FLEET_DISK_PROBE=df goes back to plain df =="
+setup enforce 8 3 1 400000
+usable_stub 500000
+echo "FLEET_DISK_PROBE=df" >> "$ROOT/fleet.env"
+start alpha
+ok "held on plain df" "$(grep -c 'below the 400000 GB floor' "$LOG")" "2"
+
+echo "== the plain hard floor still holds when purgeable is plentiful =="
+setup enforce 8 3 1 1
+usable_stub 500000
+echo "FLEET_ADMIT_MIN_PLAIN_FREE_GB=999999" >> "$ROOT/fleet.env"
+start alpha
+ok "held on the hard floor" "$(grep -c 'plain disk free, below the 999999 GB hard floor' "$LOG")" "2"
+
+echo "== an osascript that fails falls back to df =="
+setup enforce 8 3 1 400000
+printf '#!/usr/bin/env bash\necho "execution error: -2700" >&2\nexit 1\n' > "$BIN/osascript"
+chmod +x "$BIN/osascript"
+start alpha
+ok "held on df rather than admitted on nothing" "$(grep -c 'below the 400000 GB floor' "$LOG")" "2"
+
+echo "== a hooks directory without free-disk.sh still holds on df =="
+setup enforce 8 3 1 400000
+OLD="$ROOT/old-hooks"
+mkdir -p "$OLD"
+cp "$HOOKS/job-started.sh" "$HOOKS/common.sh" "$OLD/"
+FLEET_ROOT="$ROOT" RUNNER_NAME=alpha GITHUB_REPOSITORY=acme/alpha GITHUB_RUN_ID=100 \
+  GITHUB_JOB=build FAKE_RUN_STATUS="$RUN_STATUS" PATH="$BIN:$PATH" bash -e "$OLD/job-started.sh"
+# Held on df, under bash -e: before the -f check, sourcing the missing file
+# killed the hook there and its EXIT trap let the job straight in.
+ok "held on df, not admitted by a failed source" "$(grep -c 'below the 400000 GB floor' "$LOG")" "2"
+
 echo "== a garbage config falls back instead of spinning =="
 setup enforce
 {
@@ -464,7 +515,7 @@ GITHUB_TOKEN=test-token \
   FLEET_ROOT="$ROOT" RUNNER_NAME=curl-runner \
   GITHUB_REPOSITORY="acme/curl-runner" GITHUB_RUN_ID=200 GITHUB_JOB=build \
   FAKE_RUN_STATUS="$RUN_STATUS" \
-  bash "$HOOKS/job-started.sh"
+  bash -e "$HOOKS/job-started.sh"
 AFTER=$(date +%s)
 wait "$STATUS_WRITER"
 kill "$LIVE" 2>/dev/null
@@ -507,7 +558,7 @@ run_daemon_case() {
     FLEET_ROOT="$ROOT" RUNNER_NAME=daemon-runner \
     GITHUB_REPOSITORY="acme/daemon-runner" GITHUB_RUN_ID=400 GITHUB_JOB=build \
     FAKE_RUN_STATUS="$RUN_STATUS" \
-    bash "$HOOKS/job-started.sh"
+    bash -e "$HOOKS/job-started.sh"
   AFTER=$(date +%s)
   wait "$STATUS_WRITER"
   kill "$LIVE" 2>/dev/null
@@ -555,7 +606,7 @@ fake_worker() {
 #!/usr/bin/env bash
 FLEET_ROOT="$ROOT" RUNNER_NAME="\$1" GITHUB_REPOSITORY="acme/\$1" \\
   GITHUB_RUN_ID=300 GITHUB_JOB=build FAKE_RUN_STATUS="$RUN_STATUS" \\
-  PATH="$BIN:\$PATH" bash "$HOOKS/job-started.sh" >/dev/null 2>&1 &
+  PATH="$BIN:\$PATH" bash -e "$HOOKS/job-started.sh" >/dev/null 2>&1 &
 echo \$! > "$ROOT/hook-\$1.pid"
 wait
 EOF
