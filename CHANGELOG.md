@@ -108,6 +108,14 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- **The fast loop stopped for good when one tick never finished.** A tick
+  overran at 2026-10-06 16:31Z and every tick after it was skipped as an
+  "overlap" (235 on 10-06, 1,034 on 10-07), while health read ok because
+  the slow loop also runs the tick. `lib/tick-guard.js` now waits a stuck
+  tick out for `FLEET_FAST_ABANDON_MS` (4 min), then abandons it and starts
+  the next. At most `FLEET_FAST_MAX_ABANDONED` (3) may be outstanding;
+  past that health goes not-ok. Every overrun, skip and abandon names the
+  stage the tick was in, and `/api/health` reports `fastLoop`.
 - **A cancelled job held by admission kept its runner for minutes.** The
   worker never signals the job-started hook, and GitHub keeps the run and the
   job `in_progress` until it force-completes the job, about four minutes later
