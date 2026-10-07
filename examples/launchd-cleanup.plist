@@ -10,19 +10,13 @@
         <string>/bin/bash</string>
         <string>-c</string>
         <!-- Adjust the path to your fleet root -->
-        <string>cd "$HOME/actions-runners" &amp;&amp; ./cleanup.sh --apply &gt;&gt; "$HOME/Library/Logs/fleet-cleanup.log" 2&gt;&amp;1</string>
+        <string>cd "$HOME/actions-runners" &amp;&amp; ./cleanup.sh --apply --auto &gt;&gt; "$HOME/Library/Logs/fleet-cleanup.log" 2&gt;&amp;1</string>
     </array>
 
-    <!-- Run every Sunday at 02:00 -->
-    <key>StartCalendarInterval</key>
-    <dict>
-        <key>Weekday</key>
-        <integer>0</integer>
-        <key>Hour</key>
-        <integer>2</integer>
-        <key>Minute</key>
-        <integer>0</integer>
-    </dict>
+    <!-- Every 15 minutes. --auto exits after one df unless the disk is under the
+         pressure line or a day has passed since the last full run. -->
+    <key>StartInterval</key>
+    <integer>900</integer>
 
     <key>StandardOutPath</key>
     <string>/dev/null</string>

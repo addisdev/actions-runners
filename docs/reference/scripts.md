@@ -7,7 +7,8 @@ One convention runs through all of them: **anything that deletes, deregisters or
 rewrites is dry-run by default and needs `--apply`**. Run it once, read what it
 says it would do, then run it again. The other half of that convention is that
 each script states what it *refuses* to do — `cleanup.sh --apply` will not run
-while a job is building (a job held by the admission hook is waiting, not
+its host-wide steps while a job is building and skips a building runner's own
+simulator and browsers (a job held by the admission hook is waiting, not
 building, and does not count; the dry run always runs), `deregister.sh` will not remove a runner mid-job or leave a
 repo with no CI, the reaper will not touch a directory with a live process in
 it. Those refusals are the interesting part of the behaviour, so they are
@@ -25,7 +26,7 @@ without `--repair` — have no `--apply` because there is nothing to guard.
 | `health.sh` | launchd + GitHub state per runner; `--repair` restarts dead services | read-only without `--repair` |
 | `healthctl.sh` | Install a LaunchAgent that runs `health.sh --repair` on a timer | n/a — subcommands |
 | `runs.sh` | What is building across every repo, and on which machine | read-only |
-| `cleanup.sh` | Prune stale DerivedData, dead simulators, old `_diag` | **yes** |
+| `cleanup.sh` | Erase idle CI simulators; prune stale DerivedData, dead simulators, old `_diag`, superseded runner versions | **yes** |
 | `preflight.sh` | Check a host against what the workflows assume | read-only, installs nothing |
 | `scripts/deregister.sh` | Remove one named runner completely | **yes** |
 | `scripts/drain-runner.sh` | Stop a runner gracefully, or resume it | no — every state it writes is reversible |
@@ -39,6 +40,7 @@ without `--repair` — have no `--apply` because there is nothing to guard.
 | `scripts/check-docs.sh` | Verify the docs are internally consistent | read-only |
 | `scripts/test-drain.sh` | Shell tests for drain and resume | runs against a temporary fleet |
 | `scripts/test-ephemeral.sh` | Shell tests for the ephemeral reaper | runs against a temporary fleet |
+| `scripts/test-cleanup.sh` | Shell tests for disk cleanup | runs against a temporary fleet |
 | `scripts/infer-checks.py` | Work out which preflight checks this fleet needs | read-only |
 | `dashboard/fleetctl.sh` | Install, run, inspect, back up and restore the dashboard daemon | n/a — subcommands |
 | `dashboard/agentctl.sh` | Install, run and inspect the fleet agent on an agent Mac | n/a — subcommands |
@@ -234,31 +236,56 @@ Reclaims the disk that CI quietly eats.
 Source: [`cleanup.sh`](https://github.com/addisdev/actions-runners/blob/main/cleanup.sh).
 
 ```bash
-./cleanup.sh            # dry run — prints what it WOULD delete, touches nothing
-./cleanup.sh --apply    # actually delete
+./cleanup.sh                  # dry run — prints what it WOULD delete, touches nothing
+./cleanup.sh --apply          # actually delete
+./cleanup.sh --apply --auto   # the LaunchAgent's every-15-minutes run
 ```
 
 | Flag | Effect |
 |---|---|
-| `--apply` | Perform the deletions. Recognised only as the first argument. |
+| `--apply` | Perform the deletions. |
+| `--auto` | Exit after one `df` unless free disk is under the pressure line or a day has passed since the last full run. |
 
-It removes DerivedData directories older than 7 days, simulators whose runtime
-is no longer installed, runner `_diag` logs older than 14 days, and stale
+| Variable | Default | Meaning |
+|---|---|---|
+| `FLEET_CLEANUP_PRESSURE_GB` | admission floor + 20 | Below this, the pressure steps run too and `--auto` acts at once |
+| `FLEET_CLEANUP_SIM_MAX_GB` | 3 | Erase a runner's `ci-` simulator past this size |
+| `FLEET_CLEANUP_SIM_PRESSURE_GB` | 1 | ...and past this under pressure |
+| `FLEET_CLEANUP_FULL_EVERY_S` | 86400 | `--auto` runs a full pass at least this often |
+
+Host-wide steps, only while no job is building: DerivedData directories older
+than 7 days, simulators whose runtime is no longer installed, and stale
 Playwright `__dirlock` entries older than 6 hours when no browser install is
-running. It reports Playwright cache sizes without deleting browser binaries,
-and prints free disk before and after.
+running.
+
+Per-runner steps, skipping only the runners that are building: each runner's
+own `ci-<runner> <platform> <version>` simulator (the kit's ios-ci creates one
+per runner, and recreates it if it is gone) is erased once it is shut down and
+past the size limit, and a `ci-` device whose runner no longer exists is
+deleted. Under pressure, idle runners' Playwright browsers in
+`_work/_tool/ms-playwright` are removed; the next job that needs them downloads
+them again.
+
+Always: runner `_diag` logs older than 14 days and runner versions older than
+the linked one (a self-update leaves the previous pair behind). It prints free
+disk before and after.
+
+"Building" is a runner GitHub reports busy that the admission hook is not
+holding, or a runner holding a live admission slot. A lock keeps two runs from
+overlapping; one older than 2 hours is taken over.
 
 What it refuses to do:
 
-- **It will not clean while any runner is busy.** Deleting DerivedData out from
-  under a live `xcodebuild` produces a failure that looks like a code problem
-  and is not reproducible afterwards. It names the busy runners and exits.
-- **It never runs `simctl shutdown all` and never kills
-  `CoreSimulatorService`.** Those close simulators the user is working in. Only
-  `simctl delete unavailable` is used, which removes devices whose runtime is
-  already gone and which nothing can be using.
-- **It never touches a runner's `_work`.** That is where the checkouts and build
-  caches live; wiping it makes every job re-clone and recompile from cold.
+- **Nothing host-wide while any runner is building.** Deleting DerivedData out
+  from under a live `xcodebuild` produces a failure that looks like a code
+  problem and is not reproducible afterwards.
+- **It never touches a simulator outside CI.** Only devices named `ci-…` are
+  erased, only while shut down, and never runs `simctl shutdown all` or kills
+  `CoreSimulatorService`. `simctl delete unavailable` removes only devices
+  whose runtime is already gone.
+- **It never touches a runner's checkouts or build caches in `_work`.** Wiping
+  them makes every job re-clone and recompile from cold. The one exception is
+  the Playwright tool cache, under pressure only.
 
 Dry run is the default because the build host is usually somebody's laptop too,
 and everything above is shared with their interactive Xcode.
@@ -789,6 +816,23 @@ than a copy of its logic. Most of the assertions are about refusals — that a
 busy runner is not interrupted, that `health.sh --repair` does not revive a
 drained runner, that `../escape` and `a/b` are rejected. Exits non-zero if any
 test fails.
+
+### `scripts/test-cleanup.sh`
+
+Shell tests for `cleanup.sh`. No flags.
+Source: [`scripts/test-cleanup.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/test-cleanup.sh).
+
+```bash
+scripts/test-cleanup.sh
+```
+
+It copies the real `cleanup.sh` into a temporary fleet with three runners and
+stubs `df`, `xcrun` and `gh`, so free disk, the simulator list and GitHub's busy
+runners are whatever each case says. It checks that `--auto` is a no-op with
+room to spare, that only idle, shut-down, over-size `ci-` devices are erased,
+that a building or slot-holding runner keeps its simulator and browsers, that
+host-wide steps wait for an idle fleet, that a dry run deletes nothing, and
+that two runs never overlap. Exits non-zero if any test fails.
 
 ### `scripts/test-ephemeral.sh`
 

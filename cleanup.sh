@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Reclaim the disk that CI quietly eats on this Mac.
 #
-#   ./cleanup.sh            # dry run — prints what it WOULD delete, touches nothing
-#   ./cleanup.sh --apply    # actually delete
+#   ./cleanup.sh                  # dry run — prints what it WOULD delete, touches nothing
+#   ./cleanup.sh --apply          # actually delete
+#   ./cleanup.sh --apply --auto   # what the LaunchAgent runs every 15 minutes:
+#                                 # nothing unless disk is under the pressure line
+#                                 # or a day has passed since the last full run
 #
 # Dry run is the default on purpose. This machine is a person's laptop as well as
 # the build fleet, and everything below is shared with their interactive Xcode —
@@ -13,8 +16,10 @@
 #   - never `simctl shutdown all`, never kill CoreSimulatorService. Those close
 #     simulators the user is working in. `delete unavailable` only removes devices
 #     whose runtime is already gone, which nothing can be using.
-#   - never touch a runner's _work. That is where the git checkouts and build
-#     caches live; wiping it makes every job re-clone and recompile from cold.
+#   - never touch a runner's checkouts or build caches in _work; wiping them
+#     makes every job re-clone and recompile from cold. The one exception is
+#     the Playwright tool cache, and only under disk pressure.
+#   - never touch a simulator that is not a runner's own ci- device.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,24 +28,69 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${FLEET_ROOT:-$HERE}"
 
 APPLY=0
-[ "${1:-}" = "--apply" ] && APPLY=1
+AUTO=0
+for arg in "$@"; do
+  case "$arg" in
+    --apply) APPLY=1 ;;
+    --auto) AUTO=1 ;;
+  esac
+done
 
 DERIVED="$HOME/Library/Developer/Xcode/DerivedData"
 DERIVED_AGE_DAYS=7
 DIAG_AGE_DAYS=14
 PW_LOCK_AGE_HOURS=6
 
+# Below this much free disk the cleanup also takes what costs the next job time
+# (Playwright browsers, CI simulators over a smaller size). 20 GB over the
+# admission floor: the floor holds every job, and once it does the fleet has
+# already stopped. On runner-host the disk swung by 20-40 GB within a day while
+# the weekly run reclaimed 1-2 GB, and it reached the floor on 09-29, 10-04 and
+# 10-05.
+PRESSURE_GB="${FLEET_CLEANUP_PRESSURE_GB:-$(( ${FLEET_ADMIT_MIN_FREE_DISK_GB:-40} + 20 ))}"
+FULL_EVERY_S="${FLEET_CLEANUP_FULL_EVERY_S:-86400}"
+SIM_MAX_GB="${FLEET_CLEANUP_SIM_MAX_GB:-3}"
+SIM_PRESSURE_GB="${FLEET_CLEANUP_SIM_PRESSURE_GB:-1}"
+STAMP="$ROOT/.cleanup-last-full"
+LOCK="$ROOT/.cleanup-lock"
+
 say() { printf '%s\n' "$*"; }
 run() {
   if [ "$APPLY" = "1" ]; then "$@"; else say "    [dry-run] $*"; fi
 }
+free_gb() { df -g / | awk 'NR==2{print $4}'; }
+
+# --auto runs every 15 minutes, so its no-op has to cost one df and nothing else:
+# the host it guards is usually saturated when the disk is short.
+FREE_NOW="$(free_gb)"
+PRESSURE=0
+[ -n "$FREE_NOW" ] && [ "$FREE_NOW" -lt "$PRESSURE_GB" ] && PRESSURE=1
+if [ "$AUTO" = "1" ] && [ "$PRESSURE" = "0" ]; then
+  last="$(cat "$STAMP" 2>/dev/null)"
+  case "$last" in '' | *[!0-9]*) last=0 ;; esac
+  if [ $(( $(date +%s) - last )) -lt "$FULL_EVERY_S" ]; then
+    exit 0
+  fi
+fi
+if ! mkdir "$LOCK" 2>/dev/null; then
+  # A run killed mid-way leaves the lock; none takes anywhere near two hours.
+  if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +120 2>/dev/null)" ]; then
+    rm -rf "$LOCK"; mkdir "$LOCK" 2>/dev/null || exit 0
+  else
+    say "another cleanup is running"; exit 0
+  fi
+fi
+trap 'rm -rf "$LOCK"' EXIT
+say "==> $(date '+%F %T')  free ${FREE_NOW} GB, pressure line ${PRESSURE_GB} GB$([ "$PRESSURE" = 1 ] && echo '  — UNDER PRESSURE')"
 
 # ---------------------------------------------------------------------------
-# Refuse to run while a job is in flight. Deleting DerivedData out from under a
-# live xcodebuild produces a failure that looks like a code problem and is not
-# reproducible afterwards — the worst kind of CI flake to chase.
+# Jobs in flight. Deleting DerivedData out from under a live xcodebuild produces
+# a failure that looks like a code problem and is not reproducible afterwards —
+# the worst kind of CI flake to chase. So the host-wide steps wait for an idle
+# fleet, and the per-runner steps (its simulator, its Playwright browsers) skip
+# only the runners that are building. Refusing everything while any job ran
+# meant this never ran on a busy day, which is when the disk runs out.
 # ---------------------------------------------------------------------------
-busy=""
 for d in "$ROOT"/*/; do
   [ -f "$d/.runner" ] || continue
   repo=$(python3 -c "import json;print(json.load(open('$d/.runner',encoding='utf-8-sig'))['gitHubUrl'].split('github.com/')[-1])" 2>/dev/null) || continue
@@ -66,24 +116,39 @@ while read -r name; do
   case " $held " in *" $name "*) continue ;; esac
   echo "$name" >> /tmp/.cleanup-building
 done < /tmp/.cleanup-busy
+# An admitted job holds a slot file with a live owner. That is local and does
+# not depend on `gh` working from this session, so it counts too.
+for f in "$ROOT"/.admission/slots/*; do
+  [ -f "$f" ] || continue
+  pid="$(sed -n 's/^pid=//p' "$f" | head -1)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
+  sed -n 's/^runner=//p' "$f" | head -1 >> /tmp/.cleanup-building
+done
+sort -u -o /tmp/.cleanup-building /tmp/.cleanup-building
 [ -n "$(tr -d '[:space:]' < /tmp/.cleanup-busy)" ] && [ ! -s /tmp/.cleanup-building ] \
   && say "(runners held by admission are waiting, not building — not counted)"
-busy="$(tr -d '[:space:]' < /tmp/.cleanup-building)"
-if [ -n "$busy" ]; then
+BUILDING=" $(tr '\n' ' ' < /tmp/.cleanup-building) "
+HOST_IDLE=1
+if [ -n "$(tr -d '[:space:]' < /tmp/.cleanup-building)" ]; then
+  HOST_IDLE=0
   say "a runner is BUSY:"
   sed 's/^/  /' /tmp/.cleanup-building
-  if [ "$APPLY" = 1 ]; then
-    say "refusing to clean while a job is running — try again when the fleet is idle"
-    rm -f /tmp/.cleanup-busy /tmp/.cleanup-building
-    exit 0
-  fi
-  # A dry run deletes nothing, so it always runs: during a disk-floor freeze
-  # the preview is exactly what someone needs to see.
-  say "(dry run continues; --apply would refuse until these finish)"
+  say "(host-wide steps wait for an idle fleet; per-runner steps skip these runners)"
 fi
 rm -f /tmp/.cleanup-busy /tmp/.cleanup-building
+building() { case "$BUILDING" in *" $1 "*) return 0 ;; esac; return 1; }
+host_idle() {
+  [ "$HOST_IDLE" = 1 ] && return 0
+  say "    (skipped: a job is running)"
+  return 1
+}
+# A runner directory's GitHub name, which is what GitHub and the slots use.
+runner_name() {
+  python3 -c "import json,sys;print(json.load(open(sys.argv[1],encoding='utf-8-sig'))['agentName'])" \
+    "$1/.runner" 2>/dev/null
+}
 
-before=$(df -g / | awk 'NR==2{print $4}')
+before=$(free_gb)
 say "==> free before: ${before} GB"
 
 # ---------------------------------------------------------------------------
@@ -92,7 +157,7 @@ say "==> free before: ${before} GB"
 # actively worked on is never a candidate.
 # ---------------------------------------------------------------------------
 say "==> DerivedData older than ${DERIVED_AGE_DAYS}d"
-if [ -d "$DERIVED" ]; then
+if [ -d "$DERIVED" ] && host_idle; then
   n=0
   while IFS= read -r dir; do
     [ -n "$dir" ] || continue
@@ -109,7 +174,9 @@ fi
 # across Xcode upgrades and are pure waste — nothing can boot them.
 # ---------------------------------------------------------------------------
 say "==> unavailable simulators"
-if [ "$APPLY" = "1" ]; then
+if ! host_idle; then
+  :
+elif [ "$APPLY" = "1" ]; then
   xcrun simctl delete unavailable 2>&1 | sed 's/^/    /'
 else
   cnt=$(xcrun simctl list devices 2>/dev/null | grep -c "unavailable" || true)
@@ -164,6 +231,72 @@ done
 say "    ${n} directories"
 
 # ---------------------------------------------------------------------------
+# Each runner's own CI simulator. The kit's ios-ci gives every runner one device
+# named "ci-<runner> <platform> <version>" and creates it again if it is gone.
+# Nothing ever reset them: each kept every build installed into it, its app
+# data and its logs, and the 41 devices on runner-host grew from 48 to 62 GB in
+# three days (2026-10-04 to 10-07), the largest thing on the disk this script
+# could take. A device is erased only while it is shut down and its runner is
+# not building; a ci- device whose runner no longer exists is deleted. Other
+# devices (the person's, or a shared "iPhone 17") are never touched.
+# ---------------------------------------------------------------------------
+sim_limit="$SIM_MAX_GB"; [ "$PRESSURE" = 1 ] && sim_limit="$SIM_PRESSURE_GB"
+say "==> CI simulators over ${sim_limit} GB"
+known=" "
+for d in "$ROOT"/*/; do
+  [ -f "$d/.runner" ] || continue
+  known="$known$(runner_name "$d" | tr -c 'A-Za-z0-9._\n-' '_') "
+done
+n=0
+while IFS='|' read -r udid state bytes runner; do
+  [ -n "$udid" ] || continue
+  if [ "$state" != "Shutdown" ]; then continue; fi
+  if building "$runner"; then continue; fi
+  gb=$(awk -v b="$bytes" 'BEGIN{printf "%.1f", b/1073741824}')
+  case "$known" in
+    *" $runner "*)
+      awk -v b="$bytes" -v l="$sim_limit" 'BEGIN{exit !(b >= l*1073741824)}' || continue
+      say "    ${gb} GB  erase ci-${runner} ($udid)"
+      run xcrun simctl erase "$udid" ;;
+    *)
+      say "    ${gb} GB  delete ci-${runner} ($udid): no such runner here"
+      run xcrun simctl delete "$udid" ;;
+  esac
+  n=$((n + 1))
+done < <(xcrun simctl list devices -j 2>/dev/null | python3 -c '
+import json, re, sys
+try:
+    devices = json.load(sys.stdin)["devices"]
+except Exception:
+    sys.exit(0)
+for devs in devices.values():
+    for d in devs:
+        m = re.match(r"ci-(\S+) (iOS|tvOS|watchOS|visionOS|xrOS) [0-9.]+$", d.get("name", ""))
+        if m:
+            print("|".join([d["udid"], d.get("state", ""), str(d.get("dataPathSize", 0)), m.group(1)]))
+')
+say "    ${n} devices"
+
+# ---------------------------------------------------------------------------
+# Under pressure only: each idle runner's Playwright browsers. They are 0.5-1.1 GB
+# per web runner (13 GB on runner-host) and the next job that needs them
+# downloads them again, which is cheaper than a fleet held at the floor.
+# ---------------------------------------------------------------------------
+if [ "$PRESSURE" = 1 ]; then
+  say "==> under pressure: idle runners' Playwright browsers"
+  n=0
+  for d in "$ROOT"/*/; do
+    tc="${d}_work/_tool/ms-playwright"
+    [ -d "$tc" ] && [ -f "$d/.runner" ] || continue
+    building "$(runner_name "$d")" && continue
+    say "    $(du -sh "$tc" 2>/dev/null | cut -f1)  $tc"
+    run rm -rf "$tc"
+    n=$((n + 1))
+  done
+  say "    ${n} directories"
+fi
+
+# ---------------------------------------------------------------------------
 # Playwright browser caches and stale install locks. Browsers are large and the
 # default cache is shared unless workflows set PLAYWRIGHT_BROWSERS_PATH to each
 # runner's tool cache. A crashed install leaves __dirlock behind; the next job
@@ -186,7 +319,9 @@ else
 fi
 
 say "==> stale playwright __dirlock (older than ${PW_LOCK_AGE_HOURS}h)"
-if pgrep -f '[p]laywright.*install' >/dev/null 2>&1; then
+if ! host_idle; then
+  :
+elif pgrep -f '[p]laywright.*install' >/dev/null 2>&1; then
   say "    playwright install in progress — skipping lock cleanup"
 else
   n=0
@@ -200,6 +335,12 @@ else
   say "    ${n} lock files"
 fi
 
-after=$(df -g / | awk 'NR==2{print $4}')
+after=$(free_gb)
 say "==> free after:  ${after} GB  (reclaimed $((after - before)) GB)"
-[ "$APPLY" = "1" ] || say "==> DRY RUN — nothing was deleted. Re-run with --apply."
+if [ "$APPLY" = "1" ]; then
+  # A run that skipped the host-wide steps is not a full run: --auto tries again
+  # on its next tick instead of waiting a day.
+  [ "$HOST_IDLE" = 1 ] && date +%s > "$STAMP"
+else
+  say "==> DRY RUN — nothing was deleted. Re-run with --apply."
+fi
