@@ -16,8 +16,10 @@
 #   - never `simctl shutdown all`, never kill CoreSimulatorService. Those close
 #     simulators the user is working in. `delete unavailable` only removes devices
 #     whose runtime is already gone, which nothing can be using.
-#   - never touch a runner's _work. That is where the git checkouts and build
-#     caches live; wiping it makes every job re-clone and recompile from cold.
+#   - never touch a runner's checkouts or build caches in _work; wiping them
+#     makes every job re-clone and recompile from cold. The one exception is
+#     the Playwright tool cache, and only under disk pressure.
+#   - never touch a simulator that is not a runner's own ci- device.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
