@@ -593,14 +593,24 @@ echo "== a cancel the worker logged releases the hook at once =="
 setup enforce 1 30 1
 echo "FLEET_ADMIT_CANCEL_POLL_S=600" >> "$ROOT/fleet.env"
 mkdir -p "$ROOT/_diag"
-echo "[2026-10-07 11:25:33Z INFO Worker] Waiting for the job to complete or for a cancel message from the channel." \
-  > "$ROOT/_diag/Worker_20261007-112532-utc.log"
+# Written before the hook starts, as the worker does: the job message (here a
+# commit message quoting the cancel line) and even a real cancel line from
+# earlier in the log. Neither may release the hook.
+{
+  echo '                      "v": "Cancellation/Shutdown message received. is what the worker logs"'
+  echo "[2026-10-07 11:20:00Z INFO Worker] Cancellation/Shutdown message received."
+  echo "[2026-10-07 11:25:33Z INFO Worker] Waiting for the job to complete or for a cancel message from the channel."
+} > "$ROOT/_diag/Worker_20261007-112532-utc.log"
 LIVE=$(fake_slot occupied)
 WORKER=$(fake_worker cancelme)
 wait_for "1" "events held" 10
 HOOK=$(cat "$ROOT/hook-cancelme.pid")
 sleep 2
-ok "still held while the log says nothing" "$(kill -0 "$HOOK" 2>/dev/null && echo alive || echo gone)" "alive"
+ok "still held: nothing written before it started counts" "$(kill -0 "$HOOK" 2>/dev/null && echo alive || echo gone)" "alive"
+echo '  "v": "a later quote: Cancellation/Shutdown message received."' \
+  >> "$ROOT/_diag/Worker_20261007-112532-utc.log"
+sleep 2
+ok "still held: a quote of the line is not the line" "$(kill -0 "$HOOK" 2>/dev/null && echo alive || echo gone)" "alive"
 echo "[2026-10-07 11:26:32Z INFO Worker] Cancellation/Shutdown message received." \
   >> "$ROOT/_diag/Worker_20261007-112532-utc.log"
 BEFORE=$(date +%s)

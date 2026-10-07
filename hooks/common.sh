@@ -400,10 +400,17 @@ admit_resolve_wait_owner() {
 # Runner.Worker): one worker serves one job and writes one Worker_*.log, the
 # newest in its runner's _diag by the time it starts this hook. When no log can
 # be found the run-status poll below still applies.
+#
+# Only what the worker writes AFTER the hook starts counts, and only as the
+# worker's own log line. Before running anything the worker dumps the whole job
+# message into this log, commit messages included: a push whose message quoted
+# the cancel line released every hook at once (this repo's CI, 2026-10-07).
 ADMIT_WORKER_LOG=""
+ADMIT_WORKER_LOG_FROM=0
 admit_resolve_worker_log() {
   local cmd path
   ADMIT_WORKER_LOG=""
+  ADMIT_WORKER_LOG_FROM=0
   [ "$ADMIT_WAIT_OWNER_KIND" = "worker" ] && [ -n "$ADMIT_WAIT_OWNER_PID" ] || return 1
   cmd="$(ps -o command= -p "$ADMIT_WAIT_OWNER_PID" 2>/dev/null)"
   case "$cmd" in */Runner.Worker*) ;; *) return 1 ;; esac
@@ -412,12 +419,15 @@ admit_resolve_worker_log() {
   path="${cmd%%/Runner.Worker*}"
   case "$path" in *" /"*) path="/${path##* /}" ;; esac
   ADMIT_WORKER_LOG="$(ls -1t "$(dirname "$path")/_diag"/Worker_*.log 2>/dev/null | head -1)"
-  [ -n "$ADMIT_WORKER_LOG" ]
+  [ -n "$ADMIT_WORKER_LOG" ] || return 1
+  ADMIT_WORKER_LOG_FROM="$(wc -c < "$ADMIT_WORKER_LOG" 2>/dev/null | tr -d ' ')"
+  case "$ADMIT_WORKER_LOG_FROM" in '' | *[!0-9]*) ADMIT_WORKER_LOG="" ; return 1 ;; esac
 }
 
 admit_worker_cancelled() {
-  [ -n "$ADMIT_WORKER_LOG" ] \
-    && grep -q 'Cancellation/Shutdown message received' "$ADMIT_WORKER_LOG" 2>/dev/null
+  [ -n "$ADMIT_WORKER_LOG" ] || return 1
+  tail -c +"$((ADMIT_WORKER_LOG_FROM + 1))" "$ADMIT_WORKER_LOG" 2>/dev/null \
+    | grep -q '^\[[^]]* INFO Worker] Cancellation/Shutdown message received'
 }
 
 admit_owner_gone() {
