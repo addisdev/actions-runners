@@ -388,6 +388,48 @@ admit_resolve_wait_owner() {
   ADMIT_OWNER_KIND=""
 }
 
+# The worker's own diagnostic log, the only place a cancel shows while this
+# hook holds the job. Measured on runner-host 2026-10-07 (homelab-map run
+# 37236945666): the worker logged "Cancellation/Shutdown message received"
+# within a second of the cancel, but it runs this hook with "Force kill process
+# on cancellation: False" and never signals it, and GitHub kept the run AND the
+# job `in_progress` until it force-completed the job about four minutes later.
+# So neither the daemon's run status nor `gh` can see a cancel sooner than
+# that, and the held job kept its runner and its place in line all along.
+# Resolved once from the worker's command line (<runner>/bin[.<version>]/
+# Runner.Worker): one worker serves one job and writes one Worker_*.log, the
+# newest in its runner's _diag by the time it starts this hook. When no log can
+# be found the run-status poll below still applies.
+#
+# Only what the worker writes AFTER the hook starts counts, and only as the
+# worker's own log line. Before running anything the worker dumps the whole job
+# message into this log, commit messages included: a push whose message quoted
+# the cancel line released every hook at once (this repo's CI, 2026-10-07).
+ADMIT_WORKER_LOG=""
+ADMIT_WORKER_LOG_FROM=0
+admit_resolve_worker_log() {
+  local cmd path
+  ADMIT_WORKER_LOG=""
+  ADMIT_WORKER_LOG_FROM=0
+  [ "$ADMIT_WAIT_OWNER_KIND" = "worker" ] && [ -n "$ADMIT_WAIT_OWNER_PID" ] || return 1
+  cmd="$(ps -o command= -p "$ADMIT_WAIT_OWNER_PID" 2>/dev/null)"
+  case "$cmd" in */Runner.Worker*) ;; *) return 1 ;; esac
+  # The last absolute path before /Runner.Worker: production starts the binary
+  # directly, but an interpreter may come first ("/bin/bash /x/Runner.Worker").
+  path="${cmd%%/Runner.Worker*}"
+  case "$path" in *" /"*) path="/${path##* /}" ;; esac
+  ADMIT_WORKER_LOG="$(ls -1t "$(dirname "$path")/_diag"/Worker_*.log 2>/dev/null | head -1)"
+  [ -n "$ADMIT_WORKER_LOG" ] || return 1
+  ADMIT_WORKER_LOG_FROM="$(wc -c < "$ADMIT_WORKER_LOG" 2>/dev/null | tr -d ' ')"
+  case "$ADMIT_WORKER_LOG_FROM" in '' | *[!0-9]*) ADMIT_WORKER_LOG="" ; return 1 ;; esac
+}
+
+admit_worker_cancelled() {
+  [ -n "$ADMIT_WORKER_LOG" ] || return 1
+  tail -c +"$((ADMIT_WORKER_LOG_FROM + 1))" "$ADMIT_WORKER_LOG" 2>/dev/null \
+    | grep -q '^\[[^]]* INFO Worker] Cancellation/Shutdown message received'
+}
+
 admit_owner_gone() {
   [ "$ADMIT_WAIT_OWNER_KIND" = "worker" ] || return 1
   [ -n "$ADMIT_WAIT_OWNER_PID" ] || return 1
