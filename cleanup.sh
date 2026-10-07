@@ -58,13 +58,25 @@ say() { printf '%s\n' "$*"; }
 run() {
   if [ "$APPLY" = "1" ]; then "$@"; else say "    [dry-run] $*"; fi
 }
-free_gb() { df -g / | awk 'NR==2{print $4}'; }
+# Usable free disk, counting what macOS can purge, as the admission floor does
+# (hooks/free-disk.sh): df alone read 62 GB of purgeable caches as used.
+if [ -f "$HERE/hooks/free-disk.sh" ]; then
+  # shellcheck source=hooks/free-disk.sh
+  . "$HERE/hooks/free-disk.sh"
+else
+  fleet_plain_free_gb() { df -g / | awk 'NR==2{print $4}'; }
+  fleet_usable_free_gb() { fleet_plain_free_gb; }
+fi
+free_gb() { fleet_usable_free_gb; }
+PLAIN_HARD_GB="${FLEET_ADMIT_MIN_PLAIN_FREE_GB:-15}"
 
-# --auto runs every 15 minutes, so its no-op has to cost one df and nothing else:
-# the host it guards is usually saturated when the disk is short.
+# --auto runs every 15 minutes, so its no-op has to cost two cheap reads and
+# nothing else: the host it guards is usually saturated when the disk is short.
 FREE_NOW="$(free_gb)"
+PLAIN_NOW="$(fleet_plain_free_gb)"
 PRESSURE=0
 [ -n "$FREE_NOW" ] && [ "$FREE_NOW" -lt "$PRESSURE_GB" ] && PRESSURE=1
+[ -n "$PLAIN_NOW" ] && [ "$PLAIN_NOW" -lt $((PLAIN_HARD_GB + 10)) ] && PRESSURE=1
 if [ "$AUTO" = "1" ] && [ "$PRESSURE" = "0" ]; then
   last="$(cat "$STAMP" 2>/dev/null)"
   case "$last" in '' | *[!0-9]*) last=0 ;; esac
@@ -81,7 +93,7 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   fi
 fi
 trap 'rm -rf "$LOCK"' EXIT
-say "==> $(date '+%F %T')  free ${FREE_NOW} GB, pressure line ${PRESSURE_GB} GB$([ "$PRESSURE" = 1 ] && echo '  — UNDER PRESSURE')"
+say "==> $(date '+%F %T')  free ${FREE_NOW} GB (${PLAIN_NOW} GB without purgeable), pressure line ${PRESSURE_GB} GB$([ "$PRESSURE" = 1 ] && echo '  — UNDER PRESSURE')"
 
 # ---------------------------------------------------------------------------
 # Jobs in flight. Deleting DerivedData out from under a live xcodebuild produces

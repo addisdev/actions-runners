@@ -154,6 +154,17 @@ If admission refuses jobs with "disk low" while Xcode builds still start, raise
 `FLEET_ADMIT_MIN_FREE_DISK_GB` or run `./cleanup.sh --apply` during idle windows
 — see [Operations](operations.md#disk-cleanup).
 
+**The disk floor counts purgeable space.** `df` reports macOS's purgeable caches
+as used, and macOS frees them only when space actually runs short. A floor read
+from `df` held every job while the system still had the room: on runner-host
+`df` said 101 GB free while macOS offered 163 GB, and a held, idle fleet never
+creates the pressure that would make macOS purge, so it stayed held until
+someone deleted something by hand. The hook now compares
+`FLEET_ADMIT_MIN_FREE_DISK_GB` against usable space (plain free plus purgeable,
+as macOS reports it for important use) and keeps a lower hard floor on plain
+free, `FLEET_ADMIT_MIN_PLAIN_FREE_GB` (15 GB), for the time a purge takes. The
+dashboard's disk figures, verdict and forecast use the same measure.
+
 ### Admission configuration
 
 Set in `fleet.env`. These variables cannot live in the dashboard because the

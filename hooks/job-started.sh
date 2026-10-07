@@ -65,9 +65,16 @@ admit_blocker() {
       "$simulator_busy" "$ADMIT_SIMULATOR_MAX"
     return 0
   fi
-  disk="$(admit_free_disk_gb)"
+  # `|| disk=""`: production runs this under bash -e, where a failed read
+  # would exit the hook, and its EXIT trap admits the job without a slot.
+  disk="$(admit_free_disk_gb)" || disk=""
   if [ -n "$disk" ] && [ "$disk" -lt "$ADMIT_MIN_DISK_GB" ]; then
     printf '%s GB disk free, below the %s GB floor' "$disk" "$ADMIT_MIN_DISK_GB"
+    return 0
+  fi
+  disk="$(admit_plain_free_disk_gb)" || disk=""
+  if [ -n "$disk" ] && [ "$disk" -lt "$ADMIT_MIN_PLAIN_DISK_GB" ]; then
+    printf '%s GB plain disk free, below the %s GB hard floor' "$disk" "$ADMIT_MIN_PLAIN_DISK_GB"
     return 0
   fi
   return 0

@@ -108,6 +108,16 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- **The disk floor held the fleet with tens of GB to spare.** `df` counts macOS's
+  purgeable caches as used, and macOS purges only under real pressure, which a
+  held, idle fleet never creates: on runner-host `df` said 101 GB free while
+  macOS offered 163 GB (2026-10-07). The admission floor, `cleanup.sh` and the
+  dashboard now measure usable space (plain free plus purgeable,
+  `hooks/free-disk.sh`) with a 15 GB hard floor on plain free
+  (`FLEET_ADMIT_MIN_PLAIN_FREE_GB`). The hook tests now run the hook under
+  `bash -e` as the runner does. That exposed two ways a failed disk read could
+  exit the hook, whose EXIT trap then admitted the job without a slot; both are
+  closed.
 - **runner-host kept reaching the disk floor.** The weekly cleanup reclaimed
   1–2 GB, refused to run while any job was building, and never touched the
   largest growing thing: each runner's `ci-` simulator, 48 → 62 GB across 41
