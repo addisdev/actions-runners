@@ -76,6 +76,7 @@ import { createEtaBaselines, estimateQueue } from './lib/eta.js';
 import { createDiskForecaster } from './lib/disk-forecast.js';
 import { checkPosture } from './lib/posture.js';
 import { timeline } from './lib/timeline.js';
+import { TickGuard, stage } from './lib/tick-guard.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(HERE, 'public');
@@ -103,6 +104,10 @@ const CONFIG = {
   // cut short — the last healthy pass here took 8s — and short enough that a
   // wedged one costs a cycle rather than the afternoon.
   fastDeadlineMs: Number(process.env.FLEET_FAST_DEADLINE_MS ?? 120000),
+  // How long a tick past its deadline is still waited for before the loop gives
+  // up on it and starts the next, and how many such ticks may be outstanding.
+  fastAbandonMs: Number(process.env.FLEET_FAST_ABANDON_MS ?? 240000),
+  fastMaxAbandoned: Number(process.env.FLEET_FAST_MAX_ABANDONED ?? 3),
   jobFetchConcurrency: Math.max(1, Number(process.env.FLEET_JOB_FETCH_CONCURRENCY ?? 8)),
   // How old the newest completed tick may be before this daemon calls itself
   // unhealthy. watch/fleet-watch.mjs already raises `collector-not-ok` the
@@ -170,6 +175,14 @@ const CONFIG = {
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const warn = (...a) => console.error(new Date().toISOString(), 'WARN', ...a);
+
+const fastGuard = new TickGuard({
+  name: 'fast tick',
+  deadlineMs: CONFIG.fastDeadlineMs,
+  abandonMs: CONFIG.fastAbandonMs,
+  maxAbandoned: CONFIG.fastMaxAbandoned,
+  warn,
+});
 
 const ha = new HaCoordinator({
   url: CONFIG.databaseUrl,
@@ -1565,8 +1578,11 @@ async function settleCompletedRuns(runs) {
   });
 }
 
-async function fastTick() {
+// `progress` is stamped with the stage the tick is in, so a tick that overruns
+// or never finishes is reported with where it was (lib/tick-guard.js).
+async function fastTick(progress = null) {
   const started = Date.now();
+  stage(progress, 'shared state');
   await resetExpiredCommands().catch((err) => warn('command retry cleanup:', err.message));
   await syncHaSettings().catch((err) => warn('shared settings:', err.message));
   await syncHaHosts().catch((err) => warn('shared hosts:', err.message));
@@ -1575,6 +1591,7 @@ async function fastTick() {
   // onto what they build, so the grouping has to be current by this point.
   refreshGroups();
 
+  stage(progress, 'local probes');
   const [launchd, processes, vitals] = await Promise.all([
     launchdJobs(),
     runnerProcesses(),
@@ -1602,6 +1619,7 @@ async function fastTick() {
   // runners, which is a different state from knowing it has none.
   const runnersKnownFor = new Set();
 
+  stage(progress, `GitHub runners+runs for ${repos.length} repos`);
   await Promise.all(
     repos.map(async (repo) => {
       // allSettled, not all: these are independent questions, and a failure to
@@ -1695,6 +1713,7 @@ async function fastTick() {
 
   // Which runner claimed each active run is a per-job fact, so it costs an extra
   // call. Spend it only on active runs — that is where the question is live.
+  stage(progress, `jobs for ${active.length} active runs`);
   await mapWithConcurrency(
     active,
     CONFIG.jobFetchConcurrency,
@@ -1726,7 +1745,9 @@ async function fastTick() {
   for (const r of allRuns) persistRun(r);
   // Before the failure pass, so a job that just settled as failed is classified
   // on this tick rather than ten minutes later.
+  stage(progress, 'settle completed runs');
   await settleCompletedRuns(allRuns).catch((err) => warn('settle jobs:', err.message));
+  stage(progress, 'classify recent failures');
   await classifyRecentFailures(allRuns).catch((err) => warn('fast failure classification:', err.message));
   recordTransitions(runners);
 
@@ -1881,6 +1902,7 @@ async function fastTick() {
 
   // Playwright per-test outcomes — non-blocking, appended by job-completed.sh.
   try {
+    stage(progress, 'ingest test outcomes');
     await ingestTestOutcomes(db, CONFIG.testOutcomesSpool);
   } catch (err) {
     warn('test outcomes ingest:', err.message);
@@ -2012,6 +2034,7 @@ async function fastTick() {
     warn('verdict:', err.message);
   }
   if (CONFIG.databaseUrl) {
+    stage(progress, 'publish shared snapshot');
     await ha.publishSnapshot(snapshot).catch((err) => warn('publish shared snapshot:', err.message));
   }
   publish();
@@ -2019,6 +2042,7 @@ async function fastTick() {
   if (alerts) {
     if (CONFIG.databaseUrl) {
       try {
+        stage(progress, 'shared dismissals');
         const intents = await ha.listMeta('dismissal.');
         for (const [key, value] of Object.entries(intents)) {
           if (value?.dismissed === false) alerts.restore(key);
@@ -2043,6 +2067,7 @@ async function fastTick() {
   // with a queued run is evaluated against current capacity. The result goes into
   // autoscale_decisions for the dashboard to show; no registration is triggered.
   try {
+    stage(progress, 'evaluate autoscaling');
     await evaluateAutoscaling(snapshot);
   } catch (err) {
     warn('autoscale eval:', err.message);
@@ -3414,10 +3439,17 @@ const server = http.createServer(async (req, res) => {
     const ageMs = snapshot.ts ? Date.now() - snapshot.ts : null;
     const stale = ageMs !== null && ageMs > CONFIG.collectorStaleMs;
     const role = ha.isLeader ? 'leader' : 'standby';
+    // The slow loop also runs fastTick directly, which kept the snapshot fresh
+    // enough to read healthy for 19 hours while the fast loop itself was dead
+    // (2026-10-06). A fast loop that has run out of ticks to abandon is down,
+    // whatever the snapshot's age says.
+    const fastLoop = ha.isLeader ? fastGuard.state() : null;
+    const fastStuck = Boolean(fastLoop && fastLoop.abandonedPending >= CONFIG.fastMaxAbandoned);
     return json(res, {
-      ok: !snapshot.starting && !stale,
+      ok: !snapshot.starting && !stale && !fastStuck,
       servingOk: true,
-      collectorOk: ha.isLeader ? !snapshot.starting && !stale : null,
+      collectorOk: ha.isLeader ? !snapshot.starting && !stale && !fastStuck : null,
+      fastLoop,
       role,
       replicaId: CONFIG.replicaId,
       leaderId: ha.leaderId ?? snapshot.control?.leaderId ?? null,
@@ -3559,36 +3591,19 @@ async function main() {
   // tick that blows its deadline may still be running when the next one starts.
   // Every write it makes is an upsert keyed by id, so a late finisher costs a
   // duplicated effort rather than a corrupted row, and that is a much better
-  // trade than the alternative: the loop stopping altogether.
-  const withDeadline = (promise, ms, what) => {
-    let timer;
-    return Promise.race([
-      promise.finally(() => clearTimeout(timer)),
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`${what} exceeded ${ms}ms`)), ms);
-        timer.unref?.();
-      }),
-    ]);
-  };
-
+  // trade than the alternative: the loop stopping altogether. TickGuard holds
+  // the next tick back while the last one is plausibly still working, and stops
+  // waiting for one that is stuck (see lib/tick-guard.js for the outage that
+  // taught this).
+  //
   // Chained timeouts, not setInterval: the cadence changes with fleet activity,
   // and a slow tick must never overlap itself.
-  let fastInFlight = null;
   const scheduleFast = () => {
     const delay = snapshot.collector?.fastMs ?? CONFIG.fastMs;
     setTimeout(async () => {
       try {
         if (ha.isLeader) {
-          if (fastInFlight) {
-            warn('fast tick: previous timed-out tick is still running; skipping overlap');
-          } else {
-            const task = fastTick();
-            fastInFlight = task;
-            task.finally(() => {
-              if (fastInFlight === task) fastInFlight = null;
-            }).catch(() => {});
-            await withDeadline(task, CONFIG.fastDeadlineMs, 'fast tick');
-          }
+          await fastGuard.run((progress) => fastTick(progress));
         } else {
           await refreshStandbySnapshot();
         }
