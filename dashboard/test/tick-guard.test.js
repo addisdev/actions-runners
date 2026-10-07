@@ -2,11 +2,19 @@
 // collector down on runner-host for 19 hours: a tick whose promise never
 // settles, after which every later tick was skipped as an "overlap".
 
-import { test, describe } from 'node:test';
+import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { TickGuard, stage } from '../lib/tick-guard.js';
 
 const never = () => new Promise(() => {});
+
+// The guard's deadline timer is unref'd so it never keeps a process alive on
+// its own; in the daemon the HTTP server does that. Here nothing else would, and
+// Node 22's test runner cancels a test whose event loop drains while a promise
+// is pending, so this stands in for the server.
+let keepAlive;
+before(() => { keepAlive = setInterval(() => {}, 1000); });
+after(() => clearInterval(keepAlive));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function makeGuard(opts = {}) {
