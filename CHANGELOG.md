@@ -108,6 +108,13 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- **runner-host kept reaching the disk floor.** The weekly cleanup reclaimed
+  1–2 GB, refused to run while any job was building, and never touched the
+  largest growing thing: each runner's `ci-` simulator, 48 → 62 GB across 41
+  devices in three days. `cleanup.sh --auto` now runs every 15 minutes and
+  acts under a pressure line (floor + 20 GB) or once a day. It erases idle CI
+  simulators over 3 GB (1 GB under pressure), under pressure removes idle
+  runners' Playwright browsers, and skips only the runners that are building.
 - **The fast loop stopped for good when one tick never finished.** A tick
   overran at 2026-10-06 16:31Z and every tick after it was skipped as an
   "overlap" (235 on 10-06, 1,034 on 10-07), while health read ok because

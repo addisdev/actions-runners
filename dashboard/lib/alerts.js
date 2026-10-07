@@ -292,7 +292,7 @@ export class Alerts {
           `Disk low: ${Math.round(host.diskFreeGb)} GB free`,
           `Below the ${critical ? c.diskCriticalGb : c.diskWarnGb} GB threshold. ` +
             `Runner directories are ~7 GB each; Playwright browser caches can add several GB per runner. ` +
-            `./cleanup.sh --apply prunes DerivedData, stale Playwright __dirlock files, and old _diag.`);
+            `./cleanup.sh --apply erases idle CI simulators and prunes DerivedData, superseded runner versions, stale Playwright locks and old _diag; under the pressure line it also removes idle runners' Playwright browsers.`);
       }
     }
 

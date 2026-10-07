@@ -44,14 +44,24 @@ Set `FLEET_HEALTH_INTERVAL` in `fleet.env` before install (default `60`), then
 reinstall if you change it later. See
 [Configuration → Health repair](configuration.md#health-repair).
 
-### Weekly cleanup
+### Disk cleanup
 
-Add a LaunchAgent for disk cleanup:
+Run `cleanup.sh --apply --auto` from a LaunchAgent every 15 minutes. Most runs
+cost one `df` and exit. It does real work when free disk is under the pressure
+line (`FLEET_CLEANUP_PRESSURE_GB`, default the admission floor plus 20 GB), and
+once a day otherwise:
 
-```xml
-<!-- ~/Library/LaunchAgents/com.runner-fleet.cleanup.plist -->
-<!-- cleanup.sh --apply weekly (e.g. Sunday 02:00) -->
-```
+- **Host-wide steps** wait for an idle fleet: old DerivedData, simulators whose
+  runtime is gone, stale Playwright locks.
+- **Per-runner steps** skip only the runners that are building. Each runner's
+  `ci-<runner> …` simulator is erased while shut down once it passes
+  `FLEET_CLEANUP_SIM_MAX_GB` (3 GB, or 1 GB under pressure); no other simulator
+  is touched. Under pressure, idle runners' Playwright browsers go too.
+
+A weekly run is not enough. On runner-host free disk swung by 20–40 GB within a
+day while a weekly run reclaimed 1–2 GB, and it refused to run whenever any job
+was building. When the disk does reach the admission floor, every job is held,
+so the fleet is idle and the next 15-minute run can take everything it needs.
 
 See `examples/launchd-cleanup.plist` for a ready-to-install template. For
 health repair without `healthctl.sh`, `examples/launchd-health.plist` is a
