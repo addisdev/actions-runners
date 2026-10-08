@@ -31,6 +31,28 @@ public enum Staleness {
         guard let lastEventMs else { return true }
         return now - lastEventMs > window(fastMs: fastMs)
     }
+
+    /// The daemon's own "collector stale" threshold (FLEET_COLLECTOR_STALE_MS).
+    public static let collectorMs: Double = 240_000
+}
+
+extension Glance {
+    /// How old the fleet view itself is: since the daemon's last finished fast
+    /// tick, not since the glance was sent. The two differ when the collector
+    /// stalls: fleetd then publishes nothing, the stream carries only
+    /// keepalives, and the last glance — whose `stale` was false when it was
+    /// built — stays on screen looking live. On 2026-10-07 the last tick
+    /// finished about 12:32Z and two waits sat on that view for 27 minutes.
+    /// nil when the glance carries no `ts` (a fixture-less test or old daemon).
+    public func collectorAgeMs(now: Double = Format.nowMs()) -> Double? {
+        ts.map { max(0, now - $0) }
+    }
+
+    /// Too old to trust "still running": the daemon said so, or no tick has
+    /// finished for longer than the daemon's own threshold.
+    public func isCollectorStale(now: Double = Format.nowMs()) -> Bool {
+        stale == true || (collectorAgeMs(now: now).map { $0 > Staleness.collectorMs } ?? false)
+    }
 }
 
 /// Where the cockpit is with the daemon, independent of what the fleet says.

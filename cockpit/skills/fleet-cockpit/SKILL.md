@@ -45,6 +45,10 @@ and report the reason, `3` timed out or nothing readable. Prefer this to
 `gh pr checks --watch`, which waits forever on a check that will never start. `--pr`
 judges the PR's head commit only, so a red from a commit you pushed over (or force-pushed
 off) does not end the wait.
+With `--pr` it also asks GitHub directly when cockpit's view is stale (a stalled
+collector), so it returns when GitHub's checks finish; a result marked `(from GitHub; …)`
+means cockpit's own view had frozen — mention it, it is a daemon problem, not your PR's.
+"Collector stalled" from `status`/`why` means the same: the rows on screen are old.
 
 ## When the dashboard itself does not answer
 

@@ -113,24 +113,40 @@ enum MCPServer {
             guard let repo = a["repo"] as? String else { return ("repo is required", true) }
             let target = WaitTarget(repo: repo, pr: a["pr"] as? Int, sha: a["sha"] as? String, branch: a["branch"] as? String)
             let minutes = min(30, max(1, a["timeout_minutes"] as? Int ?? 10))
-            let deadline = Date().addingTimeInterval(Double(minutes) * 60)
-            var last: WaitDecision = .waiting(nil)
-            while Date() < deadline {
-                let (g, _, _) = await glance()
-                if let g {
-                    last = Waiter.decide(g, verdict: g.verdict, target: target)
-                    if case .waiting = last {} else { break }
+            // The same loop as `cockpit wait`, fed by a poll every 20 s.
+            let poll: WaitLoop.Connect = {
+                AsyncThrowingStream { c in
+                    let task = Task {
+                        while !Task.isCancelled {
+                            if let g = await glance().0 { c.yield(.glance(g)) }
+                            try? await Task.sleep(nanoseconds: 20_000_000_000)
+                        }
+                        c.finish()
+                    }
+                    c.onTermination = { _ in task.cancel() }
                 }
-                try? await Task.sleep(nanoseconds: 20_000_000_000)
             }
+            let outcome = await WaitLoop(
+                target: target, timeout: Double(minutes) * 60, connect: poll,
+                github: target.pr.map { pr in
+                    { @Sendable g in
+                        guard let full = await GHChecksProbe.fullName(repo, glance: g) else { return nil }
+                        return await GHChecksProbe(repo: full, pr: pr).fetch()
+                    }
+                }
+            ).run()
+            let last = outcome.decision
+            let via = outcome.source == .github
+                ? " (from GitHub; cockpit's view was \(outcome.cockpitAgeMs.map { Format.duration(ms: $0) } ?? "missing")\(outcome.cockpitAgeMs == nil ? "" : " old"))"
+                : ""
             switch last {
-            case .green(let s): return ("green: \(target.label) — \(s.progress)", false)
+            case .green(let s): return ("green: \(target.label) — \(s.progress)\(via)", false)
             case .red(let s):
                 let names = s.failed.map { "\($0.workflow ?? "?")\($0.cancelled ? " (cancelled)" : "")" }.joined(separator: ", ")
                 let hint = s.failed.contains(where: \.cancelled) ? " — \(WaitDecision.cancelledHint)" : ""
-                return ("red: \(target.label) — \(s.progress); not passed: \(names)\(hint)", false)
+                return ("red: \(target.label) — \(s.progress); not passed: \(names)\(hint)\(via)", false)
             case .pointless(let why): return ("pointless: \(why)", false)
-            case .waiting(let s): return ("timeout after \(minutes) min: \(s?.progress ?? "no runs seen")", false)
+            case .waiting(let s): return ("timeout after \(minutes) min: \(s?.progress ?? "no runs seen")\(via)", false)
             }
         default:
             return ("unknown tool \(name)", true)

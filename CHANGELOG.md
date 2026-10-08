@@ -108,6 +108,22 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- **`cockpit wait` sat on a frozen view and never returned.** On 2026-10-07
+  runner-host's fast loop finished its last tick about 12:32Z under load.
+  fleetd publishes only after a tick, so every client kept that glance
+  (greenfolio-ios PR #445 "0 of 1 done", greenfolio-android PR #280
+  "instrumentation · 12 min") while keepalives held the stream open, and both
+  checks went green on GitHub minutes later. The wait decided, and checked its
+  deadline, only when a glance arrived, so it could neither finish nor time
+  out. `WaitLoop` (CLI and MCP) runs on a timer. With `--pr` it also asks
+  GitHub itself (`gh pr view --json statusCheckRollup`): every 30 s while
+  cockpit's view is over 4 minutes old or the dashboard is unreachable, every
+  2 minutes otherwise. GitHub's finished answer ends the wait and is labelled
+  as GitHub's. An unreachable dashboard no longer ends a PR wait with exit 3.
+  A view whose last tick is over 4 minutes old now reads "Collector stalled" in
+  the app, `status` and `why`, instead of the old verdict. `why` also shows
+  the same verdict as `status` now; it had printed the daemon's verdict even
+  when the app knew the host was down.
 - **The disk floor held the fleet with tens of GB to spare.** `df` counts macOS's
   purgeable caches as used, and macOS purges only under real pressure, which a
   held, idle fleet never creates: on runner-host `df` said 101 GB free while

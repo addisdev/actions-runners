@@ -105,6 +105,14 @@ struct Source {
     var transport: Transport?
 }
 
+/// The daemon's verdict, unless its view is too old to stand behind: an app
+/// still connected to a stalled collector rewrites its snapshot with the last
+/// glance, and that glance's verdict ("Working") was true 27 minutes earlier.
+func trusted(_ v: Verdict, _ g: Glance?) -> Verdict {
+    guard let g, g.isCollectorStale(), v.id != "unknown" else { return v }
+    return CockpitVerdict.effective(glance: g, connection: .collectorStale, outOfBand: nil, lastGlanceMs: nil)
+}
+
 /// Where the answer comes from, in order of cheapness.
 func obtain(_ o: Options) async -> Source {
     if let name = o.fixture {
@@ -114,7 +122,7 @@ func obtain(_ o: Options) async -> Source {
         } catch { fail("no fixture named \(name) (try: cockpit fixtures)") }
     }
     if !o.fresh, o.url == nil, o.via.isEmpty, let snap = try? SnapshotFile.read(), snap.ageMs() < 90_000 {
-        return Source(glance: snap.glance, verdict: snap.verdict, route: "app (\(snap.route ?? "?"), \(Format.ago(snap.writtenAt, now: Format.nowMs())))")
+        return Source(glance: snap.glance, verdict: trusted(snap.verdict, snap.glance), route: "app (\(snap.route ?? "?"), \(Format.ago(snap.writtenAt, now: Format.nowMs())))")
     }
     let transport: Transport = o.url.map { DirectTransport(url: $0) }
         ?? TunnelTransport(aliases: o.via.isEmpty ? ["runner-host", "runner-ts"] : o.via)
@@ -122,12 +130,28 @@ func obtain(_ o: Options) async -> Source {
         let route = try await transport.open()
         let client = FleetClient(base: route.baseURL)
         let g = try await client.glance()
-        return Source(glance: g, verdict: g.verdict, route: route.label, client: client, transport: transport)
+        return Source(glance: g, verdict: trusted(g.verdict, g), route: route.label, client: client, transport: transport)
     } catch {
         transport.close()
         let v = Verdict(id: "unreachable", tone: .unknown, title: "Dashboard unreachable",
                         sentence: "Could not reach the dashboard: \(error)", evidence: [], next: nil, rung: nil, open: [])
         return Source(glance: nil, verdict: v, route: "none")
+    }
+}
+
+/// The dashboard route for a wait: opened on first use, reopened once the
+/// tunnel process has died.
+final class RouteCache: @unchecked Sendable {
+    private let transport: Transport
+    private var route: Route?
+    private let lock = NSLock()
+    init(_ t: Transport) { transport = t }
+
+    func base() async throws -> URL {
+        if let r = lock.withLock({ route }), transport.isAlive { return r.baseURL }
+        let r = try await transport.open()
+        lock.withLock { route = r }
+        return r.baseURL
     }
 }
 
@@ -258,10 +282,10 @@ case "why":
     let incidents = g.incidents.filter { $0.key.contains(short) || $0.title.contains(short) }
     if opts.json {
         struct Why: Encodable { let verdict: Verdict; let runners: [Runner]; let queue: [QueueItem]; let failures: [FailureRow]; let incidents: [Incident]; let checks: [String] }
-        printJSON(Why(verdict: g.verdict, runners: runners, queue: queue, failures: failures, incidents: incidents,
+        printJSON(Why(verdict: src.verdict, runners: runners, queue: queue, failures: failures, incidents: incidents,
                       checks: Rollup.checkSets(g).filter { match($0.repo) }.map { "\($0.label): \($0.progress)" }))
     } else {
-        print("Fleet: \(mark(g.verdict.tone)) \(g.verdict.title)")
+        print("Fleet: \(mark(src.verdict.tone)) \(src.verdict.title)")
         print("\n\(short): \(runners.count) runner(s)")
         if runners.isEmpty { print("  none registered — jobs for this repo can only queue (unserved)") }
         for r in runners { print("  \(r.state.rawValue.padding(toLength: 13, withPad: " ", startingAt: 0)) \(r.name)  \(r.detail ?? "")") }
@@ -288,7 +312,7 @@ case "why":
             for i in incidents { print("  [\(i.severity ?? "?")] \(i.title)") }
         }
     }
-    exit(exitCode(g.verdict))
+    exit(exitCode(src.verdict))
 case "queue":
     let src = await obtain(opts)
     src.transport?.close()
@@ -306,43 +330,48 @@ case "wait":
     }()
     let transport: Transport = opts.url.map { DirectTransport(url: $0) }
         ?? TunnelTransport(aliases: opts.via.isEmpty ? ["runner-host", "runner-ts"] : opts.via)
-    let deadline = Date().addingTimeInterval(timeout)
-    var last: WaitDecision = .waiting(nil)
-    func report(_ d: WaitDecision) -> Never {
+    func report(_ o: WaitOutcome) -> Never {
         transport.close()
-        switch d {
-        case .green(let s): print("✔ \(target.label): \(s.progress)")
+        // When GitHub decided, say how far behind cockpit was: that gap is a
+        // daemon problem worth knowing about, not part of the answer.
+        let note: String = {
+            guard o.source == .github else { return "" }
+            let age = o.cockpitAgeMs.map { "cockpit's view is \(Format.duration(ms: $0)) old" } ?? "cockpit had no view"
+            return " (from GitHub; \(age)\(o.cockpitSaid.map { ", it still read \($0)" } ?? ""))"
+        }()
+        switch o.decision {
+        case .green(let s): print("✔ \(target.label): \(s.progress)\(note)")
         case .red(let s):
-            print("✖ \(target.label): \(s.progress)")
+            print("✖ \(target.label): \(s.progress)\(note)")
             for f in s.failed { print("  \(f.workflow ?? "?")\(f.cancelled ? " (cancelled)" : "")\(f.url.map { " — \($0)" } ?? "")") }
             if s.failed.contains(where: \.cancelled) { print("  \(WaitDecision.cancelledHint)") }
         case .pointless(let why): print("⏹ \(target.label): not waiting — \(why)")
-        case .waiting(let s): print("… \(target.label): timed out\(s.map { " at \($0.progress)" } ?? " (no runs seen)")")
+        case .waiting(let s):
+            print("… \(target.label): timed out\(s.map { " at \($0.progress)" } ?? " (no runs seen)")\(note)")
+            if o.cockpitAgeMs == nil && o.source == .cockpit { print("? dashboard unreachable — try `cockpit sentinel`") }
         }
-        exit(d.exitCode)
+        exit(o.decision.exitCode)
     }
-    guard let route = try? await transport.open() else { print("? dashboard unreachable — try `cockpit sentinel`"); exit(3) }
-    let client = FleetClient(base: route.baseURL)
-    var announced = ""
-    while Date() < deadline {
-        do {
-            for try await ev in client.stream() {
-                guard case .glance(let g) = ev else { continue }
-                let d = Waiter.decide(g, verdict: g.verdict, target: target)
-                last = d
-                switch d {
-                case .waiting(let s):
-                    let line = s.map { "\($0.progress)\($0.etaGreenMs.map { ", done in \(Presenter.range($0))" } ?? "")" } ?? "no runs yet"
-                    if line != announced && !opts.json { FileHandle.standardError.write(Data("… \(target.label): \(line)\n".utf8)); announced = line }
-                default: report(d)
-                }
-                if Date() >= deadline { report(last) }
+    // One route, reopened when the tunnel dies; an unreachable dashboard no
+    // longer ends the wait (2026-10-03/04: "Dashboard unreachable" at load
+    // 567) while GitHub can still answer.
+    let routes = RouteCache(transport)
+    if target.pr == nil, (try? await routes.base()) == nil {
+        // Only a PR can be asked of GitHub directly; anything else needs the dashboard.
+        print("? dashboard unreachable — try `cockpit sentinel`"); exit(3)
+    }
+    var loop = WaitLoop(
+        target: target, timeout: timeout,
+        connect: { FleetClient(base: try await routes.base()).stream() },
+        github: target.pr.map { pr in
+            { @Sendable g in
+                guard let full = await GHChecksProbe.fullName(repo, glance: g) else { return nil }
+                return await GHChecksProbe(repo: full, pr: pr).fetch()
             }
-        } catch {
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
         }
-    }
-    report(last)
+    )
+    if !opts.json { loop.progress = { FileHandle.standardError.write(Data(($0 + "\n").utf8)) } }
+    report(await loop.run())
 case "top":
     let alias = opts.via.first ?? "runner-host"
     guard let top = await HostProbe.topCPU(alias: alias) else { fail("could not run ps on \(alias)", code: 3) }
