@@ -305,6 +305,21 @@ result. Until the head has a run, the wait keeps waiting. After a force-push
 back to an earlier commit, that commit's old result waits for the new run
 ("waiting for kit-ci to run again on this commit").
 
+Cockpit's rows are a copy of GitHub's, made by the daemon's fast loop. When
+that loop stops finishing ticks (a saturated host), the daemon publishes
+nothing and the last view stays on screen while keepalives hold the stream
+open. So with `--pr`, the wait also asks GitHub itself
+(`gh pr view --json statusCheckRollup`, GraphQL, not the daemon's REST budget):
+every 30 seconds while cockpit's view is more than 4 minutes old or the
+dashboard is unreachable, every 2 minutes otherwise. GitHub's finished answer
+ends the wait, marked `(from GitHub; cockpit's view is 27m old, it still read
+0 of 1 done)`; GitHub still pending never overrides cockpit's own green or red.
+The deadline is checked on a timer, so a wait always ends by `--timeout`. A
+`--sha` or `--branch` wait still needs the dashboard.
+
+A view whose last finished tick is over 4 minutes old reads **Collector
+stalled** in the app, `status` and `why`, never the old verdict.
+
 Exit codes for `status` and `why`: `0` fine or healthy waiting, `1` a real
 fault, `3` nothing could be read.
 

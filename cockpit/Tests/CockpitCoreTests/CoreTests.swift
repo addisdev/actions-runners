@@ -272,9 +272,19 @@ struct StoreTests {
         store.stop()
     }
 
+    /// A fixture as a live daemon would send it: its last tick just finished.
+    /// (Fixture `ts` values are from September, which now reads as a stalled
+    /// collector, as it should.)
+    private func live(_ name: String, tickAgoMs: Double = 0) throws -> String {
+        var g = try Fixtures.glance(name)
+        g.ts = Format.nowMs() - tickAgoMs
+        g.stale = false
+        return String(decoding: try JSONEncoder().encode(g), as: UTF8.self)
+    }
+
     @Test func connectsAndStreamsThroughATransport() async throws {
-        let quiet = String(decoding: try Fixtures.data("quiet"), as: UTF8.self).replacingOccurrences(of: "\n", with: "")
-        let dead = String(decoding: try Fixtures.data("dead"), as: UTF8.self).replacingOccurrences(of: "\n", with: "")
+        let quiet = try live("quiet")
+        let dead = try live("dead")
         let server = try StubServer(routes: [
             "/api/health": .json(200, "{\"ok\":true}"),
             "/api/glance": .json(200, quiet),
@@ -289,6 +299,28 @@ struct StoreTests {
         for _ in 0..<50 where seen.count < 2 { try await Task.sleep(nanoseconds: 100_000_000) }
         #expect(seen.prefix(2) == ["clear", "dead-service"])
         #expect(store.connection == .live)
+        store.stop()
+    }
+
+    /// 2026-10-07: the daemon answered and kept the stream open, but its last
+    /// tick was 27 minutes old. That is a stalled collector, not a live fleet,
+    /// even though the glance itself still says `stale: false`.
+    @Test func anOldTickReadsAsAStalledCollector() async throws {
+        let frozen = try live("quiet", tickAgoMs: 27 * 60_000)
+        let server = try StubServer(routes: [
+            "/api/health": .json(200, "{\"ok\":true}"),
+            "/api/glance": .json(200, frozen),
+            "/api/stream?view=glance": .sse([frozen, ": keepalive"], hold: 30),
+        ])
+        try await server.start()
+        defer { server.stop() }
+        let store = GlanceStore(config: .direct(server.base))
+        store.start()
+        for _ in 0..<50 where store.glance == nil { try await Task.sleep(nanoseconds: 100_000_000) }
+        #expect(store.connection == .collectorStale)
+        let v = CockpitVerdict.effective(glance: store.glance, connection: store.connection, outOfBand: nil,
+                                         lastGlanceMs: store.lastGlanceMs)
+        #expect(v.title == "Collector stalled")
         store.stop()
     }
 

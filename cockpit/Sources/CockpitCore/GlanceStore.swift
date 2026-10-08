@@ -137,7 +137,7 @@ public final class GlanceStore {
                 route = r
                 let c = FleetClient(base: r.baseURL, token: token)
                 apply(try await c.glance())
-                set(glance?.stale == true ? .collectorStale : .live)
+                set(glance?.isCollectorStale() == true ? .collectorStale : .live)
                 attempt = 0
                 lastError = nil
                 for try await ev in c.stream() {
@@ -145,7 +145,7 @@ public final class GlanceStore {
                     switch ev {
                     case .glance(let g):
                         apply(g)
-                        set(g.stale == true ? .collectorStale : .live)
+                        set(g.isCollectorStale() ? .collectorStale : .live)
                     case .keepalive:
                         lastEventMs = Format.nowMs()
                     }
@@ -174,6 +174,11 @@ public final class GlanceStore {
             set(.reconnecting(attempt: 1, error: saved))
         } else if let t = transport, !t.isAlive {
             restart()
+        } else if connection == .live, glance?.isCollectorStale(now: Format.nowMs()) == true {
+            // Keepalives still arrive, but no tick has finished: fleetd publishes
+            // only after a tick, so the glance on screen would otherwise keep
+            // reading live and green (2026-10-07, 12:32Z onwards).
+            set(.collectorStale)
         }
     }
 }

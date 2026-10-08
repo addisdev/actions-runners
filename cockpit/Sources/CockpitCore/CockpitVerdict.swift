@@ -17,7 +17,7 @@ public enum CockpitVerdict {
                 rung: nil, open: []
             )
         case .collectorStale:
-            let age = glance?.ageMs.map { Format.duration(ms: $0) } ?? "a while"
+            let age = (glance?.collectorAgeMs(now: now) ?? glance?.ageMs).map { Format.duration(ms: $0) } ?? "a while"
             return Verdict(
                 id: "unknown", tone: .unknown, title: "Collector stalled",
                 sentence: "The dashboard is answering but its last completed pass was \(age) ago, so the fleet view is out of date.",
