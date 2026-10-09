@@ -12,6 +12,13 @@ Portable, mobile-first dashboard.
 
 ### Added
 
+- `scripts/join-host.sh` preflight also checks the Xcode license (`xcodebuild
+  -version` answers without it, then `swiftc` exits 69 in the first job), an
+  optional `FLEET_XCODE_VERSION` every host must match (a second host with an
+  older Xcode builds the same job against a different SDK), and PyYAML for both
+  `python3` interpreters a job can reach. All three were hit adding a second
+  host.
+
 - **Preflight checks plain CLI tools.** `preflight.sh` checked Xcode, Postgres,
   Java, node and gh but nothing a Makefile calls, so a repo's `make lint` met
   `make: shellcheck: No such file or directory` on a new host (2026-10-09).
