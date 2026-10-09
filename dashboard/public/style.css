@@ -285,7 +285,7 @@ section { margin-bottom: 26px; }
 
 .kpis {
   display: grid; gap: 12px;
-  grid-template-columns: repeat(auto-fit, minmax(156px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
 }
 .kpi {
   position: relative; overflow: hidden;
@@ -319,6 +319,8 @@ button.kpi {
 .kpi:nth-child(5) { --enter-delay: 140ms; }
 .kpi:nth-child(6) { --enter-delay: 175ms; }
 .kpi:nth-child(7) { --enter-delay: 210ms; }
+.kpi:nth-child(8) { --enter-delay: 245ms; }
+.kpi:nth-child(9) { --enter-delay: 280ms; }
 .kpis.is-first-paint .kpi {
   animation: tile-enter 360ms cubic-bezier(.2, .7, .2, 1) both;
   animation-delay: var(--enter-delay, 0ms);
@@ -492,21 +494,6 @@ button.kpi {
 
 /* Hosts view. A stale host is dimmed and struck through at the name, because the
    one mistake this view must not allow is reading old state as current. */
-.federation-summary {
-  margin: 0 22px; padding: 8px 12px;
-  border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--surface-glass);
-}
-.federation-summary.is-hidden { display: none; }
-.federation-summary-inner {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px;
-  font-size: 12.5px;
-}
-.federation-summary .fed-sep { color: var(--muted); }
-.federation-summary .fed-cap.good { color: var(--good); font-weight: 600; }
-.federation-summary .fed-cap.warn { color: var(--warning); font-weight: 600; }
-.federation-summary .fed-stale { margin-left: auto; }
-
 .host-block {
   margin-bottom: 18px; padding: 12px 14px 4px;
   border: 1px solid var(--border); border-radius: var(--radius);

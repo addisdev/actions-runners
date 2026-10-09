@@ -37,7 +37,7 @@ import { buildBundle } from '../../dashboard/lib/bundle.js';
 import { diagSummary, diagTail, runnerVersions } from '../../dashboard/lib/local.js';
 
 import {
-  NOW, HOST, REMOTE_HOST_REPORT, DIAG_DIRS, DISPLAY_ROOT,
+  NOW, HOST, HOST_LABELS, REMOTE_HOST_REPORT, DIAG_DIRS, DISPLAY_ROOT,
   materialiseFleetRoot, seedDb, buildSnapshot,
 } from './fixture-fleet.mjs';
 
@@ -442,7 +442,7 @@ const server = http.createServer(async (req, res) => {
       id: 'local',
       name: `${HOST} (this machine)`,
       lastHeartbeat: snapshot.ts,
-      labels: ['mac-mini', 'm4-pro'],
+      labels: HOST_LABELS,
       runners: snapshot.runners ?? [],
       repos: [...new Set((snapshot.runners ?? []).map((r) => r.repo))],
       host: snapshot.host ?? {},

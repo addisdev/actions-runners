@@ -191,7 +191,7 @@ From the fleet root, confirm the host agrees with GitHub:
 Then open the dashboard's **Fleet** tab. Your runners appear within one polling
 interval — 15 seconds while anything is building, 45 seconds at rest.
 
-![The Fleet tab showing the registered runners grouped by project, each with a status badge, and the drift count at zero](img/fleet-tab.png)
+![The Fleet tab showing the registered runners grouped by host and project, each with a status badge, under the summary tiles and drift list](img/fleet-tab.png)
 
 > A fixture fleet, not a real one — every repository name in these screenshots
 > is invented. Yours will show the one runner you just registered.

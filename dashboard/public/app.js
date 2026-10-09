@@ -422,53 +422,6 @@ function remediationSection() {
 
 // ------------------------------------------------------------------- header
 
-function renderFederationSummary(s) {
-  const el = $('#federation-summary');
-  if (!el) return;
-  const fed = s.federation;
-  const controlPlane = s.control;
-  if (!fed?.enabled && !controlPlane?.enabled) {
-    el.classList.add('is-hidden');
-    el.setAttribute('aria-hidden', 'true');
-    mount(el);
-    return;
-  }
-  el.classList.remove('is-hidden');
-  el.setAttribute('aria-hidden', 'false');
-  const fleet = fed ?? {
-    totalHosts: 1, runnersOnline: (s.runners ?? []).filter((r) => r.ghStatus === 'online').length,
-    runnersBusy: (s.runners ?? []).filter((r) => r.ghBusy || r.workingLocally).length,
-    fleetCapacityOk: s.capacity?.ok, staleHosts: 0,
-  };
-  const cap = fleet.fleetCapacityOk ? 'fleet headroom available' : 'no fleet headroom now';
-  mount(el,
-    h('div', { class: 'federation-summary-inner', role: 'status' },
-      h('span', { class: 'fed-count', text: `${fleet.totalHosts} hosts` }),
-      controlPlane?.enabled
-        ? h('span', {
-            class: `flag ${controlPlane.role === 'leader' ? 'good' : 'warning'}`,
-            text: `${controlPlane.role} · ${controlPlane.replicaId}`,
-          })
-        : null,
-      h('span', { class: 'fed-sep', 'aria-hidden': 'true', text: '·' }),
-      h('span', { class: 'fed-count', text: `${fleet.runnersOnline} runners online` }),
-      h('span', { class: 'fed-sep', 'aria-hidden': 'true', text: '·' }),
-      h('span', { class: 'fed-count', text: `${fleet.runnersBusy} building` }),
-      h('span', { class: 'fed-sep', 'aria-hidden': 'true', text: '·' }),
-      h('span', { class: `fed-cap ${fleet.fleetCapacityOk ? 'good' : 'warn'}`, text: cap }),
-      fleet.staleHosts
-        ? h('span', { class: 'fed-stale flag critical', text: `${fleet.staleHosts} stale host${fleet.staleHosts === 1 ? '' : 's'}` })
-        : null,
-      h('button', {
-        class: 'btn tiny',
-        text: 'Hosts',
-        'aria-label': 'Open the Hosts tab for federation details',
-        onclick: () => setView('hosts'),
-      })
-    )
-  );
-}
-
 // Access banner — shown to non-local viewers until they have a device token
 function renderAccessBanner() {
   const existing = $('#access-banner');
@@ -520,6 +473,7 @@ function renderHeader(s) {
     parts.push(`${fed.totalHosts} host${fed.totalHosts === 1 ? '' : 's'} · ${fed.runnersOnline} online fleet-wide`);
     if (fed.staleHosts) parts.push(`${fed.staleHosts} stale`);
   }
+  if (s.control?.enabled) parts.push(`${s.control.role} · ${s.control.replicaId}`);
   $('#host-meta').textContent = parts.join(' · ');
 
   const badge = (selector, count, label) => {
@@ -567,7 +521,22 @@ function renderKpis(s) {
   const diskFrac = host.diskTotalGb ? 1 - host.diskFreeGb / host.diskTotalGb : 0;
   const loadFrac = host.cores ? host.load1 / host.cores : 0;
 
+  const showHosts = federated || Boolean(s.control?.enabled);
+  const totalHosts = s.federation?.totalHosts ?? 1;
+  const staleHosts = s.federation?.staleHosts ?? 0;
+  const fleetCapacityOk = s.federation?.fleetCapacityOk ?? s.capacity?.ok;
+
   mount($('#kpis'),
+    showHosts
+      ? statTile({
+          label: 'Hosts',
+          value: totalHosts,
+          sub: `${staleHosts ? `${staleHosts} stale` : 'all reporting'} · `
+            + (fleetCapacityOk ? 'fleet headroom available' : 'no fleet headroom now'),
+          tone: staleHosts ? 'critical' : fleetCapacityOk ? 'good' : 'warning',
+          onclick: kpiNav('hosts'),
+        })
+      : null,
     statTile({
       label: 'Runners online',
       value: allUnread ? '—' : registered.length ? `${online}/${registered.length}` : '—',
@@ -770,7 +739,7 @@ function runnerTile(s, r, { showHost = false } = {}) {
   );
 }
 
-function projectGroups(runners, order) {
+function projectGroups(s, runners, order) {
   const groups = new Map();
   for (const r of runners) {
     const project = r.project ?? 'other';
@@ -824,7 +793,7 @@ function hostSection(s, hostId, hostInfo, runners, summaries) {
       : null
   );
   return h('section', { class: 'host-block', id: `host-${hostId}` }, head,
-    ...projectGroups(runners, s.projects ?? ['other']));
+    ...projectGroups(s, runners, s.projects ?? ['other']));
 }
 
 // The fleet verdict (lib/verdict.js): one sentence and one next move, above
@@ -1578,7 +1547,6 @@ function render() {
   updateConnectionIndicator();
   renderHeader(snap);
   renderVerdictBanner(snap);
-  renderFederationSummary(snap);
   // The live KPI row and drift list belong to the operational tabs. Analytics
   // brings its own KPIs for the selected window; showing both stacks two
   // different meanings of "runs" on one screen.

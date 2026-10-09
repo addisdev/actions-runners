@@ -145,6 +145,14 @@ Portable, mobile-first dashboard.
 
 ### Changed
 
+- **Hosts tile replaces the federation strip.** The one-line strip above the
+  summary tiles ("2 hosts · 110 runners online · 0 building · fleet headroom")
+  crowded the row below it and repeated two tiles. A **Hosts** tile now leads
+  the row when federation or the control plane is on: host count, stale hosts
+  and fleet headroom, red when a host is stale, and a click opens the Hosts
+  tab. The control-plane role and replica moved to the header line. Tiles
+  narrow to a 132px minimum so all nine still fit one row at 1440px. The docs
+  fixture fleet is now two hosts, so `fleet-tab.png` shows the tile.
 - **Automated agents stay off the operator's Waiting Board.** `register.sh`
   writes `WB_SKIP=1` into each new runner's `.env`, and `autofixctl.sh install`
   sets it for the bridge, so CI jobs and the Cursor SDK fix and escalation
@@ -198,6 +206,10 @@ Portable, mobile-first dashboard.
   the PR asks GitHub at once instead of after two minutes (short `--fresh`
   retries had exited "no runs seen" on a green PR).
 
+- **The Fleet tab's runner grid rendered nothing on a multi-host fleet.**
+  `projectGroups()` passed a snapshot it never received to `runnerTile()`, so
+  every federated render threw `s is not defined` before the host blocks
+  mounted. It now takes the snapshot.
 - Runners ran jobs with whatever PATH the shell that registered them had:
   `config.sh` copies the caller's `$PATH` into `.path`, and the runner gives
   jobs that, not `.env`'s. runner-host had six PATHs (17 runners with no

@@ -136,12 +136,12 @@ describe('federation hosts UI contract', () => {
 });
 
 describe('multi-host fleet UI contract', () => {
-  test('federation summary bar and header use snapshot.federation', () => {
-    assert.match(html, /id="federation-summary"/);
-    assert.match(app, /function renderFederationSummary\(s\)/);
-    assert.match(app, /s\.federation/);
-    assert.match(app, /fleetCapacityOk/);
-    assert.match(css, /\.federation-summary/);
+  test('Hosts tile and header use snapshot.federation', () => {
+    assert.doesNotMatch(html, /id="federation-summary"/);
+    assert.match(app, /label: 'Hosts'/);
+    assert.match(app, /s\.federation\?\.staleHosts/);
+    assert.match(app, /s\.federation\?\.fleetCapacityOk/);
+    assert.match(app, /s\.control\?\.enabled\) parts\.push/);
   });
 
   test('fleet view groups host-first when federated', () => {
@@ -149,6 +149,10 @@ describe('multi-host fleet UI contract', () => {
     assert.match(app, /function hostSection\(/);
     assert.match(app, /s\.fleetRunners/);
     assert.match(app, /class: 'host-block'/);
+    // runnerTile needs the snapshot; the host-first path once called it from a
+    // function that never received one and threw on every federated render.
+    assert.match(app, /function projectGroups\(s, runners, order\)/);
+    assert.match(app, /projectGroups\(s, runners,/);
     assert.match(css, /\.host-block/);
   });
 
