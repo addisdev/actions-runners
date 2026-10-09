@@ -90,11 +90,15 @@ struct WaitLoopTests {
         let base = server.base
         let asked = Counter()
         let green = try checks(android280)
-        let loop = fast(WaitLoop(
+        var loop = fast(WaitLoop(
             target: WaitTarget(repo: "greenfolio-ios", pr: 445), timeout: 10,
             connect: { FleetClient(base: base).stream() },
             github: { _ in asked.bump(); return green }
         ))
+        // A real socket: on a busy CI Mac the first glance can take longer than
+        // fast()'s 0.1 s grace, and GitHub was then asked before cockpit had
+        // said anything (main went red on this, 2026-10-09).
+        loop.connectGrace = 5
         let started = Date()
         let out = await loop.run()
         guard case .green(let s) = out.decision else { Issue.record("expected green, got \(out.decision)"); return }
@@ -204,6 +208,179 @@ struct WaitLoopTests {
                                  connect: keepalivesAfter(g), github: { _ in green }))
         let out = await loop.run()
         guard case .green = out.decision else { Issue.record("expected green, got \(out.decision)"); return }
+    }
+}
+
+/// A GitHub ask that never comes back until the test lets it go: the shape of
+/// the 2026-10-09 hang (gh reaped, `waitUntilExit` spinning forever).
+private final class Stuck: @unchecked Sendable {
+    private let lock = NSLock()
+    private var parked: [CheckedContinuation<GitHubChecks?, Never>] = []
+    func ask() async -> GitHubChecks? {
+        await withCheckedContinuation { c in lock.withLock { parked.append(c) } }
+    }
+    func release() { for c in lock.withLock({ defer { parked = [] }; return parked }) { c.resume(returning: nil) } }
+}
+
+/// A fresh glance with no runs at all for the target (its checks finished
+/// before the glance's window, or the rows never arrived).
+private func emptyGlance() throws -> Glance {
+    var g = try Fixtures.glance("quiet")
+    let now = Format.nowMs()
+    g.ts = now; g.generatedAt = now; g.ageMs = 0; g.stale = false
+    g.runs = []; g.recent = []; g.queue = []
+    return g
+}
+
+@Suite("cockpit wait never outlives its deadline", .serialized)
+struct WaitDeadlineTests {
+    /// 2026-10-09: three waits sat 1.5 h past their deadline inside the GitHub
+    /// ask. A hung ask must not hold the deadline.
+    @Test func aHungGitHubAskStillTimesOut() async throws {
+        let stuck = Stuck()
+        defer { stuck.release() }
+        var loop = fast(WaitLoop(
+            target: WaitTarget(repo: "greenfolio-ios", pr: 445), timeout: 0.8,
+            connect: keepalivesAfter(try frozenGlance(ageMs: 27 * 60_000)),
+            github: { _ in await stuck.ask() }
+        ))
+        loop.askTimeout = 60 // only the deadline can end this one
+        let started = Date()
+        let out = await loop.run()
+        #expect(Date().timeIntervalSince(started) < 3)
+        guard case .waiting = out.decision else { Issue.record("expected a timeout, got \(out.decision)"); return }
+        #expect(out.decision.exitCode == 3)
+        #expect(out.cockpitSaid?.hasPrefix("0 of 1 done") == true)
+    }
+
+    /// One hung ask costs one ask budget, not the wait: the next ask answers.
+    @Test func aHungAskIsAbandonedAndTheNextAnswers() async throws {
+        let stuck = Stuck()
+        defer { stuck.release() }
+        let calls = Counter()
+        let green = try checks(android280)
+        var loop = fast(WaitLoop(
+            target: WaitTarget(repo: "greenfolio-ios", pr: 445), timeout: 10,
+            connect: keepalivesAfter(try frozenGlance(ageMs: 27 * 60_000)),
+            github: { _ in
+                calls.bump()
+                if calls.value == 1 { return await stuck.ask() }
+                return green
+            }
+        ))
+        loop.askTimeout = 0.3
+        let started = Date()
+        let out = await loop.run()
+        guard case .green = out.decision else { Issue.record("expected green, got \(out.decision)"); return }
+        #expect(out.source == .github)
+        #expect(calls.value == 2)
+        #expect(Date().timeIntervalSince(started) < 3)
+    }
+
+    /// `--fresh` retries exited "no runs seen" while GitHub had the PR green:
+    /// a view with nothing for the target asks GitHub at once, not after the
+    /// two-minute fresh cadence.
+    @Test func aViewWithNoRunsForTheTargetAsksGitHubAtOnce() async throws {
+        let green = try checks(android280)
+        var loop = fast(WaitLoop(
+            target: WaitTarget(repo: "greenfolio-ios", pr: 445), timeout: 10,
+            connect: keepalivesAfter(try emptyGlance()),
+            github: { _ in green }
+        ))
+        loop.crossCheckFresh = 60
+        let started = Date()
+        let out = await loop.run()
+        guard case .green = out.decision else { Issue.record("expected green, got \(out.decision)"); return }
+        #expect(out.source == .github)
+        #expect(Date().timeIntervalSince(started) < 3)
+    }
+
+    /// A timeout with nothing from cockpit reports what GitHub said instead of
+    /// "no runs seen".
+    @Test func aBlindTimeoutReportsGitHubsProgress() async throws {
+        let pending = try checks(android280Running)
+        let loop = fast(WaitLoop(
+            target: WaitTarget(repo: "greenfolio-ios", pr: 445), timeout: 0.5,
+            connect: keepalivesAfter(try emptyGlance()),
+            github: { _ in pending }
+        ))
+        let out = await loop.run()
+        guard case .waiting(let s) = out.decision else { Issue.record("expected a timeout, got \(out.decision)"); return }
+        #expect(s?.progress == "1 of 2 done")
+        #expect(out.source == .github)
+    }
+
+    /// A stream that goes quiet (daemon restarted under a live tunnel: no
+    /// keepalives, no close) is stale, gets the route dropped and reconnected,
+    /// and GitHub answers meanwhile.
+    @Test func aSilentStreamIsReconnectedAndGitHubAsked() async throws {
+        let connects = Counter()
+        let drops = Counter()
+        let fresh = try frozenGlance(ageMs: 1_000)
+        let green = try checks(android280)
+        var loop = fast(WaitLoop(
+            target: WaitTarget(repo: "greenfolio-ios", pr: 445), timeout: 10,
+            connect: {
+                connects.bump()
+                return AsyncThrowingStream { c in
+                    c.yield(.glance(fresh)) // then silence, never finished
+                }
+            },
+            github: { _ in connects.value >= 2 ? green : nil }
+        ))
+        loop.crossCheckFresh = 60
+        loop.streamSilence = 0.3
+        loop.onDrop = { drops.bump() }
+        let started = Date()
+        let out = await loop.run()
+        guard case .green = out.decision else { Issue.record("expected green, got \(out.decision)"); return }
+        #expect(connects.value >= 2)
+        #expect(drops.value >= 1)
+        #expect(Date().timeIntervalSince(started) < 5)
+    }
+
+    @Test func theRaceAnswersWithoutWaitingForTheLoser() async {
+        let stuck = Stuck()
+        defer { stuck.release() }
+        let started = Date()
+        let v = await Deadline.race(seconds: 0.2, { await stuck.ask() != nil ? 1 : 2 }, onTimeout: { 0 })
+        #expect(v == 0)
+        #expect(Date().timeIntervalSince(started) < 1.5)
+        #expect(await Deadline.race(seconds: 5, { 7 }, onTimeout: { 0 }) == 7)
+    }
+}
+
+@Suite("subprocesses answer by their deadline", .serialized)
+struct SubprocessTests {
+    /// The 2026-10-09 repro: a child that outlives its budget, terminated from
+    /// the timer while a worker waited on it, hung `waitUntilExit` within a
+    /// few tries. Twenty in a row must each come back on time.
+    @Test func aProgramPastItsTimeoutComesBackOnTime() async {
+        for _ in 0..<20 {
+            let started = Date()
+            let r = await Subprocess.run("/bin/sleep", ["5"], timeout: 0.2)
+            #expect(r == nil)
+            #expect(Date().timeIntervalSince(started) < 1.5)
+        }
+    }
+
+    @Test func outputLargerThanThePipeBufferIsRead() async {
+        let r = await Subprocess.run("/bin/sh", ["-c", "head -c 300000 /dev/zero"], timeout: 10)
+        #expect(r?.status == 0)
+        #expect(r?.stdout.count == 300_000)
+    }
+
+    @Test func exitStatusIsReported() async {
+        #expect(await Subprocess.run("/bin/sh", ["-c", "echo hi; exit 3"], timeout: 10) == .init(status: 3, stdout: Data("hi\n".utf8)))
+        #expect(await Subprocess.run("/nonexistent/program", [], timeout: 1) == nil)
+    }
+
+    /// A grandchild that keeps stdout open must not keep the answer.
+    @Test func aBackgroundedGrandchildDoesNotHoldTheAnswer() async {
+        let started = Date()
+        let r = await Subprocess.run("/bin/sh", ["-c", "echo ok; sleep 8 & exit 0"], timeout: 6)
+        #expect(r?.status == 0)
+        #expect(Date().timeIntervalSince(started) < 4.5)
     }
 }
 

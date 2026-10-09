@@ -100,6 +100,7 @@ employer-managed Mac may block login items by policy.
 | Answers look old | It read the app's snapshot (under 90 seconds old) | `--fresh` |
 | `status` says **Collector stalled** | The daemon's last finished tick is over 4 minutes old | See [The view is greyed out](#the-view-is-greyed-out) |
 | `wait` ends with `(from GitHub; …)` | Cockpit's view had frozen, so GitHub answered | The result stands; the frozen view is the daemon's problem |
+| `wait` runs long past `--timeout` | A build from before 2026-10-09: a `gh` call that overran its budget could hang the wait forever (`sample <pid>` shows `waitUntilExit`) | Reinstall the command line ([install](install.md#install-the-command-line)) |
 | `sentinel` says GitHub checks skipped | No app snapshot yet, so it does not know which runners to ask about | Open the app once while the dashboard is reachable |
 
 ## The MCP server is not listed
