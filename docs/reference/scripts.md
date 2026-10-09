@@ -340,6 +340,39 @@ job failure names no cause and points at GitHub rather than at the network.
 
 ## Runner lifecycle
 
+### `scripts/join-host.sh`
+
+Joins this Mac to an existing fleet as a second runner host in one command:
+preflight (macOS, Node, a clone, `fleet.env` agent settings, the coordinator
+answering, and the toolchains jobs use), then the agent, the mirrored runners
+and the health-repair timer. Dry run unless `--apply`. Start from
+`examples/fleet.env.second-host`; see [Federation](../federation.md#adding-a-second-runner-host).
+Source: [`scripts/join-host.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/join-host.sh).
+
+```bash
+scripts/join-host.sh                                  # check everything, change nothing
+scripts/join-host.sh --apply --only peertest,radiator # pilot a few repos
+scripts/join-host.sh --apply --install-tools          # also brew-install what is missing
+```
+
+### `scripts/mirror-runners.sh`
+
+Registers runners on this host that copy the coordinator's, one per distinct
+label set a repo's runners carry, so GitHub can hand that repo's jobs to either
+host. Skips label sets that need a label this host does not advertise
+(`FLEET_HOST_LABELS`), Simulator runners when there is no Xcode, and repos in
+`FLEET_MIRROR_SKIP_REPOS`; runners already here are left alone. `--tokens-from`
+reads `owner/repo token` lines, for registration tokens minted on a machine
+whose `gh` works (over SSH it cannot read the keychain).
+Source: [`scripts/mirror-runners.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/mirror-runners.sh).
+
+```bash
+scripts/mirror-runners.sh                    # the plan
+scripts/mirror-runners.sh --apply --only peertest
+while read -r repo; do printf '%s %s\n' "$repo" "$(gh api -X POST repos/$repo/actions/runners/registration-token --jq .token)"; done < repos.txt \
+  | ssh build-mac-2 'cd ~/actions-runners && scripts/mirror-runners.sh --apply --tokens-from -'
+```
+
 ### `scripts/deregister.sh`
 
 Removes one runner from this host completely: stops the service, uninstalls its
@@ -1058,6 +1091,18 @@ cd dashboard
 ssh runner-host "/usr/bin/sqlite3 -json ~/actions-runners/dashboard/fleet.db \"$(node scripts/settle-stale-jobs.mjs query)\"" > stale.json
 node scripts/settle-stale-jobs.mjs fetch --in stale.json --out fetched.ndjson
 node scripts/settle-stale-jobs.mjs sql --in fetched.ndjson | ssh runner-host /usr/bin/sqlite3 ~/actions-runners/dashboard/fleet.db
+```
+
+### `dashboard/scripts/mirror-plan.mjs`
+
+Prints the plan `scripts/mirror-runners.sh` acts on, one tab-separated line per
+runner (`register`, `present` or `skip` with its reason). The logic is
+`dashboard/lib/mirror.js`; host facts come from `fleet.env` and Xcode is
+detected by running `xcodebuild -version`.
+Source: [`dashboard/scripts/mirror-plan.mjs`](https://github.com/addisdev/actions-runners/blob/main/dashboard/scripts/mirror-plan.mjs).
+
+```bash
+node dashboard/scripts/mirror-plan.mjs --coordinator http://coordinator-mac:7878 --root ~/actions-runners
 ```
 
 ### `dashboard/scripts/make-glance-fixtures.mjs`

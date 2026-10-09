@@ -56,8 +56,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 INSTANCE="${RUNNER_INSTANCE:-1}"
-VERSION="2.336.0"
-SHA="8e8839c49b7060b6b2154f4931f815df330c27f167d53ef2239ee3dfce28b079"
+VERSION="2.337.0"
+SHA="5a2cd92908a93d7276a194e1de6008099f3e7946f3f8e14aa7a1a7b4a31fdec2"
 # Where the fleet lives. Defaults to this script's own directory rather than a
 # hardcoded ~/actions-runners, so a clone somewhere else registers into itself
 # instead of silently building a second fleet in a directory nobody is watching.

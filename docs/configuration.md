@@ -338,6 +338,7 @@ host and referenced from the LaunchAgent plist written by `agentctl.sh install`.
 | `FLEET_AGENT_ALLOW_REGISTER` | `0` | Set to `1` to allow remote runner registration (requires `FLEET_AGENT_ALLOW_COMMANDS=1`). The agent re-checks local headroom and the per-repo cap before invoking `register.sh`. |
 | `FLEET_AGENT_ALLOW_DEREGISTER` | `0` | Separate destructive opt-in for remote removal and scale-down. |
 | `FLEET_MAX_INSTANCES_PER_REPO` | `4` | Agent-side per-repository cap; keep aligned with the Capacity setting. |
+| `FLEET_MIRROR_SKIP_REPOS` | (empty) | Repos `scripts/mirror-runners.sh` never copies to this host, for jobs whose needs no label states (an iOS lane on a plain `ci` runner, a suite that expects a local database). Bare names or `owner/repo`, space- or comma-separated. |
 | `FLEET_MAX_TOTAL_RUNNERS` | `8` | Agent-side runner cap, sent to coordinator for placement scoring. |
 | `FLEET_CEILING` | `3` | Agent-side busy-job ceiling (do not add runners while this many jobs run). |
 | `FLEET_LOAD_PER_CORE` | `2` | Agent-side load gate. |

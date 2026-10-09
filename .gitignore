@@ -227,6 +227,7 @@ site/
 !examples/fleet.env.single-host
 !examples/fleet.env.federated-coordinator
 !examples/fleet.env.federated-agent
+!examples/fleet.env.second-host
 
 # Fleet Cockpit, the macOS menu bar client (cockpit/). Source, tests, bundled
 # fixtures and the XcodeGen spec. The generated .xcodeproj, SwiftPM's .build,
