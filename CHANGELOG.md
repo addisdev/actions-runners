@@ -108,6 +108,13 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- **`cockpit wait` could decide from GitHub before the first glance landed.**
+  The loop treated "no glance yet" as a missing fleet view from the wait
+  start and accelerated the GitHub cross-check while the SSE connection was
+  still opening; on a loaded runner GitHub could answer green before cockpit's
+  frozen progress line and qualified repo slug were set. Grace for the first
+  glance is anchored to when the stream opens; the fast GitHub cadence applies
+  only to a stalled collector or a dashboard with no open stream.
 - **`cockpit wait` sat on a frozen view and never returned.** On 2026-10-07
   runner-host's fast loop finished its last tick about 12:32Z under load.
   fleetd publishes only after a tick, so every client kept that glance
