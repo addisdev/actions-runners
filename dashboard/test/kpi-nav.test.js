@@ -75,8 +75,8 @@ describe('KPI card navigation contract', () => {
     assert.match(src, /s\.federation\?\.runnersBusy/);
   });
 
-  test('federation summary links to the Hosts tab', () => {
-    assert.match(src, /function renderFederationSummary\(s\)/);
-    assert.match(src, /onclick: \(\) => setView\('hosts'\)/);
+  test('Hosts → Hosts tab, shown only when federated or the control plane is on', () => {
+    assert.match(src, /label: 'Hosts'[\s\S]*?onclick: kpiNav\('hosts'\)/);
+    assert.match(src, /const showHosts = federated \|\| Boolean\(s\.control\?\.enabled\)/);
   });
 });

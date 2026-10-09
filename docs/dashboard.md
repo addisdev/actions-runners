@@ -18,18 +18,20 @@ For installation, see [Get started → Install the dashboard](getting-started.md
 
 ### Fleet
 
-![The Fleet tab: seven summary tiles across the top, three drift rows naming a dead LaunchAgent, a label mismatch and a repo at capacity, then every runner as a card grouped by project](img/fleet-tab.png)
+![The Fleet tab: nine summary tiles across the top led by Hosts, three drift rows naming a dead LaunchAgent, a label mismatch and a repo at capacity, then every runner as a card grouped by host and project](img/fleet-tab.png)
 
 The main view. Shows every registered runner grouped by project, with live
 status badges.
 
-**Summary tiles** — the eight cards across the top are live operational
-snapshots. Each is a button: clicking (or pressing Enter/Space) navigates
+**Summary tiles** — the cards across the top are live operational
+snapshots: eight on a single host, nine when federation or the control plane
+is on. Each is a button: clicking (or pressing Enter/Space) navigates
 directly to the most relevant tab and scrolls to the related section. No URL
 changes — navigation is in-app only.
 
 | Tile | Navigates to |
 |---|---|
+| Hosts (multi-host only) | Hosts |
 | Runners online | Fleet → runner grid |
 | Building now | Runs → active jobs |
 | Queued | Fleet → queued jobs |

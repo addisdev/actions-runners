@@ -18,8 +18,9 @@
 //   real    — everything derived from them. buildRunners, deriveDrift,
 //             deriveGroups, headroom, sizeFleet, classifyQueueCause,
 //             analytics, repoDetail, lintAll, adviseAll, compareScenarios,
-//             buildBaseline/forecastDemand/evaluateGate, mergeHostSnapshots and
-//             Alerts are imported and called. A hand-written snapshot stops
+//             buildBaseline/forecastDemand/evaluateGate, buildFleetRunners,
+//             buildHostList, mergeHostSnapshots and Alerts are imported and
+//             called. A hand-written snapshot stops
 //             matching the code the first time somebody changes it; a generated
 //             one fails loudly instead.
 //
@@ -38,6 +39,8 @@ import { headroom } from '../../dashboard/lib/capacity.js';
 import { sizeFleet, concurrencyByRepo, queueEffect } from '../../dashboard/lib/sizing.js';
 import { classifyQueueCause } from '../../dashboard/lib/queue-cause.js';
 import { lintAll } from '../../dashboard/lib/lint.js';
+import { buildFleetRunners, buildHostList, anyHostHasCapacity, LOCAL_HOST_ID } from '../../dashboard/lib/fleet.js';
+import { mergeHostSnapshots } from '../../dashboard/lib/placement.js';
 
 export const OWNER = 'testowner';
 
@@ -49,6 +52,7 @@ export const OWNER = 'testowner';
 export const DISPLAY_ROOT = '/Users/testowner/actions-runners';
 export const DIAG_DIRS = new Map();
 export const HOST = 'testhost';
+export const HOST_LABELS = ['mac-mini', 'm4-pro'];
 export const REMOTE_HOST = 'teststudio';
 
 const repo = (short) => `${OWNER}/${short}`;
@@ -1281,6 +1285,21 @@ export function buildSnapshot({ db, root, settings }) {
 
   const capacity = headroom({ host, runners, limits: settings.limits() });
 
+  // The second Mac joins the way an agent's heartbeat does in fleetd, so the
+  // Fleet tab groups by host and the KPI row carries the Hosts tile.
+  const hostState = new Map([[REMOTE_HOST, REMOTE_HOST_REPORT]]);
+  const fleetRunners = buildFleetRunners(runners, elsewhere, hostState, NOW).map((r) =>
+    r.hostId ? r : { ...r, hostId: LOCAL_HOST_ID, hostName: HOST, hostStale: false, staleForMs: 0 }
+  );
+  const allHosts = buildHostList({ ts: NOW, runners, host, capacity }, hostState, {
+    coordinatorLabels: HOST_LABELS,
+    coordinatorDrained: Boolean(hostDrainState(root)),
+    coordinatorName: HOST,
+    coordinatorId: LOCAL_HOST_ID,
+  });
+  const fleetCapacity = anyHostHasCapacity(allHosts, NOW) ? { ok: true, reasons: [] } : capacity;
+  const mergedFleet = mergeHostSnapshots({ hosts: allHosts, now: NOW });
+
   // The lint findings that matter to the queue classifier are the critical ones:
   // a structural proof that a `runs-on:` can never be satisfied.
   const criticalLintRepos = (() => {
@@ -1325,6 +1344,16 @@ export function buildSnapshot({ db, root, settings }) {
     host,
     runners,
     elsewhere,
+    fleetRunners,
+    hosts: mergedFleet.hosts,
+    federation: {
+      enabled: mergedFleet.totalHosts > 1,
+      totalHosts: mergedFleet.totalHosts,
+      staleHosts: mergedFleet.staleHosts,
+      fleetCapacityOk: fleetCapacity.ok,
+      runnersOnline: fleetRunners.filter((r) => r.ghStatus === 'online').length,
+      runnersBusy: fleetRunners.filter((r) => r.ghBusy || r.workingLocally).length,
+    },
     active,
     recent,
     repos: REPO_ROSTER,
