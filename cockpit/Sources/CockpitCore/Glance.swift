@@ -29,6 +29,8 @@ public struct Glance: Codable, Sendable, Equatable {
     /// Standing risks currently open on the coordinator.
     public var posture: PostureSummary?
     public var admission: Admission?
+    /// Standby tiers (docs/design/tiers.md). Absent while the controller is off.
+    public var tiers: Tiers?
     public var collector: Collector?
     public var api: RateLimit?
 
@@ -336,6 +338,24 @@ public struct Admission: Codable, Sendable, Equatable {
     public var mode: String?
     public var limit: Int?
     public var waiting: Int?
+}
+
+public struct Tiers: Codable, Sendable, Equatable {
+    public var mode: String?
+    /// "active" (overflow runners online) or "standby" (drained).
+    public var overflow: String?
+    public var since: Double?
+    public var reason: String?
+    public var triggers: [String]?
+    public var drainInMs: Double?
+
+    /// One line for `cockpit status`.
+    public var line: String {
+        var s = "tiers (\(mode ?? "?")): overflow \(overflow ?? "?")"
+        if let r = reason, !r.isEmpty { s += " — \(r)" }
+        if let d = drainInMs, overflow == "active" { s += "; drains in \(Int((d / 60_000).rounded(.up)))m if it stays quiet" }
+        return s
+    }
 }
 
 public struct Collector: Codable, Sendable, Equatable {

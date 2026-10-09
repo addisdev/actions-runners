@@ -93,6 +93,7 @@ export function buildRunners({ dirs, ghRunnersByRepo, launchd, processes, runner
       launchdLabel: d.launchdLabel,
       launchdState,
       drainState: d.drainState ?? null,
+      drainBy: d.drainBy ?? null,
       version: d.version ?? null,
       lastExit: job?.lastExit ?? null,
       pid: listener?.pid ?? job?.pid ?? null,

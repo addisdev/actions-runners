@@ -12,6 +12,25 @@ Portable, mobile-first dashboard.
 
 ### Added
 
+- **Standby tiers.** Run CI on a primary host first and bring a standby
+  host's runners online only when the primary is at its admission cap for 60 s,
+  has a run queued over 2 min with no idle matching runner, or is unfit
+  (`disk-floor`, `saturated`, a dead primary runner, critical memory pressure,
+  or a stale heartbeat); drain them again after 10 min of headroom and an empty
+  queue. A floor set of standby runners stays online always. While a primary
+  lane is at cap its idle runners are drained too, so GitHub stops assigning
+  it jobs it would only hold, but never without an online standby twin.
+  `dashboard/lib/tiers.js`, wired into the fast tick, `FLEET_TIERS_*`
+  (`off`/`observe`/`enforce`), shown as `tiers` on `/api/state` and the glance.
+  See [Standby tiers](docs/design/tiers.md).
+- `drain-runner.sh --by=<owner>` records who drained a runner, and
+  `--resume --by=<owner>` only clears that owner's marker, so the controller
+  never resumes an operator's drain. `drain-stop-when-idle.sh` keeps the owner.
+- Agent: `tiers.drain`/`tiers.resume` batch commands, an optional
+  `FLEET_AGENT_COMMANDS` allowlist (drain/resume only), and the autonomy rule:
+  after `FLEET_AGENT_AUTONOMY_S` (180 s) without a heartbeat it resumes the
+  runners the controller drained on its host.
+
 - `scripts/join-host.sh` preflight also checks the Xcode license (`xcodebuild
   -version` answers without it, then `swiftc` exits 69 in the first job), an
   optional `FLEET_XCODE_VERSION` every host must match (a second host with an

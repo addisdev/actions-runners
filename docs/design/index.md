@@ -67,4 +67,10 @@ screens, the [API reference](../api.md).
 
     Most of the work is deciding what to leave out, and why a job failed matters more than that it failed.
 
+-   __[Standby tiers](tiers.md)__
+
+    ---
+
+    GitHub picks the runner, so "this host first" is built by deciding which runners are online.
+
 </div>

@@ -20,6 +20,8 @@
 #   FLEET_HOST_LABELS          — comma-separated capability labels, e.g. xcode-16,macos-15
 #   FLEET_AGENT_ALLOW_COMMANDS — set to 1 to allow remote drain/resume/health
 #   FLEET_AGENT_ALLOW_REGISTER — set to 1 to allow remote runner provisioning
+#   FLEET_AGENT_COMMANDS       — optional allowlist of actions, e.g. runner.drain,runner.resume,tiers.drain,tiers.resume
+#   FLEET_AGENT_AUTONOMY_S     — resume the tiers controller's drains after this long without a heartbeat (default 180, 0 = off)
 #   FLEET_MAX_TOTAL_RUNNERS    — cap on runners this host may hold (default 8)
 #   FLEET_CEILING              — do not add while this many jobs are running (default 3)
 #   FLEET_LOAD_PER_CORE        — load/core threshold (default 2)
@@ -105,6 +107,8 @@ cmd_install() {
     <key>FLEET_AGENT_ALLOW_COMMANDS</key><string>${FLEET_AGENT_ALLOW_COMMANDS:-0}</string>
     <key>FLEET_AGENT_ALLOW_REGISTER</key><string>${FLEET_AGENT_ALLOW_REGISTER:-0}</string>
     <key>FLEET_AGENT_ALLOW_DEREGISTER</key><string>${FLEET_AGENT_ALLOW_DEREGISTER:-0}</string>
+    <key>FLEET_AGENT_COMMANDS</key><string>${FLEET_AGENT_COMMANDS:-}</string>
+    <key>FLEET_AGENT_AUTONOMY_S</key><string>${FLEET_AGENT_AUTONOMY_S:-180}</string>
     <key>FLEET_MAX_TOTAL_RUNNERS</key><string>${FLEET_MAX_TOTAL_RUNNERS:-8}</string>
     <key>FLEET_CEILING</key><string>${FLEET_CEILING:-3}</string>
     <key>FLEET_LOAD_PER_CORE</key><string>${FLEET_LOAD_PER_CORE:-2}</string>

@@ -46,6 +46,18 @@ struct DecodingTests {
         #expect(g.verdict.tone == .unknown)
     }
 
+    @Test func standbyTiersDecodeWhenPresentAndAreOptional() throws {
+        #expect(try Fixtures.glance("quiet").tiers == nil)
+        var json = String(decoding: try Fixtures.data("quiet"), as: UTF8.self)
+        json = json.replacingOccurrences(of: "\"schema\": 1,", with: """
+        "schema": 1, "tiers": {"mode": "enforce", "overflow": "active", "reason": "build lane 2/2 for 60s",
+          "triggers": ["build lane 2/2 for 60s"], "drainInMs": 540000, "lanes": {"build": {"busy": 2, "cap": 2}}},
+        """)
+        let t = try #require(try Glance.decode(Data(json.utf8)).tiers)
+        #expect(t.overflow == "active")
+        #expect(t.line == "tiers (enforce): overflow active — build lane 2/2 for 60s; drains in 9m if it stays quiet")
+    }
+
     @Test func aNewerSchemaIsRefusedWithAReason() throws {
         let json = String(decoding: try Fixtures.data("quiet"), as: UTF8.self)
             .replacingOccurrences(of: "\"schema\": 1", with: "\"schema\": 2")

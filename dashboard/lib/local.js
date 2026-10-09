@@ -82,6 +82,22 @@ function readDrainState(dir) {
   return 'drained';
 }
 
+// Who wrote a runner's .drain marker: its `by=` line (drain-runner.sh --by),
+// or null for an operator's drain. The tiers controller resumes only the
+// runners it drained itself, so this is what keeps it away from a runner an
+// operator stopped on purpose.
+export function readDrainOwner(dir) {
+  const p = join(dir, '.drain');
+  if (!existsSync(p)) return null;
+  try {
+    const line = readFileSync(p, 'utf8').split('\n').find((l) => l.startsWith('by='));
+    const owner = line ? line.slice(3).trim() : '';
+    return owner || null;
+  } catch {
+    return null;
+  }
+}
+
 // A .drain file at the fleet root drains the whole host, the same way one in a
 // runner's directory drains that runner. Same file name and same contents on
 // purpose: a second convention for the same idea is one more thing to remember
@@ -110,6 +126,7 @@ export function discoverRunnerDirs(root) {
       name: cfg.agentName,
       repo,
       drainState: readDrainState(dir),
+      drainBy: readDrainOwner(dir),
       version: runnerVersion(dir),
       // Derived exactly the way svc.sh derives it, which is the only way the
       // label will actually match what launchd loaded.

@@ -26,6 +26,15 @@ counts, the fleet `verdict` (see `GET /api/glance`), and control-plane
 leader/standby metadata. This is what the browser's
 SSE stream delivers on every tick.
 
+`tiers` is the standby-tiers controller's latest decision
+([Standby tiers](design/tiers.md)): `mode`, `overflow` (`active` or `standby`),
+`since` and `reason` for the last change, current `triggers`, per-lane busy and
+cap on the primary (`lanes`), `quietForMs` and `drainInMs`, runner counts per
+tier, the `actions` this tick took (enforce) or would take (observe), what was
+`deferred` and why, and the recent `history`. The glance carries a compact
+`tiers` object (mode, overflow, since, reason, triggers, drainInMs, lanes,
+counts, lastAction) whenever the mode is not `off`.
+
 ### `GET /api/stream`
 
 Server-Sent Events stream. The browser subscribes to this for live updates.

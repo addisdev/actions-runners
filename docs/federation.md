@@ -40,6 +40,11 @@ Start conservatively and expand permissions as trust builds:
 Remote deregistration is a fourth, separately destructive opt-in:
 `FLEET_AGENT_ALLOW_DEREGISTER=1`.
 
+Stage 2 grants every non-destructive action, including runner restarts and
+health repair. `FLEET_AGENT_COMMANDS` narrows it to a list:
+`runner.drain,runner.resume,tiers.drain,tiers.resume` is drain and resume only,
+which is all [standby tiers](design/tiers.md) need.
+
 ## Quick start
 
 ### 1. Coordinator: open the bind address

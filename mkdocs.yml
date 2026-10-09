@@ -135,5 +135,6 @@ nav:
       - Dismissing alerts: design/dismissing.md
       - Capacity and autoscaling: design/capacity.md
       - Honest analytics: design/analytics.md
+      - Standby tiers: design/tiers.md
   - Brand: brand.md
   - Release: release-checklist.md

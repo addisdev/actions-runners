@@ -12,6 +12,7 @@ import { join, dirname, extname, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
 
 import { openDb, setMeta, getMeta, UPSERT_JOB, UPSERT_REPO } from './lib/db.js';
 import { reposToPrune, repoIsGone } from './lib/workflow-cache.js';
@@ -78,6 +79,7 @@ import { createDiskForecaster } from './lib/disk-forecast.js';
 import { checkPosture } from './lib/posture.js';
 import { timeline } from './lib/timeline.js';
 import { TickGuard, stage } from './lib/tick-guard.js';
+import { decideTiers, tiersConfigFromEnv, primaryRungs, DRAIN_OWNER } from './lib/tiers.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(HERE, 'public');
@@ -381,6 +383,15 @@ async function refreshPosture() {
   }
 }
 let lastVerdict = null;
+
+// ---- standby tiers (lib/tiers.js) ------------------------------------------
+// Read once: fleet.env reaches this process through the plist, so a change
+// needs `fleetctl.sh install` anyway.
+const TIERS = tiersConfigFromEnv(process.env, { localHostId: CONFIG.replicaId });
+let tiersState = null;
+let tiersSignature = '';
+let tiersLocalChain = Promise.resolve();
+const tiersHistory = [];
 let lastFacts = null;
 
 function diskFloorGb() {
@@ -2054,6 +2065,12 @@ async function fastTick(progress = null) {
   } catch (err) {
     warn('verdict:', err.message);
   }
+  try {
+    stage(progress, 'standby tiers');
+    snapshot.tiers = await runTiers(snapshot, runners, started);
+  } catch (err) {
+    warn('tiers:', err.message);
+  }
   if (CONFIG.databaseUrl) {
     stage(progress, 'publish shared snapshot');
     await ha.publishSnapshot(snapshot).catch((err) => warn('publish shared snapshot:', err.message));
@@ -2093,6 +2110,139 @@ async function fastTick(progress = null) {
   } catch (err) {
     warn('autoscale eval:', err.message);
   }
+}
+
+// One step of the standby-tiers controller (lib/tiers.js, docs/design/tiers.md):
+// gather its inputs from this tick, decide, and in enforce mode carry out the
+// drains and resumes. The primary's own runners are drained here with
+// drain-runner.sh; a standby host's are queued as one tiers.drain/tiers.resume
+// command for its agent. Every drain is written --by=tiers, and only those are
+// ever resumed.
+async function runTiers(snap, localRunners, now) {
+  const primaryId = TIERS.primaryHost ?? LOCAL_HOST_ID;
+  const primaryIsLocal = primaryId === LOCAL_HOST_ID;
+  const findHost = (id) => hostState.get(id) ?? [...hostState.values()].find((h) => h.name === id) ?? null;
+  const primaryHost = primaryIsLocal ? null : findHost(primaryId);
+  const staleHostIds = (snap.hosts ?? []).filter((h) => !h.local && (h.stale || h.hostStale)).map((h) => h.id);
+  const localNames = new Set(localRunners.map((r) => r.name));
+  const standby = TIERS.standbyHosts.map((id) => {
+    const h = findHost(id);
+    return h
+      ? { id: h.id, name: h.name, lastHeartbeat: h.lastHeartbeat, memPressure: h.host?.memPressure ?? null }
+      : { id, name: id, lastHeartbeat: null, memPressure: null };
+  });
+
+  const { state, decision } = decideTiers({
+    config: TIERS,
+    now,
+    state: tiersState,
+    primary: {
+      id: primaryId,
+      lastHeartbeat: primaryIsLocal ? now : primaryHost?.lastHeartbeat ?? null,
+      memPressure: primaryIsLocal ? snap.host?.memPressure ?? null : primaryHost?.host?.memPressure ?? null,
+      rungs: primaryRungs(lastVerdict?.verdict, lastVerdict?.runners?.values?.() ?? [], {
+        primaryId, primaryIsLocal, staleHostIds,
+      }),
+    },
+    standby,
+    runners: (snap.fleetRunners ?? []).map((r) => ({
+      name: r.name,
+      dirName: r.dirName ?? null,
+      repo: r.repo,
+      hostId: r.hostId,
+      local: localNames.has(r.name),
+      labels: r.labels ?? [],
+      ghStatus: r.ghStatus,
+      ghUnknown: Boolean(r.ghUnknown),
+      workingLocally: Boolean(r.workingLocally),
+      ghBusy: Boolean(r.ghBusy),
+      drainState: r.drainState ?? null,
+      drainBy: r.drainBy ?? null,
+      ephemeral: Boolean(r.ephemeral),
+    })),
+    queue: (snap.queue ?? []).map((q) => ({ id: q.id, repo: q.repo, labels: q.labels ?? [], queuedSinceMs: q.queuedSinceMs ?? 0 })),
+  });
+
+  // A standby replica, or a read-only daemon, decides but never acts.
+  const mayAct = !CONFIG.readOnly && (!CONFIG.databaseUrl || ha.isLeader);
+  const act = decision.applied && mayAct;
+  if (act) tiersState = state;
+  else tiersState = { ...state, pending: tiersState?.pending ?? {} };
+
+  const transition = decision.overflow !== (tiersSignature.split('|')[0] || decision.overflow);
+  const signature = `${decision.overflow}|${decision.actions.map((a) => `${a.action}:${a.name}`).sort().join(',')}`;
+  if (signature !== tiersSignature) {
+    const what = decision.actions.length
+      ? decision.actions.map((a) => `${a.action} ${a.name}`).join(', ')
+      : 'no runner changes';
+    log(`tiers[${decision.mode}${act || !decision.actions.length ? '' : ', not applied'}]: overflow ${decision.overflow} — ${decision.reason}; ${what}`);
+    tiersSignature = signature;
+  }
+  if (transition && TIERS.mode !== 'off') {
+    try {
+      stmt.insertEvent.run(now, '(tiers)', null, 'tiers', `overflow ${decision.overflow}: ${decision.reason}`);
+    } catch { /* event log is best-effort */ }
+  }
+
+  if (act && decision.actions.length) {
+    const remote = new Map();
+    for (const a of decision.actions) {
+      try {
+        stmt.insertEvent.run(now, a.name, a.repo ?? null, 'tiers', `${a.action} (${a.tier}): ${a.reason}`);
+      } catch { /* best-effort */ }
+      tiersHistory.unshift({ ts: now, ...a });
+      if (a.hostId === LOCAL_HOST_ID) {
+        tiersLocalChain = tiersLocalChain.then(() => tiersLocal(a)).catch((err) => warn('tiers local:', err.message));
+      } else {
+        const key = `${a.hostId}\u0000${a.action}`;
+        if (!remote.has(key)) remote.set(key, { hostId: a.hostId, action: a.action, names: [] });
+        remote.get(key).names.push(a.name);
+      }
+    }
+    tiersHistory.length = Math.min(tiersHistory.length, 40);
+    for (const c of remote.values()) {
+      const action = `tiers.${c.action}`;
+      const args = { names: c.names, by: DRAIN_OWNER };
+      const key = `tiers.${c.action}.${c.hostId}.${now}`;
+      try {
+        if (CONFIG.databaseUrl) await ha.queueCommand(c.hostId, action, args, key);
+        else stmt.queueCommand.get(c.hostId, now, action, JSON.stringify(args), key);
+      } catch (err) {
+        warn(`tiers: could not queue ${action} for ${c.hostId}:`, err.message);
+      }
+    }
+  }
+
+  return {
+    ...decision,
+    applied: act,
+    primary: primaryId,
+    standby: TIERS.standbyHosts,
+    floorRepos: TIERS.floorRepos,
+    primaryOnlyRepos: TIERS.primaryOnlyRepos,
+    thresholds: {
+      resumeAfterBusyMs: TIERS.resumeAfterBusyMs,
+      queueAgeMs: TIERS.queueAgeMs,
+      drainAfterQuietMs: TIERS.drainAfterQuietMs,
+      selfResumeAfterMs: TIERS.selfResumeAfterMs,
+    },
+    deferred: decision.deferred.slice(0, 20),
+    history: tiersHistory.slice(0, 20),
+  };
+}
+
+// drain-runner.sh does the work, as it does for the Drain button: it knows to
+// let a busy runner finish its job and refuses a marker somebody else wrote.
+function tiersLocal(a) {
+  const flag = a.action === 'drain' ? '--drain' : '--resume';
+  return new Promise((resolve) => {
+    execFile('./scripts/drain-runner.sh', [a.dirName, flag, `--by=${DRAIN_OWNER}`],
+      { cwd: CONFIG.root, timeout: 60_000, maxBuffer: 256 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) warn(`tiers: ${a.action} ${a.name} failed:`, String(stderr || err.message).trim().slice(0, 300));
+        resolve();
+      });
+  });
 }
 
 // Poll hard while anything is happening, back off when the fleet is asleep. The

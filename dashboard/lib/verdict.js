@@ -647,7 +647,27 @@ export function buildGlance(snapshot, result, opts = {}) {
       failedRepos: snapshot.collector?.failedRepos ?? 0,
     },
     api: snapshot.api ? { remaining: snapshot.api.remaining ?? null, limit: snapshot.api.limit ?? null } : null,
+    // Standby tiers (lib/tiers.js): which tier is online and why. Absent
+    // unless the controller is configured, so the recorded fixtures and older
+    // cockpits see the payload they always did.
+    ...(snapshot.tiers && snapshot.tiers.mode !== 'off' ? { tiers: compactTiers(snapshot.tiers) } : {}),
   };
+}
+
+function compactTiers(t) {
+  const last = (t.history ?? [])[0] ?? null;
+  return strip({
+    mode: t.mode,
+    overflow: t.overflow,
+    since: t.since ?? null,
+    reason: t.reason ?? null,
+    triggers: (t.triggers ?? []).map((x) => x.detail),
+    drainInMs: t.drainInMs ?? null,
+    lanes: t.lanes ?? null,
+    counts: t.counts ?? null,
+    pending: (t.actions ?? []).length,
+    lastAction: last ? strip({ ts: last.ts, action: last.action, runner: last.name, tier: last.tier, reason: last.reason }) : null,
+  });
 }
 
 function compactRun(r, now) {
