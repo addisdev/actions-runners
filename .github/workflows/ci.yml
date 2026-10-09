@@ -129,6 +129,14 @@ jobs:
       - name: Disk cleanup tests
         run: bash scripts/test-cleanup.sh
 
+      - name: Health check tests
+        run: bash scripts/test-health.sh
+
+      - name: Preflight CLI tool tests
+        run: bash scripts/test-preflight-tools.sh
+      - name: runner-path.sh — one job PATH per runner
+        run: bash scripts/test-runner-path.sh
+
   # ---------------------------------------------------------------------------
   # Offline release check (no network, checks tracked files for private data)
   # ---------------------------------------------------------------------------

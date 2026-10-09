@@ -1,0 +1,19 @@
+# Plain CLI tools the fleet's self-hosted jobs run, for preflight.sh and
+# scripts/join-host.sh (via scripts/check-tools.sh). Toolchains with their own
+# checks (Xcode, node/npm, Java, Postgres, Docker, gh) are not listed here.
+#
+#   command  formula  when    why
+#
+# formula: what `brew install` installs it from; `-` when macOS ships it and
+#          Homebrew is not the fix (the reason column says what is).
+# when:    `always`, or `infer` to check only when a self-hosted workflow runs
+#          the command itself (scripts/infer-checks.py). `always` is for tools
+#          workflows reach through a Makefile or a script: inference reads only
+#          the workflow YAML, so `make lint` never shows it the shellcheck
+#          inside. That is how a repo's lint met
+#          `make: shellcheck: No such file or directory` on a new host (2026-10-09).
+shellcheck shellcheck always  shell lint in Makefiles (make lint) and CI checks
+jq         jq         always  JSON in workflow and Makefile shell steps
+make       -          always  Makefile targets; comes with the Xcode Command Line Tools: xcode-select --install
+deno       deno       infer   Supabase edge-function tests (deno test / deno check)
+ruby       -          infer   App Store Connect tools (.kit/tools/asc/*.rb); macOS ships /usr/bin/ruby

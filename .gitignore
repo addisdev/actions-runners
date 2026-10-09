@@ -61,6 +61,9 @@
 !scripts/
 !scripts/*.sh
 !scripts/*.py
+# The CLI tools preflight.sh and join-host.sh check. Named, not `!scripts/*.txt`:
+# a token list piped to mirror-runners.sh --tokens-from must never be tracked.
+!scripts/cli-tools.txt
 
 # Runner job hooks, referenced from each runner's .env. Same directory-first
 # rule as above. The admission state these write — .admission/, holding one slot
@@ -178,6 +181,8 @@ dashboard/.fleet-vapid.json
 !docs/design/*.md
 !docs/reference/
 !docs/reference/*.md
+!docs/cockpit/
+!docs/cockpit/*.md
 
 # The site's stylesheet and its rendered images. docs/img/ is output — every
 # file in it is produced by `npm run assets`, `npm run shoot` or `npm run
@@ -227,6 +232,7 @@ site/
 !examples/fleet.env.single-host
 !examples/fleet.env.federated-coordinator
 !examples/fleet.env.federated-agent
+!examples/fleet.env.second-host
 
 # Fleet Cockpit, the macOS menu bar client (cockpit/). Source, tests, bundled
 # fixtures and the XcodeGen spec. The generated .xcodeproj, SwiftPM's .build,

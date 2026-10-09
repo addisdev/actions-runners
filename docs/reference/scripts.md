@@ -41,7 +41,10 @@ without `--repair` — have no `--apply` because there is nothing to guard.
 | `scripts/test-drain.sh` | Shell tests for drain and resume | runs against a temporary fleet |
 | `scripts/test-ephemeral.sh` | Shell tests for the ephemeral reaper | runs against a temporary fleet |
 | `scripts/test-cleanup.sh` | Shell tests for disk cleanup | runs against a temporary fleet |
+| `scripts/test-health.sh` | Shell tests for `health.sh` | runs against a temporary fleet |
+| `scripts/test-preflight-tools.sh` | Shell tests for the CLI-tool checks | stub PATH and a temporary database |
 | `scripts/infer-checks.py` | Work out which preflight checks this fleet needs | read-only |
+| `scripts/check-tools.sh` | Check the CLI tools in `scripts/cli-tools.txt` on the runners' PATH | read-only |
 | `dashboard/fleetctl.sh` | Install, run, inspect, back up and restore the dashboard daemon | n/a — subcommands |
 | `dashboard/agentctl.sh` | Install, run and inspect the fleet agent on an agent Mac | n/a — subcommands |
 | `install.sh` | One-command setup for coordinator or agent role | n/a — runs preflight then fleetctl/agentctl |
@@ -318,6 +321,19 @@ fetched into SQLite, read via `scripts/infer-checks.py`. Only files mentioning
 hardware and implies nothing about this Mac. With no readable database it says
 so and checks everything, which is the safe direction to fail in.
 
+Plain CLI tools — shellcheck, jq, make, deno, ruby — are listed once in
+`scripts/cli-tools.txt` and checked by `scripts/check-tools.sh` on the PATH
+register.sh gives each runner, not the caller's. Tools marked `always` are
+checked whatever the inference says, because workflows reach them through a
+Makefile or script the YAML never shows: a repo's `make lint` failed on a
+host with `make: shellcheck: No such file or directory`. Tools marked `infer`
+are checked when a self-hosted workflow runs them outside a comment. Add a line
+there when a workflow starts depending on a new one.
+
+Preflight also warns, without failing, when the runners' `python3` is PEP 668
+"externally managed" (Homebrew Python): a workflow's bare `pip install` fails
+there, so it must install into a venv.
+
 | Variable | Effect |
 |---|---|
 | `FLEET_DB` | The dashboard database to infer from. Defaults to `dashboard/fleet.db` beside the script. |
@@ -338,6 +354,44 @@ are there because a VPN alongside the LAN makes DNS a race, and the resulting
 job failure names no cause and points at GitHub rather than at the network.
 
 ## Runner lifecycle
+
+### `scripts/join-host.sh`
+
+Joins this Mac to an existing fleet as a second runner host in one command:
+preflight (macOS, Node, a clone, `fleet.env` agent settings, the coordinator
+answering, and the toolchains jobs use, including every CLI tool in
+`scripts/cli-tools.txt`), then the agent, the mirrored runners
+and the health-repair timer. Dry run unless `--apply`. Start from
+`examples/fleet.env.second-host`; see [Federation](../federation.md#adding-a-second-runner-host).
+Source: [`scripts/join-host.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/join-host.sh).
+
+```bash
+scripts/join-host.sh                                  # check everything, change nothing
+scripts/join-host.sh --apply --only peertest,radiator # pilot a few repos
+scripts/join-host.sh --apply --install-tools          # also brew-install what is missing
+```
+
+`--install-tools` installs the missing tools that have a Homebrew formula
+(gh, jq, node, openjdk@21, and from `cli-tools.txt` shellcheck, deno). Tools
+macOS ships, such as make, are reported with their own fix instead.
+
+### `scripts/mirror-runners.sh`
+
+Registers runners on this host that copy the coordinator's, one per distinct
+label set a repo's runners carry, so GitHub can hand that repo's jobs to either
+host. Skips label sets that need a label this host does not advertise
+(`FLEET_HOST_LABELS`), Simulator runners when there is no Xcode, and repos in
+`FLEET_MIRROR_SKIP_REPOS`; runners already here are left alone. `--tokens-from`
+reads `owner/repo token` lines, for registration tokens minted on a machine
+whose `gh` works (over SSH it cannot read the keychain).
+Source: [`scripts/mirror-runners.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/mirror-runners.sh).
+
+```bash
+scripts/mirror-runners.sh                    # the plan
+scripts/mirror-runners.sh --apply --only peertest
+while read -r repo; do printf '%s %s\n' "$repo" "$(gh api -X POST repos/$repo/actions/runners/registration-token --jq .token)"; done < repos.txt \
+  | ssh build-mac-2 'cd ~/actions-runners && scripts/mirror-runners.sh --apply --tokens-from -'
+```
 
 ### `scripts/deregister.sh`
 
@@ -835,6 +889,48 @@ that a building or slot-holding runner keeps its simulator and browsers, that
 host-wide steps wait for an idle fleet, that a dry run deletes nothing, and
 that two runs never overlap. Exits non-zero if any test fails.
 
+### `scripts/runner-path.sh`
+
+Gives every runner on this host the same job PATH. A job's PATH comes from the
+runner's `.path`, which `config.sh` fills from whatever shell registered it, so
+older runners differ (on runner-host: six PATHs, 17 runners with no Homebrew).
+`register.sh` now writes `FLEET_RUNNER_PATH` itself; this rewrites `.path` and
+`.env`'s PATH for runners registered before that, only when idle, and restarts
+each. Dry run unless `--apply`.
+Source: [`scripts/runner-path.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/runner-path.sh).
+
+```bash
+scripts/runner-path.sh            # which runners differ
+scripts/runner-path.sh --apply    # rewrite the idle ones and restart them
+```
+
+### `scripts/test-runner-path.sh`
+
+Tests `scripts/runner-path.sh` against throwaway runner directories: a dry run
+changes nothing, `--apply` rewrites `.path` and `.env` and restarts only the
+runner that differed.
+Source: [`scripts/test-runner-path.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/test-runner-path.sh).
+
+```bash
+bash scripts/test-runner-path.sh
+```
+
+### `scripts/test-health.sh`
+
+Shell tests for `health.sh`. No flags.
+Source: [`scripts/test-health.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/test-health.sh).
+
+```bash
+scripts/test-health.sh
+```
+
+It builds a fake fleet in a temporary directory and puts stub `gh`, `launchctl`
+and `plutil` first on PATH, then runs the real `health.sh`. It checks that
+GitHub not answering is reported but not counted as unhealthy, that a runner
+missing from a real answer is `not-registered` and is a fault, that `offline`
+is a fault and `--repair` restarts it, and that a dead launchd job is still a
+fault while GitHub cannot be asked.
+
 ### `scripts/test-ephemeral.sh`
 
 Shell tests for the ephemeral runner reaper. No flags.
@@ -1041,6 +1137,18 @@ cd dashboard
 ssh runner-host "/usr/bin/sqlite3 -json ~/actions-runners/dashboard/fleet.db \"$(node scripts/settle-stale-jobs.mjs query)\"" > stale.json
 node scripts/settle-stale-jobs.mjs fetch --in stale.json --out fetched.ndjson
 node scripts/settle-stale-jobs.mjs sql --in fetched.ndjson | ssh runner-host /usr/bin/sqlite3 ~/actions-runners/dashboard/fleet.db
+```
+
+### `dashboard/scripts/mirror-plan.mjs`
+
+Prints the plan `scripts/mirror-runners.sh` acts on, one tab-separated line per
+runner (`register`, `present` or `skip` with its reason). The logic is
+`dashboard/lib/mirror.js`; host facts come from `fleet.env` and Xcode is
+detected by running `xcodebuild -version`.
+Source: [`dashboard/scripts/mirror-plan.mjs`](https://github.com/addisdev/actions-runners/blob/main/dashboard/scripts/mirror-plan.mjs).
+
+```bash
+node dashboard/scripts/mirror-plan.mjs --coordinator http://coordinator-mac:7878 --root ~/actions-runners
 ```
 
 ### `dashboard/scripts/make-glance-fixtures.mjs`

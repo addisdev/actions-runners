@@ -224,29 +224,8 @@ public enum GitHubToken {
 enum Shell {
     /// Runs a program, returns stdout if it exits 0 within the timeout.
     static func run(_ path: String, _ args: [String], timeout: TimeInterval) async -> String? {
-        await withCheckedContinuation { (c: CheckedContinuation<String?, Never>) in
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: path)
-            p.arguments = args
-            let out = Pipe()
-            p.standardOutput = out
-            p.standardError = FileHandle.nullDevice
-            p.standardInput = FileHandle.nullDevice
-            let once = Once()
-            p.terminationHandler = { proc in
-                let data = out.fileHandleForReading.readDataToEndOfFile()
-                if once.claim() {
-                    c.resume(returning: proc.terminationStatus == 0 ? String(decoding: data, as: UTF8.self) : nil)
-                }
-            }
-            do { try p.run() } catch {
-                if once.claim() { c.resume(returning: nil) }
-                return
-            }
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-                if once.claim() { p.terminate(); c.resume(returning: nil) }
-            }
-        }
+        guard let r = await Subprocess.run(path, args, timeout: timeout), r.status == 0 else { return nil }
+        return String(decoding: r.stdout, as: UTF8.self)
     }
 }
 

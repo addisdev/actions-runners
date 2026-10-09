@@ -13,7 +13,8 @@ import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 
-import { openDb, setMeta, getMeta, UPSERT_JOB } from './lib/db.js';
+import { openDb, setMeta, getMeta, UPSERT_JOB, UPSERT_REPO } from './lib/db.js';
+import { reposToPrune, repoIsGone } from './lib/workflow-cache.js';
 import { GitHub, isActiveRunStatus } from './lib/github.js';
 import {
   discoverRunnerDirs,
@@ -45,9 +46,9 @@ import {
   createPairingCode, exchangeCode, deviceTokenMatches, listDevices, revokeDevice, PAIRING_CODE_TTL_MS,
 } from './lib/devices.js';
 import { Alerts, loadConfig as loadAlertConfig } from './lib/alerts.js';
-import { lintAll } from './lib/lint.js';
+import { lintAll, isLintableRepo } from './lib/lint.js';
 import { adviseAll } from './lib/concurrency-advisor.js';
-import { classifyQueuedRuns, classifyQueueCause, queuedJobLabels } from './lib/queue-cause.js';
+import { classifyQueuedRuns, classifyQueueCause, queuedJobLabels, lintFindingForRun } from './lib/queue-cause.js';
 import { createSettings, SCHEMA as SETTINGS_SCHEMA, ENV_ONLY } from './lib/settings.js';
 import { headroom } from './lib/capacity.js';
 import { sizeFleet, concurrencyByRepo, queueEffect, sizingKey } from './lib/sizing.js';
@@ -266,7 +267,13 @@ let alertRun = Promise.resolve();
 // Decisions made by hooks/job-started.sh, read from the NDJSON those hooks
 // append to. This process never makes an admission decision itself — a job's
 // ability to start must not depend on the dashboard being alive.
-const admission = createAdmission({ db, logPath: CONFIG.admissionLog, warn });
+const admission = createAdmission({ db, logPath: CONFIG.admissionLog, warn, hostId: CONFIG.replicaId });
+// host_samples rows from before host_id existed are this host's own vitals.
+try {
+  db.prepare('UPDATE host_samples SET host_id = ? WHERE host_id IS NULL').run(CONFIG.replicaId);
+} catch (err) {
+  warn('host_samples host stamp:', err.message);
+}
 const logAction = db.prepare(
   'INSERT INTO action_log (ts, action, args, command, exit_code, ok, output) VALUES (?,?,?,?,?,?,?)'
 );
@@ -335,6 +342,22 @@ const etaBaselines = createEtaBaselines(db);
 const diskForecaster = createDiskForecaster(db);
 let postureCache = null;
 
+// What the lint needs to know about each repo: archived ones are skipped (GitHub
+// will not run them), and public ones do not bill for hosted macOS. Read from the
+// roster table, which the slow loop keeps current, archived repos included.
+function lintRepoFacts() {
+  const facts = new Map();
+  try {
+    for (const r of db.prepare('SELECT full_name, archived, private FROM repos').all()) {
+      facts.set(r.full_name, {
+        archived: Boolean(r.archived),
+        private: r.private == null ? null : Boolean(r.private),
+      });
+    }
+  } catch { /* a fresh database: lint everything, treat everything as private */ }
+  return facts;
+}
+
 function lintFindings() {
   const runnersByRepo = new Map();
   const addRunner = (repo, labels) => {
@@ -343,7 +366,7 @@ function lintFindings() {
   };
   for (const r of snapshot.runners ?? []) if (r.registered) addRunner(r.repo, r.labels);
   for (const e of snapshot.elsewhere ?? []) addRunner(e.repo, e.labels);
-  return lintAll({ files: stmt.workflowFiles.all(), runnersByRepo });
+  return lintAll({ files: stmt.workflowFiles.all(), runnersByRepo, repos: lintRepoFacts() });
 }
 
 // Standing risks, on the slow loop: every probe is a read, none is free.
@@ -412,8 +435,8 @@ const stmt = {
     INSERT INTO host_samples (ts, load1, mem_used_mb, mem_total_mb, swap_used_mb,
                               swap_total_mb, disk_free_gb, disk_total_gb, listeners, busy_runners,
                               mem_free_pct, pressure, swapins_per_sec, swapouts_per_sec,
-                              mem_compressed_mb)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(ts) DO NOTHING`),
+                              mem_compressed_mb, host_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(ts) DO NOTHING`),
   upsertWorkflowFile: db.prepare(`
     INSERT INTO workflow_files (repo, path, ref, name, sha, content, fetched_at, is_default)
     VALUES (?,?,?,?,?,?,?,?)
@@ -508,13 +531,7 @@ const stmt = {
     GROUP BY head_branch HAVING n >= 2
     ORDER BY n DESC`),
   defaultBranchOf: db.prepare('SELECT default_branch FROM repos WHERE full_name = ?'),
-  upsertRepo: db.prepare(`
-    INSERT INTO repos (full_name, name, archived, private, pushed_at, workflows, has_runner, updated_at)
-    VALUES (?,?,?,?,?,?,?,?)
-    ON CONFLICT(full_name) DO UPDATE SET
-      archived=excluded.archived, pushed_at=excluded.pushed_at,
-      workflows=COALESCE(excluded.workflows, repos.workflows),
-      has_runner=excluded.has_runner, updated_at=excluded.updated_at`),
+  upsertRepo: db.prepare(UPSERT_REPO),
 };
 
 const b = (v) => (v ? 1 : 0);
@@ -1756,7 +1773,8 @@ async function fastTick(progress = null) {
     stmt.insertSample.run(Math.floor(started / 1000) * 1000, vitals.load1, vitals.memUsedMb,
       vitals.memTotalMb, Math.round(vitals.swapUsedMb ?? 0), Math.round(vitals.swapTotalMb ?? 0),
       vitals.diskFreeGb, vitals.diskTotalGb, processes.listeners.size, processes.workers.size,
-      vitals.memFreePct, vitals.memPressure, swapinsPerSec, swapoutsPerSec, vitals.memCompressedMb);
+      vitals.memFreePct, vitals.memPressure, swapinsPerSec, swapoutsPerSec, vitals.memCompressedMb,
+      LOCAL_HOST_ID);
   }
 
   // Named rather than inlined into the snapshot because the capacity gate and
@@ -1817,7 +1835,11 @@ async function fastTick(progress = null) {
   // Uses fleetRunners so that runners on agent hosts are included in the label
   // map — a remote runner carrying xcode-16 should clear an xcode-16 label
   // check rather than having the classifier report LABEL_MISMATCH.
-  const criticalLintRepos = (() => {
+  //
+  // The findings are kept whole, not reduced to a set of repos: each queued run
+  // is matched to a finding in its own workflow file and job (lintFindingForRun),
+  // so a mismatch in one workflow no longer brands every queued run in the repo.
+  const criticalLintFindings = (() => {
     try {
       const byRepo = new Map();
       for (const r of fleetRunners) {
@@ -1825,21 +1847,19 @@ async function fastTick(progress = null) {
         if (!byRepo.has(r.repo)) byRepo.set(r.repo, []);
         byRepo.get(r.repo).push({ labels: (r.labels ?? []).map((l) => String(l).toLowerCase()) });
       }
-      return new Set(
-        lintAll({ files: stmt.workflowFiles.all(), runnersByRepo: byRepo })
-          .filter((f) => f.severity === 'critical')
-          .map((f) => f.repo)
-      );
+      return lintAll({ files: stmt.workflowFiles.all(), runnersByRepo: byRepo, repos: lintRepoFacts() })
+        .filter((f) => f.severity === 'critical');
     } catch {
-      // A lint failure must not take the drift view with it. Without this set
-      // the classifier simply loses one input and falls through to its other
-      // evidence, which is the right way to degrade.
-      return new Set();
+      // A lint failure must not take the drift view with it. Without these
+      // findings the classifier simply loses one input and falls through to
+      // its other evidence, which is the right way to degrade.
+      return [];
     }
   })();
 
-  const classifyRun = (run) =>
-    classifyQueueCause({
+  const classifyRun = (run) => {
+    const runLabels = queuedJobLabels(run);
+    return classifyQueueCause({
       run,
       // Fleet-wide runner list so remote runners count toward busy/idle state.
       runners: fleetRunners,
@@ -1848,9 +1868,10 @@ async function fastTick(progress = null) {
       capacity: fleetCapacity,
       api: gh.rate,
       collector: { lastError: ghError, repoErrors },
-      runLabels: queuedJobLabels(run),
-      hasLintFindings: criticalLintRepos.has(run.repo),
+      runLabels,
+      lintFinding: lintFindingForRun(run, criticalLintFindings, runLabels),
     });
+  };
 
   const drift = deriveDrift({
     runners, elsewhere, active, repos: repoRoster, now: started, classify: classifyRun,
@@ -2174,12 +2195,26 @@ function activeRefsFor(repo, defaultBranch) {
 async function slowTick() {
   const started = Date.now();
   refreshPosture();
+  // The owner's non-archived repos as of this tick, or null when the roster
+  // refresh failed. Workflow files for anything outside it are dropped below.
+  let liveRepos = null;
   try {
     const owned = await gh.ownedRepos();
+    liveRepos = new Set(owned.filter((r) => !r.archived).map((r) => r.full_name));
     const withRunners = new Set(dirsCache.map((d) => d.repo));
     const roster = [];
     for (const r of owned) {
-      if (r.archived) continue;
+      if (r.archived) {
+        // Recorded, not just skipped. A repo archived after the roster first saw
+        // it otherwise stays `archived = 0` in this table forever, and its cached
+        // workflow files keep the lint reporting "no runner is registered" for a
+        // repo GitHub will never run (a web repo archived when its product moved
+        // to a single repo, still reported CRITICAL weeks later).
+        // workflows is null so the existing count is kept without an API call.
+        stmt.upsertRepo.run(r.full_name, r.name, 1, b(r.private), r.pushed_at, null,
+          b(withRunners.has(r.full_name)), Date.now());
+        continue;
+      }
       let workflows = null;
       try {
         workflows = await gh.workflowCount(r.full_name);
@@ -2237,18 +2272,51 @@ async function slowTick() {
     // deleted drops to zero in the roster, and iterating the roster alone would
     // skip it forever, leaving the lint reporting on a file nobody can see.
     const cachedRepos = db.prepare('SELECT DISTINCT repo FROM workflow_files').all().map((r) => r.repo);
+    const archived = new Set(
+      db.prepare('SELECT full_name FROM repos WHERE archived = 1').all().map((r) => r.full_name)
+    );
+    const forget = (repo) => {
+      for (const row of db.prepare('SELECT path, ref FROM workflow_files WHERE repo = ?').all(repo)) {
+        stmt.deleteWorkflowFile.run(repo, row.path, row.ref);
+        dropped++;
+      }
+    };
+
+    // Repos no longer on the owner's roster are dropped without being listed.
+    // A deleted repo would 404 below, but a renamed or transferred one still
+    // answers under its old name through GitHub's redirect, so its files were
+    // kept and linted under a name the roster no longer has.
+    const gone = new Set(reposToPrune({ cachedRepos, liveRepos }));
+    for (const repo of gone) {
+      log(`workflow cache: ${repo} is no longer on the roster, dropping its cached workflow files`);
+      forget(repo);
+    }
     const toCheck = [...new Set([
       ...repoRoster.filter((r) => r.workflows > 0).map((r) => r.fullName),
       ...cachedRepos,
-    ])];
+    ])].filter((repo) => !gone.has(repo));
 
     for (const repo of toCheck) {
+      // An archived repo cannot run workflows; its files are dropped rather than
+      // refreshed, so nothing downstream reads them.
+      if (archived.has(repo)) {
+        forget(repo);
+        continue;
+      }
       let list;
       try {
         list = await gh.workflowList(repo);
       } catch (err) {
-        // A transient failure must not be read as "this repo has no workflows"
-        // and wipe its cache. Skip the repo entirely and try again next tick.
+        // A 404 or 410 is not transient: the repo was deleted (or renamed away
+        // from this name). Without this its cached files were re-checked and
+        // kept forever, linted under a name that no longer exists. Anything else
+        // must not be read as "this repo has no workflows" and wipe its cache:
+        // skip the repo entirely and try again next tick.
+        if (repoIsGone(err)) {
+          warn(`workflow list ${repo}: ${err.status}, dropping its cached workflow files`);
+          forget(repo);
+          continue;
+        }
         warn(`workflow list ${repo}: ${err.message}`);
         continue;
       }
@@ -2882,9 +2950,12 @@ const server = http.createServer(async (req, res) => {
     for (const r of snapshot.runners) if (r.registered) addRunner(r.repo, r.labels);
     for (const e of snapshot.elsewhere) addRunner(e.repo, e.labels);
 
-    const files = stmt.workflowFiles.all();
+    const repoFacts = lintRepoFacts();
+    // Archived and no-longer-owned repos are not linted, so they are not
+    // counted as checked either.
+    const files = stmt.workflowFiles.all().filter((f) => isLintableRepo(repoFacts, f.repo));
     try {
-      const findings = lintAll({ files, runnersByRepo });
+      const findings = lintAll({ files, runnersByRepo, repos: repoFacts });
       return json(res, {
         // `files` counts distinct workflow files; `checks` counts file×ref pairs
         // actually linted. Reporting only the latter as "files" would claim 54
@@ -2937,15 +3008,15 @@ const server = http.createServer(async (req, res) => {
           if (!runnersByRepo.has(r.repo)) runnersByRepo.set(r.repo, []);
           runnersByRepo.get(r.repo).push({ labels: r.labels.map((l) => l.toLowerCase()) });
         }
-        return lintAll({ files: stmt.workflowFiles.all(), runnersByRepo });
+        return lintAll({ files: stmt.workflowFiles.all(), runnersByRepo, repos: lintRepoFacts() });
       } catch { return []; }
     })();
-    const reposWithLintFindings = new Set(lintFindings.filter((f) => f.severity === 'critical').map((f) => f.repo));
+    // Whole findings, matched per run by workflow file and job labels.
     const causes = classifyQueuedRuns({
       ...snapshot,
       runners: fleetRunners,
       capacity: snapshot.fleetCapacity ?? snapshot.capacity,
-    }, reposWithLintFindings);
+    }, lintFindings.filter((f) => f.severity === 'critical'));
     return json(res, { causes: Object.fromEntries(causes) });
   }
 
@@ -3064,7 +3135,22 @@ const server = http.createServer(async (req, res) => {
       warn('host commands:', err.message);
     }
 
-    return json(res, { ok: true, commands });
+    // Admission decisions made on that host. Its hooks write NDJSON locally,
+    // exactly as here, and the agent ships the lines that are new since its
+    // last accepted heartbeat. Acknowledged by count so the agent advances its
+    // read offset only when they landed: an older coordinator that ignores the
+    // field sends no count, and the lines are offered again next time.
+    let admissionAccepted;
+    if (Array.isArray(body.admissionLines)) {
+      try {
+        admission.ingestLines(body.admissionLines.slice(0, 2000), hostId);
+        admissionAccepted = Math.min(body.admissionLines.length, 2000);
+      } catch (err) {
+        warn(`admission lines from ${hostId}:`, err.message);
+      }
+    }
+
+    return json(res, { ok: true, commands, ...(admissionAccepted != null ? { admissionAccepted } : {}) });
   }
 
   if (url.pathname === '/api/host/results' && req.method === 'POST') {

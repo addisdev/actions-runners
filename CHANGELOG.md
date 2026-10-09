@@ -12,6 +12,44 @@ Portable, mobile-first dashboard.
 
 ### Added
 
+- `scripts/join-host.sh` preflight also checks the Xcode license (`xcodebuild
+  -version` answers without it, then `swiftc` exits 69 in the first job), an
+  optional `FLEET_XCODE_VERSION` every host must match (a second host with an
+  older Xcode builds the same job against a different SDK), and PyYAML for both
+  `python3` interpreters a job can reach. All three were hit adding a second
+  host.
+
+- **Preflight checks plain CLI tools.** `preflight.sh` checked Xcode, Postgres,
+  Java, node and gh but nothing a Makefile calls, so a repo's `make lint` met
+  `make: shellcheck: No such file or directory` on a new host (2026-10-09).
+  `scripts/cli-tools.txt` lists the tools (shellcheck, jq, make always; deno
+  and ruby when a self-hosted workflow runs them, via `infer-checks.py`), and
+  `scripts/check-tools.sh` looks them up on the runners' PATH. `join-host.sh`
+  checks every listed tool and `--install-tools` brew-installs the missing
+  ones. Preflight also warns when the runners' python3 is PEP 668 externally
+  managed. Tests: `scripts/test-preflight-tools.sh`.
+
+- **Admission decisions from every host.** An agent host's hooks log locally
+  like the coordinator's, and nothing read that file, so holds on a second host
+  never reached the dashboard or the admission-hold alert. The agent now ships
+  the lines added since its last accepted heartbeat (`lib/admission-ship.js`,
+  at-least-once, offset advanced only by the coordinator's count), and the
+  coordinator stores them by host: `admission_events.host_id`, `waiting[].host`
+  and `admission.byHost`. The headline mode and limit stay the coordinator's
+  own. `host_samples.host_id` records which machine a vitals row describes, so
+  moving the coordinator does not splice two machines' load into one history.
+  Runbook: docs/federation.md, "Moving the coordinator to another Mac".
+
+- **One-command second host.** `scripts/join-host.sh` joins a Mac to the fleet:
+  preflight (including the toolchains jobs use), the agent, mirrored runners and
+  the health timer, dry run unless `--apply`. `scripts/mirror-runners.sh` and
+  `dashboard/lib/mirror.js` copy the coordinator's runners one per distinct
+  label set, skipping what the host cannot run (a missing label, Simulator
+  runners without Xcode, `FLEET_MIRROR_SKIP_REPOS`), with registration tokens
+  optionally minted elsewhere (`--tokens-from`). Template:
+  `examples/fleet.env.second-host`. The agent and installer accept the token
+  from `FLEET_AGENT_TOKEN_FILE`. Runner pin 2.336.0 → 2.337.0.
+
 - **Fleet verdict.** `lib/verdict.js` reduces drift, queue causes, failure
   classes, admission holds and alerts to one ordered ladder — cannot read
   GitHub, host down, disk floor, dead service, saturated, account blocked,
@@ -33,7 +71,7 @@ Portable, mobile-first dashboard.
   that dies with the app; reconnects on wake and network change; keeps a stale
   view greyed rather than green. Bundled incident fixtures, `--render` for
   screenshots, a `cockpit` CLI, and a snapshot file for other tools. See
-  [docs/cockpit.md](docs/cockpit.md).
+  [docs/cockpit/](docs/cockpit/index.md).
 - `scripts/make-glance-fixtures.mjs` keeps the cockpit's fixtures in step with
   the daemon (checked in CI).
 - **Out-of-band sentinel** in the cockpit: when the dashboard does not answer it
@@ -115,6 +153,63 @@ Portable, mobile-first dashboard.
   frozen progress line and qualified repo slug were set. Grace for the first
   glance is anchored to when the stream opens; the fast GitHub cadence applies
   only to a stalled collector or a dashboard with no open stream.
+
+- **`cockpit wait` outlived its deadline by hours.** On 2026-10-09 three
+  `cockpit wait --pr` sessions (aliquant-backend #54, aliquant-web #116,
+  homelab-map #11) ran 1 h 37 min with no timeout while all three PRs were
+  merged and green. `sample` put each one in `-[NSConcreteTask waitUntilExit]`
+  inside the GitHub cross-check, with the `gh` child already gone: `gh` had
+  overrun its 20 s budget, the timer called `terminate()` while a worker sat
+  in `waitUntilExit()`, and Foundation never marked the task finished (a
+  stand-alone repro hangs within a few tries). The loop awaited that ask
+  inline, so neither the deadline nor cockpit's own (live) stream could end
+  the wait, and the wait's SSH tunnel stayed up with it. Now `Subprocess` runs
+  every short-lived program without `waitUntilExit` and always answers by its
+  deadline; the wait's deadline is a wall-clock timer of its own
+  (`Deadline.race`), each GitHub ask has its own budget, and the CLI exits `3`
+  thirty seconds past `--timeout` whatever else is happening. A stream silent
+  for 75 s is torn down and its tunnel reopened, and a view with no runs for
+  the PR asks GitHub at once instead of after two minutes (short `--fresh`
+  retries had exited "no runs seen" on a green PR).
+
+- Runners ran jobs with whatever PATH the shell that registered them had:
+  `config.sh` copies the caller's `$PATH` into `.path`, and the runner gives
+  jobs that, not `.env`'s. runner-host had six PATHs (17 runners with no
+  Homebrew, nine with nvm's Node and SnowSQL from an interactive shell), and a
+  second host's `python3` resolved to Homebrew's 3.14 where its twin's was
+  Xcode's 3.9, which broke kit-ci there. `register.sh` writes
+  `FLEET_RUNNER_PATH` into `.path` after `config.sh`; `scripts/runner-path.sh`
+  aligns existing runners (idle ones only, dry run by default) and join-host's
+  preflight reports drift.
+
+- **Lint and queue-cause false positives.** The Lint tab reported an archived
+  repo CRITICAL ("no runner is registered") because the roster skipped archived
+  repos without recording them, so their cached workflow files lived on; files of
+  deleted repos (workflow list 404) were also kept forever. Both are now dropped,
+  and the lint skips archived and unknown repos. `hosted-macos` no longer fires
+  on public repos (the upsert never refreshed `private`, so a repo made public
+  stayed private in the table) and is info when the job's `if:` reads the repo's
+  visibility. `no-cancel-in-progress` accepts an expression that reads the event
+  or the ref (any other expression is info) and counts job-level concurrency;
+  cached workflow files of repos gone from the roster are dropped even when the
+  old name still redirects, and the upsert refreshes `name` too. Label findings on a
+  job gated by `if: vars.*` are info. The queue-cause classifier matched lint
+  findings per repo, so a queued `CI` run behind a busy runner was called
+  `label-mismatch` because a different workflow had a finding; it now matches
+  the finding's workflow file, branch and job labels (`lintFindingForRun`).
+
+- An agent configured with `FLEET_COORDINATOR` alone reported to nobody:
+  `agentctl.sh` writes both coordinator keys into the plist, the unused one
+  empty, and `agent.js` read them with `??`, which takes an empty string as set.
+  Found by the first real second host.
+
+- **`health.sh` no longer goes red when GitHub does not answer.** A failed
+  runner API call was read as "this runner is unhealthy", so a rate-limit or
+  network blip turned the health job red for every runner at once (red in 147
+  of 2617 runs on runner-host; every recent one was such a blip). It now says GitHub did not answer and still judges
+  launchd; a runner missing from a real answer is reported `not-registered`
+  and stays a fault. Covered by `scripts/test-health.sh`.
+
 - **`cockpit wait` sat on a frozen view and never returned.** On 2026-10-07
   runner-host's fast loop finished its last tick about 12:32Z under load.
   fleetd publishes only after a tick, so every client kept that glance

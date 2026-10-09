@@ -26,6 +26,24 @@ Start with [Get started](getting-started.md) if you are new to the project, and
 | [Upgrading](upgrading.md) | Update and rollback procedures |
 | [Uninstalling](uninstalling.md) | Clean removal from a host |
 
+## Fleet Cockpit (macOS)
+
+The menu bar app, its command line and MCP server, and the host sentinel.
+
+| Page | What it covers |
+|---|---|
+| [Overview](cockpit/index.md) | What the cockpit is, its pieces and its design rules |
+| [Install and set up](cockpit/install.md) | Build, install, open at login, reach the dashboard, pair, CLI, agents |
+| [Using the app](cockpit/using.md) | The popover, pills, checks, queue, Why, brief, history, risks, actions, notifications |
+| [Verdict reference](cockpit/verdict.md) | Every rung, the out-of-band verdicts, runner states, next moves, ETAs |
+| [Around macOS](cockpit/macos.md) | Widgets, Shortcuts, Focus filter, hotkey, URL scheme, replay, launch arguments |
+| [Command line](cockpit/cli.md) | Every `cockpit` command, flag, output and exit code |
+| [Agent sessions](cockpit/agents.md) | The MCP server, the skill, and the snapshot file |
+| [Host sentinel](cockpit/sentinel.md) | Phone alerts from another machine when the host goes away |
+| [Settings and files](cockpit/settings.md) | Every setting, the tunnel, files, keys and logs |
+| [Troubleshooting](cockpit/troubleshooting.md) | When the cockpit itself misbehaves |
+| [Development](cockpit/development.md) | Code map, tests, fixtures, changing the ladder, screenshots, releases |
+
 ## Reference
 
 | Reference | What it covers |

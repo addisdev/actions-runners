@@ -46,13 +46,20 @@ node_bin() {
   return 1
 }
 
+# A token may come from a mode-0600 file instead of fleet.env, so the file that
+# holds every other setting can be committed as a template (examples/) and
+# copied without carrying a secret.
+if [ -z "${FLEET_AGENT_TOKEN:-}" ] && [ -n "${FLEET_AGENT_TOKEN_FILE:-}" ] && [ -s "$FLEET_AGENT_TOKEN_FILE" ]; then
+  FLEET_AGENT_TOKEN="$(tr -d '[:space:]' < "$FLEET_AGENT_TOKEN_FILE")"
+fi
+
 check_required() {
   local missing=0
   if [ -z "${FLEET_COORDINATOR:-}" ] && [ -z "${FLEET_COORDINATORS:-}" ]; then
     echo "FLEET_COORDINATOR or FLEET_COORDINATORS is not set — add it to fleet.env" >&2; missing=1
   fi
   if [ -z "${FLEET_AGENT_TOKEN:-}" ]; then
-    echo "FLEET_AGENT_TOKEN is not set — run ./fleetctl.sh agent-token --host <FLEET_HOST_ID> on the coordinator" >&2; missing=1
+    echo "FLEET_AGENT_TOKEN (or FLEET_AGENT_TOKEN_FILE) is not set — run ./fleetctl.sh agent-token --host <FLEET_HOST_ID> on the coordinator" >&2; missing=1
   fi
   if [ -z "${FLEET_HOST_NAME:-}" ]; then
     echo "FLEET_HOST_NAME is not set — add it to fleet.env (shown in the Hosts tab)" >&2; missing=1

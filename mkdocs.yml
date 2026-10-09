@@ -112,7 +112,18 @@ nav:
       - HTTP API: api.md
       - Glossary: glossary.md
   - Remote access and mobile: remote-access.md
-  - Fleet Cockpit (macOS): cockpit.md
+  - Fleet Cockpit (macOS):
+      - Overview: cockpit/index.md
+      - Install and set up: cockpit/install.md
+      - Using the app: cockpit/using.md
+      - Verdict reference: cockpit/verdict.md
+      - Around macOS: cockpit/macos.md
+      - Command line: cockpit/cli.md
+      - Agent sessions: cockpit/agents.md
+      - Host sentinel: cockpit/sentinel.md
+      - Settings and files: cockpit/settings.md
+      - Troubleshooting: cockpit/troubleshooting.md
+      - Development: cockpit/development.md
   - Security: security-hardening.md
   - Design notes:
       - Overview: design/index.md

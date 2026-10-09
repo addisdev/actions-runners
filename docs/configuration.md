@@ -338,11 +338,16 @@ host and referenced from the LaunchAgent plist written by `agentctl.sh install`.
 | `FLEET_AGENT_ALLOW_REGISTER` | `0` | Set to `1` to allow remote runner registration (requires `FLEET_AGENT_ALLOW_COMMANDS=1`). The agent re-checks local headroom and the per-repo cap before invoking `register.sh`. |
 | `FLEET_AGENT_ALLOW_DEREGISTER` | `0` | Separate destructive opt-in for remote removal and scale-down. |
 | `FLEET_MAX_INSTANCES_PER_REPO` | `4` | Agent-side per-repository cap; keep aligned with the Capacity setting. |
+| `FLEET_MIRROR_SKIP_REPOS` | (empty) | Repos `scripts/mirror-runners.sh` never copies to this host, for jobs whose needs no label states (an iOS lane on a plain `ci` runner, a suite that expects a local database). Bare names or `owner/repo`, space- or comma-separated. |
+| `FLEET_XCODE_VERSION` | (unset) | The Xcode every runner host builds with, e.g. `27.0`. `scripts/join-host.sh` fails preflight when this host's `xcodebuild -version` differs, because with runners on two hosts a job's SDK would otherwise depend on which host GitHub picked. |
+| `FLEET_RUNNER_PATH` | `/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin` | The PATH every job gets. `register.sh` writes it to each runner's `.path` (which `config.sh` would otherwise fill from the registering shell) and `.env`; `scripts/runner-path.sh` aligns older runners. Keep it the same on every host. |
 | `FLEET_MAX_TOTAL_RUNNERS` | `8` | Agent-side runner cap, sent to coordinator for placement scoring. |
 | `FLEET_CEILING` | `3` | Agent-side busy-job ceiling (do not add runners while this many jobs run). |
 | `FLEET_LOAD_PER_CORE` | `2` | Agent-side load gate. |
 | `FLEET_MIN_FREE_DISK_GB` | `50` | Agent-side disk gate. |
 | `FLEET_HEARTBEAT_MS` | `30000` | Heartbeat interval, ms. |
+| `FLEET_ADMISSION_LOG` | `<FLEET_ROOT>/dashboard/logs/admission.ndjson` | The hooks' admission log the agent ships to the coordinator. Same default as `hooks/common.sh`. |
+| `FLEET_AGENT_ADMISSION_OFFSET_FILE` | `dashboard/.fleet-agent-admission-offset` | How far the coordinator has accepted that log. Created at the log's end on first start; seed it to continue an existing history (see [Federation](federation.md#moving-the-coordinator-to-another-mac)). |
 
 ## Autofix bridge variables
 

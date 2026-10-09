@@ -55,6 +55,7 @@ DB="${FLEET_DB:-$HERE/dashboard/fleet.db}"
 NEED_XCODE=1 NEED_XCODEGEN=1 NEED_WATCHOS=1 NEED_SIM=1
 NEED_NODE=1 NEED_DOCKER=1 NEED_ANDROID=1 NEED_POSTGRES=1 NEED_PLAYWRIGHT=1
 PG_VERSIONS=""
+NEED_TOOLS=""
 INFERRED_FROM=""
 
 if [ "$MODE" != all ] && [ -f "$DB" ]; then
@@ -65,7 +66,7 @@ if [ "$MODE" != all ] && [ -f "$DB" ]; then
   python3 "$HERE/scripts/infer-checks.py" "$DB" 2>/dev/null > "$_INFER_TMP" || true
   # Strip anything that is not a known key assignment with a simple value.
   _INFER_SAFE=$(mktemp /tmp/preflight-safe.XXXXXX)
-  grep -E '^(NEED_XCODE|NEED_XCODEGEN|NEED_WATCHOS|NEED_SIM|NEED_NODE|NEED_DOCKER|NEED_ANDROID|NEED_POSTGRES|NEED_PLAYWRIGHT|PG_VERSIONS|INFERRED_FROM)=[^;&|$()`]*$' \
+  grep -E '^(NEED_XCODE|NEED_XCODEGEN|NEED_WATCHOS|NEED_SIM|NEED_NODE|NEED_DOCKER|NEED_ANDROID|NEED_POSTGRES|NEED_PLAYWRIGHT|PG_VERSIONS|NEED_TOOLS|INFERRED_FROM)=[^;&|$()`]*$' \
     "$_INFER_TMP" > "$_INFER_SAFE" || true
   # shellcheck source=/dev/null
   . "$_INFER_SAFE"
@@ -78,6 +79,14 @@ elif [ -z "$INFERRED_FROM" ]; then
   INFERRED_FROM="no readable workflow data at $DB — checking everything"
 fi
 
+# Plain CLI tools (scripts/cli-tools.txt): the `always` ones, which workflows
+# reach through Makefiles inference cannot read, plus whatever the workflows
+# run directly — or all of them when nothing was inferred.
+case "$INFERRED_FROM" in
+  *"self-hosted workflow files") CLI_TOOLS="$("$HERE/scripts/check-tools.sh" --list always | tr '\n' ' ')$NEED_TOOLS" ;;
+  *) CLI_TOOLS="$("$HERE/scripts/check-tools.sh" --list all | tr '\n' ' ')" ;;
+esac
+
 if [ "$MODE" = explain ]; then
   echo "source: $INFERRED_FROM"
   echo "  xcode/swift      $NEED_XCODE"
@@ -89,6 +98,7 @@ if [ "$MODE" = explain ]; then
   echo "  android sdk      $NEED_ANDROID"
   echo "  postgres         $NEED_POSTGRES  versions: ${PG_VERSIONS:-<none named>}"
   echo "  playwright       $NEED_PLAYWRIGHT"
+  echo "  cli tools        $CLI_TOOLS"
   exit 0
 fi
 
@@ -112,6 +122,14 @@ fi
 [ -d /opt/homebrew ] && ok "Homebrew at /opt/homebrew" || miss "Homebrew at /opt/homebrew — the runner .env hardcodes this PATH"
 command -v git  >/dev/null && ok "git"  || miss "git"
 command -v python3 >/dev/null && ok "python3 ($(python3 -V 2>&1 | cut -d' ' -f2))" || miss "python3 — used by register/status/health/cleanup and by several workflows"
+# Homebrew's python3 is PEP 668 "externally managed": a bare `pip install` in a
+# job fails with externally-managed-environment, where /usr/bin/python3 3.9 on
+# another host lets it through. Not a miss — Homebrew Python is often wanted by
+# other services — but jobs here must install into a venv (or use setup-python).
+if PATH=/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin python3 -c \
+    'import os, sys, sysconfig; sys.exit(0 if os.path.exists(os.path.join(sysconfig.get_path("stdlib"), "EXTERNALLY-MANAGED")) else 1)' 2>/dev/null; then
+  warn "runners' python3 is PEP 668 externally managed — a workflow's bare pip install fails here; use python3 -m venv \"\$RUNNER_TEMP/venv\""
+fi
 
 # The dashboard requires Node >= 22.5.0 for node:sqlite. This check is
 # unconditional — the requirement is architectural, not workflow-derived.
@@ -136,6 +154,20 @@ if command -v gh >/dev/null; then
 else
   miss "gh — register.sh cannot mint a registration token without it"
 fi
+
+echo "== cli tools (runner PATH) =="
+# Checked on the PATH the runners get, not this shell's. A missing one is the
+# job failing with "command not found" — or, through a Makefile,
+# `make: shellcheck: No such file or directory`.
+while IFS=$'\t' read -r state tool where why; do
+  if [ "$state" = ok ]; then
+    ok "$tool"
+  elif [ "$where" = - ]; then
+    miss "$tool — $why"
+  else
+    miss "$tool — $why. Fix: brew install $where"
+  fi
+done < <("$HERE/scripts/check-tools.sh" $CLI_TOOLS)
 
 if [ "$NEED_XCODE" = 1 ] || [ "$NEED_XCODEGEN" = 1 ] || [ "$NEED_SIM" = 1 ] || [ "$NEED_WATCHOS" = 1 ]; then
 echo "== xcode =="

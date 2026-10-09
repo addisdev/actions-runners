@@ -38,11 +38,15 @@ import { discoverRunnerDirs, launchdJobs, runnerProcesses, hostVitals, hostDrain
 import { headroom } from './lib/capacity.js';
 // Shared with buildRunners so a duplicate is numbered the same way on every host.
 import { instanceOf } from './lib/state.js';
+import { loadOffset, saveOffset, readPending, advance } from './lib/admission-ship.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 const CONFIG = {
-  coordinators: (process.env.FLEET_COORDINATORS ?? process.env.FLEET_COORDINATOR ?? '')
+  // `||`, not `??`: agentctl.sh writes both keys into the plist and leaves the
+  // unused one as an empty string, which `??` treats as set. A host configured
+  // with FLEET_COORDINATOR alone then reported to nobody.
+  coordinators: (process.env.FLEET_COORDINATORS || process.env.FLEET_COORDINATOR || '')
     .split(',').map((s) => s.trim().replace(/\/$/, '')).filter(Boolean),
   token: process.env.FLEET_AGENT_TOKEN
     ?? (process.env.FLEET_AGENT_TOKEN_FILE && existsSync(process.env.FLEET_AGENT_TOKEN_FILE)
@@ -59,6 +63,12 @@ const CONFIG = {
   commandResultsFile: process.env.FLEET_AGENT_RESULTS_FILE
     ?? join(HERE, '.fleet-agent-command-results.json'),
   labels: (process.env.FLEET_HOST_LABELS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+  // Where this host's job hooks log their admission decisions (hooks/common.sh
+  // uses the same default), and how far the coordinator has accepted it.
+  admissionLog: process.env.FLEET_ADMISSION_LOG
+    ?? join(process.env.FLEET_ROOT ?? join(os.homedir(), 'actions-runners'), 'dashboard', 'logs', 'admission.ndjson'),
+  admissionOffsetFile: process.env.FLEET_AGENT_ADMISSION_OFFSET_FILE
+    ?? join(HERE, '.fleet-agent-admission-offset'),
   // Commands are OPT-IN. An agent that only reports is useful on its own, and it
   // is the right default: joining a fleet should not silently grant remote
   // execution.
@@ -493,6 +503,16 @@ async function heartbeat() {
     return;
   }
 
+  // New admission decisions ride along; see lib/admission-ship.js.
+  let pending = null;
+  try {
+    pending = readPending(CONFIG.admissionLog, loadOffset(CONFIG.admissionOffsetFile, CONFIG.admissionLog));
+    if (pending.lines.length) payload.admissionLines = pending.lines;
+  } catch (err) {
+    warn('admission log:', err.message);
+    pending = null;
+  }
+
   try {
     const { res, base } = await postToCoordinator('/api/host/heartbeat', payload);
 
@@ -505,6 +525,13 @@ async function heartbeat() {
     // next beat rather than immediately, which keeps the agent to one outbound
     // endpoint and one shape of request.
     const body = await res.json().catch(() => ({}));
+    if (pending && typeof body.admissionAccepted === 'number') {
+      try {
+        saveOffset(CONFIG.admissionOffsetFile, advance(pending, body.admissionAccepted));
+      } catch (err) {
+        warn('admission offset:', err.message);
+      }
+    }
     const commands = Array.isArray(body.commands) ? body.commands : [];
     if (!commands.length) return;
 
