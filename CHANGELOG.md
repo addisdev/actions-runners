@@ -146,6 +146,14 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- **`cockpit wait` could decide from GitHub before the first glance landed.**
+  The loop treated "no glance yet" as a missing fleet view from the wait
+  start and accelerated the GitHub cross-check while the SSE connection was
+  still opening; on a loaded runner GitHub could answer green before cockpit's
+  frozen progress line and qualified repo slug were set. Grace for the first
+  glance is anchored to when the stream opens; the fast GitHub cadence applies
+  only to a stalled collector or a dashboard with no open stream.
+
 - **`cockpit wait` outlived its deadline by hours.** On 2026-10-09 three
   `cockpit wait --pr` sessions (aliquant-backend #54, aliquant-web #116,
   homelab-map #11) ran 1 h 37 min with no timeout while all three PRs were
@@ -201,6 +209,7 @@ Portable, mobile-first dashboard.
   of 2617 runs on runner-host; every recent one was such a blip). It now says GitHub did not answer and still judges
   launchd; a runner missing from a real answer is reported `not-registered`
   and stays a fault. Covered by `scripts/test-health.sh`.
+
 - **`cockpit wait` sat on a frozen view and never returned.** On 2026-10-07
   runner-host's fast loop finished its last tick about 12:32Z under load.
   fleetd publishes only after a tick, so every client kept that glance

@@ -96,13 +96,16 @@ public struct WaitLoop: Sendable {
             while !Task.isCancelled {
                 var gotGlance = false
                 do {
-                    for try await ev in try await connect() {
+                    let stream = try await connect()
+                    await latest.beginStream(at: now())
+                    for try await ev in stream {
                         switch ev {
                         case .glance(let g): await latest.set(g, at: now()); attempt = 0; gotGlance = true
                         case .keepalive: await latest.touch(now())
                         }
                     }
-                } catch {}
+                    await latest.endStream()
+                } catch { await latest.endStream() }
                 if Task.isCancelled { return }
                 if !gotGlance { onDrop?() }
                 attempt += 1
@@ -127,10 +130,14 @@ public struct WaitLoop: Sendable {
 
         while !Task.isCancelled {
             let t = now()
-            let (g, version, heardAt) = await latest.get()
-            let missing = g == nil && t - start > connectGrace * 1000
+            let snap = await latest.snapshot(start: start)
+            let g = snap.glance
+            let version = snap.version
+            let heardAt = snap.heardAt
+            let missing = g == nil && t - snap.noGlanceAnchor > connectGrace * 1000
             let silent = t - (heardAt ?? start) > streamSilence * 1000
-            let stale = missing || silent || (g?.isCollectorStale(now: t) ?? false)
+            let collectorStale = g?.isCollectorStale(now: t) ?? false
+            let stale = missing || silent || collectorStale
             let age = g?.collectorAgeMs(now: t)
 
             if silent, t - restartedAt > streamSilence * 1000 {
@@ -174,7 +181,10 @@ public struct WaitLoop: Sendable {
             }
 
             let eager = stale || blind
-            if eager { nextCross = min(nextCross, askedAt.map { $0 + crossCheckStale * 1000 } ?? t) }
+            // Do not pull GitHub forward while the SSE stream is open but the
+            // first glance has not arrived yet (grace is from stream open).
+            let accelerate = collectorStale || silent || blind || (missing && !snap.streamOpen)
+            if accelerate { nextCross = min(nextCross, askedAt.map { $0 + crossCheckStale * 1000 } ?? t) }
             if let ask = self.github, t >= nextCross {
                 askedAt = t
                 let left = max(0.1, (deadline - t) / 1000)
@@ -204,12 +214,28 @@ public struct WaitLoop: Sendable {
     }
 
     private actor Latest {
+        struct Snapshot {
+            var glance: Glance?
+            var version: Int
+            var heardAt: Double?
+            var noGlanceAnchor: Double
+            var streamOpen: Bool
+        }
+
         var glance: Glance?
         var version = 0
         var heardAt: Double?
+        var streamStartedMs: Double?
+
+        func beginStream(at t: Double) { streamStartedMs = t }
+        func endStream() { streamStartedMs = nil }
         func set(_ g: Glance, at t: Double) { glance = g; version += 1; heardAt = t }
         func touch(_ t: Double) { heardAt = t }
-        func get() -> (Glance?, Int, Double?) { (glance, version, heardAt) }
+        func snapshot(start: Double) -> Snapshot {
+            Snapshot(glance: glance, version: version, heardAt: heardAt,
+                     noGlanceAnchor: streamStartedMs ?? start,
+                     streamOpen: streamStartedMs != nil)
+        }
     }
 
     /// The current stream reader; replaced when the stream goes silent.
