@@ -344,6 +344,8 @@ host and referenced from the LaunchAgent plist written by `agentctl.sh install`.
 | `FLEET_LOAD_PER_CORE` | `2` | Agent-side load gate. |
 | `FLEET_MIN_FREE_DISK_GB` | `50` | Agent-side disk gate. |
 | `FLEET_HEARTBEAT_MS` | `30000` | Heartbeat interval, ms. |
+| `FLEET_ADMISSION_LOG` | `<FLEET_ROOT>/dashboard/logs/admission.ndjson` | The hooks' admission log the agent ships to the coordinator. Same default as `hooks/common.sh`. |
+| `FLEET_AGENT_ADMISSION_OFFSET_FILE` | `dashboard/.fleet-agent-admission-offset` | How far the coordinator has accepted that log. Created at the log's end on first start; seed it to continue an existing history (see [Federation](federation.md#moving-the-coordinator-to-another-mac)). |
 
 ## Autofix bridge variables
 

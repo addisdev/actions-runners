@@ -266,7 +266,13 @@ let alertRun = Promise.resolve();
 // Decisions made by hooks/job-started.sh, read from the NDJSON those hooks
 // append to. This process never makes an admission decision itself — a job's
 // ability to start must not depend on the dashboard being alive.
-const admission = createAdmission({ db, logPath: CONFIG.admissionLog, warn });
+const admission = createAdmission({ db, logPath: CONFIG.admissionLog, warn, hostId: CONFIG.replicaId });
+// host_samples rows from before host_id existed are this host's own vitals.
+try {
+  db.prepare('UPDATE host_samples SET host_id = ? WHERE host_id IS NULL').run(CONFIG.replicaId);
+} catch (err) {
+  warn('host_samples host stamp:', err.message);
+}
 const logAction = db.prepare(
   'INSERT INTO action_log (ts, action, args, command, exit_code, ok, output) VALUES (?,?,?,?,?,?,?)'
 );
@@ -412,8 +418,8 @@ const stmt = {
     INSERT INTO host_samples (ts, load1, mem_used_mb, mem_total_mb, swap_used_mb,
                               swap_total_mb, disk_free_gb, disk_total_gb, listeners, busy_runners,
                               mem_free_pct, pressure, swapins_per_sec, swapouts_per_sec,
-                              mem_compressed_mb)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(ts) DO NOTHING`),
+                              mem_compressed_mb, host_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(ts) DO NOTHING`),
   upsertWorkflowFile: db.prepare(`
     INSERT INTO workflow_files (repo, path, ref, name, sha, content, fetched_at, is_default)
     VALUES (?,?,?,?,?,?,?,?)
@@ -1756,7 +1762,8 @@ async function fastTick(progress = null) {
     stmt.insertSample.run(Math.floor(started / 1000) * 1000, vitals.load1, vitals.memUsedMb,
       vitals.memTotalMb, Math.round(vitals.swapUsedMb ?? 0), Math.round(vitals.swapTotalMb ?? 0),
       vitals.diskFreeGb, vitals.diskTotalGb, processes.listeners.size, processes.workers.size,
-      vitals.memFreePct, vitals.memPressure, swapinsPerSec, swapoutsPerSec, vitals.memCompressedMb);
+      vitals.memFreePct, vitals.memPressure, swapinsPerSec, swapoutsPerSec, vitals.memCompressedMb,
+      LOCAL_HOST_ID);
   }
 
   // Named rather than inlined into the snapshot because the capacity gate and
@@ -3064,7 +3071,22 @@ const server = http.createServer(async (req, res) => {
       warn('host commands:', err.message);
     }
 
-    return json(res, { ok: true, commands });
+    // Admission decisions made on that host. Its hooks write NDJSON locally,
+    // exactly as here, and the agent ships the lines that are new since its
+    // last accepted heartbeat. Acknowledged by count so the agent advances its
+    // read offset only when they landed: an older coordinator that ignores the
+    // field sends no count, and the lines are offered again next time.
+    let admissionAccepted;
+    if (Array.isArray(body.admissionLines)) {
+      try {
+        admission.ingestLines(body.admissionLines.slice(0, 2000), hostId);
+        admissionAccepted = Math.min(body.admissionLines.length, 2000);
+      } catch (err) {
+        warn(`admission lines from ${hostId}:`, err.message);
+      }
+    }
+
+    return json(res, { ok: true, commands, ...(admissionAccepted != null ? { admissionAccepted } : {}) });
   }
 
   if (url.pathname === '/api/host/results' && req.method === 'POST') {

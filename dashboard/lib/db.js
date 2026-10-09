@@ -383,6 +383,16 @@ export function openDb(path) {
     db.exec("DELETE FROM meta WHERE key = 'admission_log_offset'");
   }
 
+  // Which host a row describes. Admission events now arrive from agent hosts in
+  // their heartbeats, and host_samples are the coordinator's own vitals, so
+  // when the coordinator role moves to another Mac both tables would otherwise
+  // carry two machines' history under one unnamed host. NULL = written before
+  // this column existed; createAdmission() and fleetd stamp those with the
+  // local host id at startup, which is right as long as the column lands on the
+  // host that wrote them.
+  addColumn(db, 'admission_events', 'host_id', 'TEXT');
+  addColumn(db, 'host_samples', 'host_id', 'TEXT');
+
   // Which branch the repo considers canonical. Needed to tell "this finding is
   // on the branch you would open a PR against" from "this finding is on a branch
   // that merely still gets pushes".
