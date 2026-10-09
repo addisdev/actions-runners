@@ -191,6 +191,7 @@ func printVerdict(_ v: Verdict, route: String, glance: Glance?) {
     if !others.isEmpty {
         print("  also open: " + others.map { "\($0.title) (\($0.tone.rawValue))" }.joined(separator: "; "))
     }
+    if let t = glance?.tiers { print("  \(t.line)") }
     if let g = glance {
         print("  \(g.counts.running) running, \(g.counts.queued) queued, \(g.counts.held) held, \(g.counts.runners) runners · via \(route)")
     } else {
@@ -219,8 +220,8 @@ case "status":
     let src = await obtain(opts)
     defer { src.transport?.close() }
     if opts.json {
-        struct Out: Encodable { let verdict: Verdict; let route: String; let counts: Counts? }
-        printJSON(Out(verdict: src.verdict, route: src.route, counts: src.glance?.counts))
+        struct Out: Encodable { let verdict: Verdict; let route: String; let counts: Counts?; let tiers: Tiers? }
+        printJSON(Out(verdict: src.verdict, route: src.route, counts: src.glance?.counts, tiers: src.glance?.tiers))
     } else {
         printVerdict(src.verdict, route: src.route, glance: src.glance)
     }

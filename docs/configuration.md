@@ -275,10 +275,11 @@ the daemon. A value in `fleet.env` seeds the setting on first boot.
 Used by `hooks/job-started.sh`. Must be in `fleet.env` — the hooks cannot
 reach the daemon's database.
 
-`fleetctl.sh install` also passes `FLEET_ADMIT_MODE`, `FLEET_ADMIT_MAX_WAIT_S`
-and `FLEET_ADMIT_MIN_FREE_DISK_GB` to the daemon, so the fleet verdict and the
-`admission-hold` alert judge a held job by the limits the hooks actually
-enforce. After changing any of them, rerun `./fleetctl.sh install`.
+`fleetctl.sh install` also passes `FLEET_ADMIT_MODE`, `FLEET_ADMIT_MAX_WAIT_S`,
+`FLEET_ADMIT_MIN_FREE_DISK_GB`, `FLEET_ADMIT_MAX_CONCURRENT`,
+`FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT` and `FLEET_SIMULATOR_RUNNERS` to the
+daemon, so the fleet verdict, the `admission-hold` alert and the standby tiers
+judge the host by the limits the hooks actually enforce. After changing any of them, rerun `./fleetctl.sh install`.
 
 | Variable | Default | What it does |
 |---|---|---|
@@ -300,6 +301,34 @@ Eligible enforced waiters are FIFO. A Simulator waiter blocked by its
 resource-specific limit does not prevent an unrelated waiter from using free
 host capacity. A waiter is removed when its hook exits, and stale entries are
 reaped by hook-process liveness.
+
+## Standby tier variables
+
+Read by the coordinator's daemon (`dashboard/lib/tiers.js`). Set them in the
+coordinator's `fleet.env` and rerun `./dashboard/fleetctl.sh install`; the
+plist carries them, so a plain restart does not pick up a change. How the
+tiers work and why the timers are what they are:
+[Standby tiers](design/tiers.md).
+
+| Variable | Default | What it does |
+|---|---|---|
+| `FLEET_TIERS_MODE` | `off` | `off` / `observe` / `enforce`. `observe` logs and shows what the controller would drain or resume and touches nothing. `enforce` acts. `off` stops deciding, and resumes any runner the controller had drained (never an operator's). Anything else reads as `off`. |
+| `FLEET_TIERS_PRIMARY_HOST` | the coordinator | Host id whose runners take work first. |
+| `FLEET_TIERS_STANDBY_HOSTS` | (empty) | Comma-separated agent host ids (`FLEET_HOST_ID`) whose runners are the floor and overflow tiers. Empty: no standby tier. |
+| `FLEET_TIERS_FLOOR_REPOS` | (empty) | Repos (bare name or `owner/repo`) whose standby-host runners stay online always. The controller never drains them. |
+| `FLEET_TIERS_PRIMARY_ONLY_REPOS` | (empty) | Repos whose primary runners are never self-drained, for work the standby host must not take (a label it lacks on purpose). A runner without an online standby twin is never self-drained anyway. |
+| `FLEET_TIERS_RESUME_AFTER_S` | `60` | Resume the overflow tier when a primary lane has been at its admission cap this long. |
+| `FLEET_TIERS_QUEUE_AGE_S` | `120` | ...or when a queued run has waited this long with no idle primary runner that matches it. |
+| `FLEET_TIERS_DRAIN_AFTER_S` | `600` | Drain the overflow tier again after this long with every primary lane below cap, nothing queued and no unfit verdict rung. |
+| `FLEET_TIERS_PRIMARY_STALE_S` | `180` | The primary counts as down when its heartbeat is older than this (a remote primary only). |
+| `FLEET_TIERS_SELF_DRAIN` | `1` | `0` turns off primary self-drain (and resumes runners it drained). |
+| `FLEET_TIERS_SELF_RESUME_AFTER_S` | `30` | A self-drained primary runner comes back after its lane has had room this long. |
+| `FLEET_TIERS_BUILD_CAP` | `FLEET_ADMIT_MAX_CONCURRENT` | The primary's build-lane cap, if it differs from the admission setting `fleetctl.sh` passes through. |
+| `FLEET_TIERS_SIMULATOR_CAP` | `FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT` | The primary's Simulator-lane cap; runners in the lane are the ones `FLEET_SIMULATOR_RUNNERS` matches. `0`: no Simulator lane. |
+
+The standby host's agent needs `FLEET_AGENT_ALLOW_COMMANDS=1` to carry out
+`tiers.drain` and `tiers.resume`; `FLEET_AGENT_COMMANDS` can narrow it to
+drain and resume only.
 
 ## Job audio variable
 
@@ -337,6 +366,8 @@ host and referenced from the LaunchAgent plist written by `agentctl.sh install`.
 | `FLEET_AGENT_ALLOW_COMMANDS` | `0` | Set to `1` to allow remote drain/resume/health-check. |
 | `FLEET_AGENT_ALLOW_REGISTER` | `0` | Set to `1` to allow remote runner registration (requires `FLEET_AGENT_ALLOW_COMMANDS=1`). The agent re-checks local headroom and the per-repo cap before invoking `register.sh`. |
 | `FLEET_AGENT_ALLOW_DEREGISTER` | `0` | Separate destructive opt-in for remote removal and scale-down. |
+| `FLEET_AGENT_COMMANDS` | (empty) | Optional allowlist on top of `FLEET_AGENT_ALLOW_COMMANDS`, comma-separated action names. `runner.drain,runner.resume,tiers.drain,tiers.resume` grants drain and resume and nothing else (no restarts, no health repair). Empty: every remote action the agent knows. |
+| `FLEET_AGENT_AUTONOMY_S` | `180` | Standby tiers: after this long without a successful heartbeat, resume every runner on this host the tiers controller drained (`.drain` marker `by=tiers`), never an operator's. Control returns to the coordinator when heartbeats succeed again. `0` turns it off. |
 | `FLEET_MAX_INSTANCES_PER_REPO` | `4` | Agent-side per-repository cap; keep aligned with the Capacity setting. |
 | `FLEET_MIRROR_SKIP_REPOS` | (empty) | Repos `scripts/mirror-runners.sh` never copies to this host, for jobs whose needs no label states (an iOS lane on a plain `ci` runner, a suite that expects a local database). Bare names or `owner/repo`, space- or comma-separated. |
 | `FLEET_XCODE_VERSION` | (unset) | The Xcode every runner host builds with, e.g. `27.0`. `scripts/join-host.sh` fails preflight when this host's `xcodebuild -version` differs, because with runners on two hosts a job's SDK would otherwise depend on which host GitHub picked. |

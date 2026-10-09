@@ -43,6 +43,7 @@ export function adaptRemoteRunner(r, agentData = null) {
     // so the classifier can still identify a down runner when no agent is connected.
     launchdState: agentData?.launchdState ?? (ghOnline ? 'running' : 'dead'),
     drainState: agentData?.drainState ?? null,
+    drainBy: agentData?.drainBy ?? null,
     // Agent workingLocally is instantaneous. ghBusy lags by one GitHub poll
     // interval, which matters most during burst ramp-up.
     workingLocally: agentData ? Boolean(agentData.workingLocally) : Boolean(r.ghBusy),

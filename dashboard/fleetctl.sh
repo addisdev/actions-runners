@@ -106,6 +106,23 @@ cmd_install() {
     <key>FLEET_ADMIT_MODE</key><string>${FLEET_ADMIT_MODE:-off}</string>
     <key>FLEET_ADMIT_MAX_WAIT_S</key><string>${FLEET_ADMIT_MAX_WAIT_S:-600}</string>
     <key>FLEET_ADMIT_MIN_FREE_DISK_GB</key><string>${FLEET_ADMIT_MIN_FREE_DISK_GB:-40}</string>
+    <key>FLEET_ADMIT_MAX_CONCURRENT</key><string>${FLEET_ADMIT_MAX_CONCURRENT:-}</string>
+    <key>FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT</key><string>${FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT:-}</string>
+    <key>FLEET_SIMULATOR_RUNNERS</key><string>${FLEET_SIMULATOR_RUNNERS:-}</string>
+    <!-- Standby tiers (lib/tiers.js, docs/design/tiers.md). -->
+    <key>FLEET_TIERS_MODE</key><string>${FLEET_TIERS_MODE:-off}</string>
+    <key>FLEET_TIERS_PRIMARY_HOST</key><string>${FLEET_TIERS_PRIMARY_HOST:-}</string>
+    <key>FLEET_TIERS_STANDBY_HOSTS</key><string>${FLEET_TIERS_STANDBY_HOSTS:-}</string>
+    <key>FLEET_TIERS_FLOOR_REPOS</key><string>${FLEET_TIERS_FLOOR_REPOS:-}</string>
+    <key>FLEET_TIERS_PRIMARY_ONLY_REPOS</key><string>${FLEET_TIERS_PRIMARY_ONLY_REPOS:-}</string>
+    <key>FLEET_TIERS_RESUME_AFTER_S</key><string>${FLEET_TIERS_RESUME_AFTER_S:-}</string>
+    <key>FLEET_TIERS_QUEUE_AGE_S</key><string>${FLEET_TIERS_QUEUE_AGE_S:-}</string>
+    <key>FLEET_TIERS_DRAIN_AFTER_S</key><string>${FLEET_TIERS_DRAIN_AFTER_S:-}</string>
+    <key>FLEET_TIERS_PRIMARY_STALE_S</key><string>${FLEET_TIERS_PRIMARY_STALE_S:-}</string>
+    <key>FLEET_TIERS_SELF_DRAIN</key><string>${FLEET_TIERS_SELF_DRAIN:-1}</string>
+    <key>FLEET_TIERS_SELF_RESUME_AFTER_S</key><string>${FLEET_TIERS_SELF_RESUME_AFTER_S:-}</string>
+    <key>FLEET_TIERS_BUILD_CAP</key><string>${FLEET_TIERS_BUILD_CAP:-}</string>
+    <key>FLEET_TIERS_SIMULATOR_CAP</key><string>${FLEET_TIERS_SIMULATOR_CAP:-}</string>
     <!-- Federation: bind address, agent token, capability labels, read-only -->
     <key>FLEET_HOST</key><string>${FLEET_HOST:-127.0.0.1}</string>
     <key>FLEET_ALLOWED_HOSTS</key><string>${FLEET_ALLOWED_HOSTS:-}</string>

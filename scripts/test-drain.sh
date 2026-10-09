@@ -134,6 +134,51 @@ kill "$FAKE_PID" "$SLEEP_PID" 2>/dev/null
 wait "$FAKE_PID" "$SLEEP_PID" 2>/dev/null
 
 echo
+echo "drain-stop-when-idle.sh — keeps the owner of a controller drain"
+make_runner app-own testowner/app-own host-app-own
+printf 'draining\nrequested_at=1\nby=tiers\n' > "$TMP/app-own/.drain"
+touch "$TMP/app-own/.drain-stop"
+"$ROOT/scripts/drain-stop-when-idle.sh" "$TMP/app-own" 10 >/dev/null 2>&1
+check "marks it drained" "$(head -1 "$TMP/app-own/.drain" 2>/dev/null)" "drained"
+check "keeps by=tiers" "$(sed -n 's/^by=//p' "$TMP/app-own/.drain" 2>/dev/null)" "tiers"
+
+echo
+echo "drain-runner.sh --by — owned drains"
+make_runner app-tier testowner/app-tier host-app-tier
+FLEET_ROOT="$TMP" "$ROOT/scripts/drain-runner.sh" app-tier --drain --by=tiers >/dev/null 2>&1
+check "an owned drain records its owner" "$(sed -n 's/^by=//p' "$TMP/app-tier/.drain")" "tiers"
+check "and still stops the idle runner" "$(svc_log app-tier)" "stop,"
+FLEET_ROOT="$TMP" "$ROOT/scripts/drain-runner.sh" app-tier --resume --by=tiers >/dev/null 2>&1
+check "the owner can resume its own drain" "$([ -f "$TMP/app-tier/.drain" ] && echo yes || echo no)" "no"
+check "and the service starts" "$(svc_log app-tier)" "stop,start,"
+
+make_runner app-op testowner/app-op host-app-op
+FLEET_ROOT="$TMP" "$ROOT/scripts/drain-runner.sh" app-op --drain >/dev/null 2>&1
+check "an operator drain has no owner line" "$(grep -c '^by=' "$TMP/app-op/.drain")" "0"
+OUT="$(FLEET_ROOT="$TMP" "$ROOT/scripts/drain-runner.sh" app-op --resume --by=tiers 2>&1)"
+case "$OUT" in *"left alone"*) ok "an owned resume refuses an operator drain" ;; *) bad "an owned resume refuses an operator drain (got: $OUT)" ;; esac
+check "the operator's marker stays" "$(head -1 "$TMP/app-op/.drain")" "drained"
+check "the service is not started" "$(svc_log app-op)" "stop,"
+FLEET_ROOT="$TMP" "$ROOT/scripts/drain-runner.sh" app-op --drain --by=tiers >/dev/null 2>&1
+check "an owned drain does not take over an operator drain" "$(grep -c '^by=' "$TMP/app-op/.drain")" "0"
+
+make_runner app-take testowner/app-take host-app-take
+FLEET_ROOT="$TMP" "$ROOT/scripts/drain-runner.sh" app-take --drain --by=tiers >/dev/null 2>&1
+FLEET_ROOT="$TMP" "$ROOT/scripts/drain-runner.sh" app-take --drain >/dev/null 2>&1
+check "an operator drain takes over a controller drain" "$(grep -c '^by=' "$TMP/app-take/.drain")" "0"
+
+make_runner app-up testowner/app-up host-app-up
+OUT="$(FLEET_ROOT="$TMP" "$ROOT/scripts/drain-runner.sh" app-up --resume --by=tiers 2>&1)"
+case "$OUT" in *"not drained"*) ok "an owned resume of an undrained runner does nothing" ;; *) bad "owned resume of undrained runner (got: $OUT)" ;; esac
+check "and does not start the service" "$(svc_log app-up)" ""
+
+if FLEET_ROOT="$TMP" "$ROOT/scripts/drain-runner.sh" app-up --drain '--by=a b' >/dev/null 2>&1; then
+  bad "refuses an owner that is not a plain identifier"
+else
+  ok "refuses an owner that is not a plain identifier"
+fi
+
+echo
 echo "health.sh — a drained runner is not a fault"
 HEALTH_TMP="$(mktemp -d)"
 make_health_runner() {

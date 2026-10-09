@@ -47,6 +47,7 @@ export async function collectHostReport({
       lastExit: job?.lastExit ?? null,
       workingLocally: procs.workers.has(d.dir),
       drainState: d.drainState ?? null,
+      drainBy: d.drainBy ?? null,
       version: d.version ?? null,
       createdAt,
       registered: true,

@@ -50,8 +50,16 @@ while [ "$WAITED" -lt "$TIMEOUT" ]; do
     ./svc.sh stop >/dev/null 2>&1
     rm -f "$DIR/.drain-stop"
     # The marker moves from draining to drained, which is what the dashboard
-    # reads to stop showing this as an operation still in progress.
-    printf 'drained\nrequested_at=%s\n' "$(date -u +%s)" > "$DIR/.drain"
+    # reads to stop showing this as an operation still in progress. Its by=
+    # line is carried over: a drain the tiers controller started must still
+    # read as the controller's once it completes, or the controller would
+    # never resume it (it only resumes its own drains).
+    OWNER="$(sed -n 's/^by=//p' "$DIR/.drain" 2>/dev/null | head -1 | tr -d '\r')"
+    if [ -n "$OWNER" ]; then
+      printf 'drained\nrequested_at=%s\nby=%s\n' "$(date -u +%s)" "$OWNER" > "$DIR/.drain"
+    else
+      printf 'drained\nrequested_at=%s\n' "$(date -u +%s)" > "$DIR/.drain"
+    fi
     exit 0
   fi
   sleep 2

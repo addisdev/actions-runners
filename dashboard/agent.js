@@ -39,6 +39,7 @@ import { headroom } from './lib/capacity.js';
 // Shared with buildRunners so a duplicate is numbered the same way on every host.
 import { instanceOf } from './lib/state.js';
 import { loadOffset, saveOffset, readPending, advance } from './lib/admission-ship.js';
+import { autonomyStep, AUTONOMY_DEFAULT_MS } from './lib/agent-autonomy.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -80,6 +81,15 @@ const CONFIG = {
   // Removal is deliberately separate from registration. It is destructive and
   // should remain disabled on a reporting-only or scale-up-only host.
   allowDeregister: process.env.FLEET_AGENT_ALLOW_DEREGISTER === '1',
+  // Optional narrower allowlist on top of FLEET_AGENT_ALLOW_COMMANDS, e.g.
+  // "runner.drain,runner.resume,tiers.drain,tiers.resume" for a host that
+  // grants drain/resume and nothing else (no restarts, no health repair).
+  // Empty means every action in ALLOWED_COMMANDS.
+  commandAllowlist: (process.env.FLEET_AGENT_COMMANDS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+  // The tiers autonomy rule (lib/agent-autonomy.js): after this long with no
+  // successful heartbeat, resume every runner the tiers controller drained.
+  // 0 turns it off.
+  autonomyMs: Number(process.env.FLEET_AGENT_AUTONOMY_S ?? AUTONOMY_DEFAULT_MS / 1000) * 1000,
   // Spelled exactly as headroom() reads them, because it merges this object over
   // CAPACITY_DEFAULTS and silently ignores anything it does not recognise. The
   // earlier names — maxRunners, maxLoadPerCore — were therefore dropped on the
@@ -131,6 +141,13 @@ const ALLOWED_COMMANDS = {
   'host.drain': { script: 'scripts/host-drain.sh', args: () => ['--drain'] },
   'host.resume': { script: 'scripts/host-drain.sh', args: () => ['--resume'] },
 };
+
+// The standby-tiers controller's batch actions (dashboard/lib/tiers.js): one
+// command per host per tick, naming every runner to drain or resume. Always
+// run with --by=tiers, so drain-runner.sh itself refuses to touch a runner an
+// operator drained, whatever the coordinator sends.
+const TIERS_COMMANDS = { 'tiers.drain': '--drain', 'tiers.resume': '--resume' };
+const commandAllowed = (action) => !CONFIG.commandAllowlist.length || CONFIG.commandAllowlist.includes(action);
 
 // runner.register is separate from ALLOWED_COMMANDS because it does not fit
 // the generic spec.args shape: it passes a registration token via env rather
@@ -217,6 +234,9 @@ async function collect() {
       rssMb: proc ? Math.round(proc.rssKb / 1024) : null,
       workingLocally: procs.workers.has(d.dir),
       drainState: d.drainState ?? null,
+      // Who drained it (drain-runner.sh --by). The tiers controller resumes
+      // only its own drains, so it needs to tell them from an operator's.
+      drainBy: d.drainBy ?? null,
       version: d.version ?? null,
       createdAt: (() => {
         try { return statSync(d.dir).birthtimeMs; } catch { return null; }
@@ -405,11 +425,57 @@ async function runDeregister(cmd) {
   });
 }
 
+function drainRunner(dirName, flag) {
+  return new Promise((resolve) => {
+    execFile(join(CONFIG.root, 'scripts', 'drain-runner.sh'), [dirName, flag, '--by=tiers'],
+      { cwd: CONFIG.root, timeout: 60_000, maxBuffer: 256 * 1024 },
+      (err, stdout, stderr) => resolve({
+        ok: !err,
+        output: `${String(stdout ?? '').trim()}${stderr ? ` ${String(stderr).trim()}` : ''}`.slice(-400),
+      }));
+  });
+}
+
+async function runTiersCommand(cmd) {
+  if (!CONFIG.allowCommands) {
+    return { id: cmd.id, ok: false, error: 'this agent is report-only (set FLEET_AGENT_ALLOW_COMMANDS=1 to enable)' };
+  }
+  const names = Array.isArray(cmd.args?.names) ? cmd.args.names.map(String) : [];
+  if (!names.length || names.length > 64) return { id: cmd.id, ok: false, error: 'names must list 1 to 64 runners' };
+  const dirs = discoverRunnerDirs(CONFIG.root);
+  const flag = TIERS_COMMANDS[cmd.action];
+  const lines = [];
+  let failed = 0;
+  // Sequentially: each is a launchctl call, and a burst of them is how a
+  // host ends up in a state nobody predicted.
+  for (const name of names) {
+    const d = dirs.find((x) => x.name === name || x.dirName === name);
+    if (!d) {
+      failed += 1;
+      lines.push(`${name}: no such runner on this host`);
+      continue;
+    }
+    const r = await drainRunner(d.dirName, flag);
+    if (!r.ok) failed += 1;
+    lines.push(`${d.dirName}: ${r.output}`);
+  }
+  return {
+    id: cmd.id,
+    ok: failed === 0,
+    error: failed ? `${failed} of ${names.length} failed` : null,
+    output: lines.join('\n').slice(-4000),
+  };
+}
+
 async function runCommand(cmd) {
+  if (!commandAllowed(cmd.action)) {
+    return { id: cmd.id, ok: false, error: `action not allowed on this host (FLEET_AGENT_COMMANDS): ${cmd.action}` };
+  }
   // runner.register has its own handler because it needs custom validation,
   // idempotency, and env-var-based secret passing.
   if (cmd.action === 'runner.register') return runRegister(cmd);
   if (cmd.action === 'runner.deregister') return runDeregister(cmd);
+  if (TIERS_COMMANDS[cmd.action]) return runTiersCommand(cmd);
 
   const spec = ALLOWED_COMMANDS[cmd.action];
   if (!spec) {
@@ -469,6 +535,39 @@ async function runCommand(cmd) {
 let consecutiveFailures = 0;
 let coordinatorCursor = 0;
 
+// The tiers autonomy rule. Counted from start, so an agent that never reaches
+// its coordinator still releases the controller's drains after afterMs.
+let lastHeartbeatOkAt = Date.now();
+let autonomous = false;
+let releasing = false;
+
+async function applyAutonomy() {
+  if (releasing) return;
+  releasing = true;
+  try {
+    const step = autonomyStep({
+      now: Date.now(),
+      lastOkAt: lastHeartbeatOkAt,
+      autonomous,
+      afterMs: CONFIG.autonomyMs,
+      runners: discoverRunnerDirs(CONFIG.root),
+    });
+    if (step.left) log('coordinator reachable again — following the tiers controller');
+    if (step.entered) {
+      log(`no successful heartbeat for ${Math.round(step.silentMs / 1000)}s — resuming runners the tiers controller drained`);
+    }
+    autonomous = step.autonomous;
+    for (const dirName of step.release) {
+      const r = await drainRunner(dirName, '--resume');
+      log(`autonomy: resume ${dirName}: ${r.ok ? 'ok' : 'failed'} ${r.output}`);
+    }
+  } catch (err) {
+    warn('autonomy:', err.message);
+  } finally {
+    releasing = false;
+  }
+}
+
 async function postToCoordinator(path, payload) {
   let lastError = null;
   for (let offset = 0; offset < CONFIG.coordinators.length; offset++) {
@@ -500,6 +599,7 @@ async function heartbeat() {
     payload = await collect();
   } catch (err) {
     warn('collection failed:', err.message);
+    await applyAutonomy();
     return;
   }
 
@@ -515,6 +615,8 @@ async function heartbeat() {
 
   try {
     const { res, base } = await postToCoordinator('/api/host/heartbeat', payload);
+    lastHeartbeatOkAt = Date.now();
+    if (autonomous) await applyAutonomy();
 
     if (consecutiveFailures > 0) {
       log(`reconnected to coordinator after ${consecutiveFailures} failed heartbeat(s)`);
@@ -563,18 +665,25 @@ async function heartbeat() {
     if (consecutiveFailures === 1 || consecutiveFailures % 10 === 0) {
       warn(`heartbeat failed (${consecutiveFailures} in a row): ${err.message}`);
     }
+    await applyAutonomy();
   }
 }
 
 log(`fleet-agent starting — host=${CONFIG.hostName} id=${CONFIG.hostId} root=${CONFIG.root}`);
 log(`reporting to ${CONFIG.coordinators.join(', ')} every ${CONFIG.heartbeatMs / 1000}s`);
 if (CONFIG.allowCommands) {
-  const cmds = [...Object.keys(ALLOWED_COMMANDS)];
+  const cmds = [...Object.keys(ALLOWED_COMMANDS), ...Object.keys(TIERS_COMMANDS)];
   if (CONFIG.allowRegister) cmds.push('runner.register');
   log(`remote commands ENABLED: ${cmds.join(', ')}`);
 } else {
   log('remote commands disabled (report-only) — set FLEET_AGENT_ALLOW_COMMANDS=1 to enable');
 }
+if (CONFIG.allowCommands && CONFIG.commandAllowlist.length) {
+  log(`remote commands limited to: ${CONFIG.commandAllowlist.join(', ')}`);
+}
+log(CONFIG.autonomyMs > 0
+  ? `tiers autonomy: resume the controller's drains after ${CONFIG.autonomyMs / 1000}s without a heartbeat`
+  : 'tiers autonomy disabled (FLEET_AGENT_AUTONOMY_S=0)');
 if (CONFIG.allowCommands && !CONFIG.allowRegister) {
   log('runner.register disabled — set FLEET_AGENT_ALLOW_REGISTER=1 to allow remote provisioning');
 }
