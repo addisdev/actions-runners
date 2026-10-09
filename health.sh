@@ -25,6 +25,7 @@ REPAIR=0
 
 rc=0
 DRAINED=0
+UNANSWERED=0
 printf "%-42s %-10s %s\n" "SERVICE" "LAUNCHD" "GITHUB"
 
 for d in "$ROOT"/*/; do
@@ -76,9 +77,18 @@ for d in "$ROOT"/*/; do
     rc=1
   fi
 
-  gstate=$(gh api "repos/$repo/actions/runners" \
-    --jq ".runners[] | select(.name==\"$name\") | (if .busy then \"busy\" else .status end)" 2>/dev/null)
-  [ -n "$gstate" ] || { gstate="unknown"; rc=1; }
+  # Two different "no answer"s. GitHub not answering (rate limit, network, an
+  # expired token) says nothing about this runner: report it, but do not call the
+  # fleet unhealthy, or every API blip turns the health job red across 60
+  # runners at once. GitHub answering without this runner means its
+  # registration is gone, which is a real fault.
+  if gstate=$(gh api "repos/$repo/actions/runners" \
+      --jq ".runners[] | select(.name==\"$name\") | (if .busy then \"busy\" else .status end)" 2>/dev/null); then
+    [ -n "$gstate" ] || { gstate="not-registered"; rc=1; }
+  else
+    gstate="unknown (GitHub did not answer)"
+    UNANSWERED=$((UNANSWERED + 1))
+  fi
   [ "$gstate" = "offline" ] && rc=1
 
   printf "%-42s %-10s %s\n" "$name" "$lstate" "$gstate"
@@ -97,6 +107,12 @@ if [ "$DRAINED" != "0" ]; then
   echo
   echo "$DRAINED runner(s) are drained and were skipped. They are stopped on purpose;"
   echo "resume one with: scripts/drain-runner.sh <dir-name> --resume"
+fi
+
+if [ "$UNANSWERED" != "0" ]; then
+  echo
+  echo "GitHub did not answer for $UNANSWERED runner(s); their GitHub state is unknown."
+  echo "That is not counted as unhealthy. Their launchd state above was still checked."
 fi
 
 if [ "$rc" != "0" ]; then
