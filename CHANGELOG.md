@@ -12,6 +12,17 @@ Portable, mobile-first dashboard.
 
 ### Added
 
+- **Admission decisions from every host.** An agent host's hooks log locally
+  like the coordinator's, and nothing read that file, so holds on a second host
+  never reached the dashboard or the admission-hold alert. The agent now ships
+  the lines added since its last accepted heartbeat (`lib/admission-ship.js`,
+  at-least-once, offset advanced only by the coordinator's count), and the
+  coordinator stores them by host: `admission_events.host_id`, `waiting[].host`
+  and `admission.byHost`. The headline mode and limit stay the coordinator's
+  own. `host_samples.host_id` records which machine a vitals row describes, so
+  moving the coordinator does not splice two machines' load into one history.
+  Runbook: docs/federation.md, "Moving the coordinator to another Mac".
+
 - **One-command second host.** `scripts/join-host.sh` joins a Mac to the fleet:
   preflight (including the toolchains jobs use), the agent, mirrored runners and
   the health timer, dry run unless `--apply`. `scripts/mirror-runners.sh` and

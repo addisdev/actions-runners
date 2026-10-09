@@ -143,6 +143,50 @@ this host's server.
 Because the new host has no `fleetd`, point its admission hook's cancellation
 check at the coordinator with `FLEET_ADMIT_STATUS_URL` (the template does).
 
+## Admission across hosts
+
+Each host's job hooks limit how many jobs run **on that host** and log every
+decision to its own `dashboard/logs/admission.ndjson`. The coordinator reads its
+own file; an agent ships the lines added since its last accepted heartbeat, and
+the coordinator stores them with that host's id (`admission_events.host_id`).
+The Capacity tab's headline mode and limit are the coordinator's;
+`admission.byHost` on `/api/state` has each host's. Delivery is at-least-once:
+the agent's read offset (`dashboard/.fleet-agent-admission-offset`) moves only
+by the lines the coordinator acknowledged.
+
+An agent starting for the first time begins at the **end** of its log. To
+continue an existing history instead (a host that was the coordinator), seed the
+offset file before starting the agent; see below.
+
+## Moving the coordinator to another Mac
+
+The coordinator is the one fleetd that polls GitHub and owns `fleet.db`. To hand
+that role to another Mac without losing history or re-pairing clients:
+
+1. **New host:** a clone on `main`, `gh auth login` done in its desktop session
+   (fleetd resolves its GitHub token with `gh auth token` under launchd), and the
+   same commit as the old coordinator.
+2. **Old host, idle (no `Runner.Worker`):** `./dashboard/fleetctl.sh backup`,
+   then stop fleetd (`./dashboard/fleetctl.sh uninstall`).
+3. **Copy** from the old `dashboard/` to the new one: the backup as `fleet.db`,
+   `.fleet-token`, `.fleet-device-tokens.json`, `.fleet-agent-tokens.json`,
+   `alerts.config.json`. Device tokens carry over, so paired apps and CLIs only
+   need the new URL.
+4. **New host:** stop its agent if it ran one (`./dashboard/agentctl.sh
+   uninstall`; a coordinator reports itself), set `FLEET_HOST`, `FLEET_PORT`,
+   `FLEET_REPLICA_ID` and `FLEET_ALLOWED_HOSTS` in `fleet.env`, then
+   `./install.sh coordinator`.
+5. **Old host becomes an agent:** mint its token on the new coordinator
+   (`./dashboard/fleetctl.sh agent-token --host <old id>`, keeping the id it had
+   as `FLEET_REPLICA_ID`), seed its admission offset from the database it handed
+   over — `sqlite3 fleet.db "SELECT value FROM meta WHERE key='admission_log_offset'" > dashboard/.fleet-agent-admission-offset` —
+   point `FLEET_ADMIT_STATUS_URL` at the new coordinator, and `./install.sh agent`.
+6. **Clients:** every dashboard URL (browser, menu bar app, CLI, monitors) moves
+   to the new host.
+
+`admission_events.host_id` and `host_samples.host_id` keep each machine's
+history apart across the move.
+
 ## Capability labels
 
 Labels declared in `FLEET_HOST_LABELS` are used by the placement engine to

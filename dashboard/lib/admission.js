@@ -23,12 +23,61 @@ import { join } from 'node:path';
 // future hook change cannot break this ingest.
 export const ADMISSION_EVENTS = ['admitted', 'held', 'timeout', 'released', 'would-hold', 'observed'];
 
-export function createAdmission({ db, logPath, warn = () => {} }) {
+// One NDJSON line from hooks/ → the row's values, or null for a line that is
+// not an object. Shared by the local file ingest and lines an agent host ships
+// in its heartbeat, so both hosts' events are read identically.
+function rowFrom(line) {
+  let e;
+  try {
+    e = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!e || typeof e !== 'object') return null;
+  return [
+    // The hooks are shell and emit epoch seconds. Everything else in this
+    // database is milliseconds.
+    Number(e.ts) ? Number(e.ts) * 1000 : Date.now(),
+    String(e.event ?? 'unknown'),
+    e.mode ?? null, e.runner ?? null, e.repo ?? null,
+    e.run != null ? String(e.run) : null,
+    e.job ?? null,
+    Number.isFinite(Number(e.waited_s)) ? Number(e.waited_s) : null,
+    Number.isFinite(Number(e.ran_s)) ? Number(e.ran_s) : null,
+    Number.isFinite(Number(e.busy)) ? Number(e.busy) : null,
+    Number.isFinite(Number(e.limit)) ? Number(e.limit) : null,
+    // `owner` is the old key, which carried the kind. Accepted so a log written
+    // before the rename still reads correctly rather than silently reporting no
+    // owner at all.
+    e.owner_kind || e.owner || null,
+    e.owner_pid || null,
+    e.reason || null,
+  ];
+}
+
+/**
+ * @param {object} opts
+ * @param {string} [opts.hostId] - this host's id; stamped on locally ingested rows.
+ *   Each host runs its own admission hook with its own limit, so a row without
+ *   its host cannot be read correctly once there are two.
+ */
+export function createAdmission({ db, logPath, warn = () => {}, hostId = null }) {
   const insert = db.prepare(`
     INSERT INTO admission_events (ts, event, mode, runner, repo, run_id, job,
                                   waited_s, ran_s, busy, limit_n, owner_kind,
-                                  owner_pid, reason)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+                                  owner_pid, reason, host_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  // Rows from before host_id existed were all written by this host's hooks.
+  if (hostId) {
+    try {
+      db.prepare('UPDATE admission_events SET host_id = ? WHERE host_id IS NULL').run(hostId);
+    } catch (err) {
+      warn('admission host stamp:', err.message);
+    }
+  }
+  // NULL and this host both mean "local" in the queries below.
+  const LOCAL = '(host_id IS NULL OR host_id = @local)';
+  const local = { local: hostId ?? '' };
 
   const stmt = {
     // The newest event per runner. If that event is a hold, the runner is
@@ -36,31 +85,40 @@ export function createAdmission({ db, logPath, warn = () => {} }) {
     // live rather than after the fact, because an unexplained pause before a
     // job's first step is otherwise invisible.
     latestPerRunner: db.prepare(`
-      SELECT runner, repo, event, ts, reason, busy, limit_n
+      SELECT runner, repo, event, ts, reason, busy, limit_n, host_id
       FROM admission_events
       WHERE id IN (
-        SELECT MAX(id) FROM admission_events WHERE runner IS NOT NULL GROUP BY runner
+        SELECT MAX(id) FROM admission_events WHERE runner IS NOT NULL GROUP BY host_id, runner
       )`),
     countsSince: db.prepare(`
       SELECT event, COUNT(*) AS n, SUM(COALESCE(waited_s, 0)) AS waited
       FROM admission_events WHERE ts >= ? GROUP BY event`),
     recent: db.prepare(`
       SELECT ts, event, mode, runner, repo, job, waited_s, ran_s, busy, limit_n,
-             owner_kind, owner_pid, reason
+             owner_kind, owner_pid, reason, host_id
       FROM admission_events ORDER BY ts DESC LIMIT ?`),
     // Restricted to rows that actually carry a mode. Reporting the newest row
     // unconditionally would let one event written without one — an older hook,
     // a hand-appended line — read as "installed but switched off" while the
     // fleet is in fact enforcing.
+    //
+    // This host's only: each host enforces its own limit, and the headline
+    // mode and limit describe the hook running here. Other hosts are in byHost.
     last: db.prepare(`
       SELECT ts, mode, limit_n FROM admission_events
-      WHERE mode IS NOT NULL AND mode != '' ORDER BY id DESC LIMIT 1`),
+      WHERE mode IS NOT NULL AND mode != '' AND ${LOCAL} ORDER BY id DESC LIMIT 1`),
+    lastByHost: db.prepare(`
+      SELECT host_id, ts, mode, limit_n FROM admission_events
+      WHERE id IN (
+        SELECT MAX(id) FROM admission_events
+        WHERE mode IS NOT NULL AND mode != '' AND host_id IS NOT NULL GROUP BY host_id
+      )`),
     // Separate query because only the hook that CLAIMS a slot resolves an owner;
     // job-completed.sh does not, so the newest row is usually a release with no
     // owner and reading the two from one row would always report none.
     lastOwner: db.prepare(`
       SELECT owner_kind FROM admission_events
-      WHERE owner_kind IS NOT NULL AND owner_kind != '' ORDER BY id DESC LIMIT 1`),
+      WHERE owner_kind IS NOT NULL AND owner_kind != '' AND ${LOCAL} ORDER BY id DESC LIMIT 1`),
     offset: db.prepare("SELECT value FROM meta WHERE key = 'admission_log_offset'"),
     setOffset: db.prepare(`
       INSERT INTO meta(key, value) VALUES('admission_log_offset', ?)
@@ -105,43 +163,31 @@ export function createAdmission({ db, logPath, warn = () => {} }) {
       if (lastNl < 0) return 0;
       const consumed = text.slice(0, lastNl + 1);
 
+      const n = this.ingestLines(consumed.split('\n'), hostId);
+      stmt.setOffset.run(String(offset + Buffer.byteLength(consumed, 'utf8')));
+      return n;
+    },
+
+    /**
+     * Insert hook lines. Used for this host's own log (above) and for the lines
+     * an agent host ships with its heartbeat, tagged with that host's id.
+     * @returns {number} rows inserted
+     */
+    ingestLines(lines, fromHost = hostId) {
       let n = 0;
-      for (const line of consumed.split('\n')) {
-        if (!line.trim()) continue;
-        let e;
+      for (const line of lines) {
+        if (typeof line !== 'string' || !line.trim()) continue;
+        const row = rowFrom(line);
+        if (!row) continue;
         try {
-          e = JSON.parse(line);
-        } catch {
-          continue;
-        }
-        try {
-          insert.run(
-            // The hooks are shell and emit epoch seconds. Everything else in
-            // this database is milliseconds.
-            Number(e.ts) ? Number(e.ts) * 1000 : Date.now(),
-            String(e.event ?? 'unknown'),
-            e.mode ?? null, e.runner ?? null, e.repo ?? null,
-            e.run != null ? String(e.run) : null,
-            e.job ?? null,
-            Number.isFinite(Number(e.waited_s)) ? Number(e.waited_s) : null,
-            Number.isFinite(Number(e.ran_s)) ? Number(e.ran_s) : null,
-            Number.isFinite(Number(e.busy)) ? Number(e.busy) : null,
-            Number.isFinite(Number(e.limit)) ? Number(e.limit) : null,
-            // `owner` is the old key, which carried the kind. Accepted so a log
-            // written before the rename still reads correctly rather than
-            // silently reporting no owner at all.
-            e.owner_kind || e.owner || null,
-            e.owner_pid || null,
-            e.reason || null
-          );
+          insert.run(...row, fromHost ?? null);
           n += 1;
         } catch (err) {
-          // One malformed row must not stop the cursor advancing, or the same
-          // bad line is retried on every tick for the life of the process.
+          // One malformed row must not stop the rest, or the same bad line is
+          // retried on every tick for the life of the process.
           warn('admission row:', err.message);
         }
       }
-      stmt.setOffset.run(String(offset + Buffer.byteLength(consumed, 'utf8')));
       return n;
     },
 
@@ -170,7 +216,7 @@ export function createAdmission({ db, logPath, warn = () => {} }) {
         // wait itself — its waited_s is 0 by construction.
         if (row.event === 'admitted' || row.event === 'timeout') heldSeconds += row.waited ?? 0;
       }
-      const last = stmt.last.get();
+      const last = stmt.last.get(local);
       const waiting = stmt.latestPerRunner
         .all()
         .filter((r) => r.event === 'held')
@@ -181,7 +227,17 @@ export function createAdmission({ db, logPath, warn = () => {} }) {
           reason: r.reason,
           busy: r.busy,
           limit: r.limit_n,
+          host: r.host_id ?? hostId,
         }));
+      // Mode and limit per host, newest decision each. A fleet where one host
+      // enforces 2 and another 6 is not described by a single number.
+      const byHost = {};
+      for (const row of stmt.lastByHost.all()) {
+        byHost[row.host_id] = { mode: row.mode, limit: row.limit_n, lastDecisionAt: row.ts, waiting: 0 };
+      }
+      for (const w of waiting) {
+        if (w.host && byHost[w.host]) byHost[w.host].waiting += 1;
+      }
       return {
         // Reported from the events rather than from configuration. fleet.env is
         // read by the hooks inside a job, not by this process, so the events are
@@ -193,11 +249,12 @@ export function createAdmission({ db, logPath, warn = () => {} }) {
         // own its slot. Admission still functions, but it is the one condition
         // that can silently under-count concurrency, so it is surfaced here
         // rather than left to be inferred from an absence of holds.
-        ownerKind: stmt.lastOwner.get()?.owner_kind ?? null,
+        ownerKind: stmt.lastOwner.get(local)?.owner_kind ?? null,
         hooks: installed,
         last24h: counts,
         heldSeconds,
         waiting,
+        byHost,
       };
     },
 
