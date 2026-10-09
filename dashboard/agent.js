@@ -43,7 +43,10 @@ import { loadOffset, saveOffset, readPending, advance } from './lib/admission-sh
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 const CONFIG = {
-  coordinators: (process.env.FLEET_COORDINATORS ?? process.env.FLEET_COORDINATOR ?? '')
+  // `||`, not `??`: agentctl.sh writes both keys into the plist and leaves the
+  // unused one as an empty string, which `??` treats as set. A host configured
+  // with FLEET_COORDINATOR alone then reported to nobody.
+  coordinators: (process.env.FLEET_COORDINATORS || process.env.FLEET_COORDINATOR || '')
     .split(',').map((s) => s.trim().replace(/\/$/, '')).filter(Boolean),
   token: process.env.FLEET_AGENT_TOKEN
     ?? (process.env.FLEET_AGENT_TOKEN_FILE && existsSync(process.env.FLEET_AGENT_TOKEN_FILE)
