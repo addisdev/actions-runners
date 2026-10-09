@@ -41,6 +41,7 @@ without `--repair` — have no `--apply` because there is nothing to guard.
 | `scripts/test-drain.sh` | Shell tests for drain and resume | runs against a temporary fleet |
 | `scripts/test-ephemeral.sh` | Shell tests for the ephemeral reaper | runs against a temporary fleet |
 | `scripts/test-cleanup.sh` | Shell tests for disk cleanup | runs against a temporary fleet |
+| `scripts/test-health.sh` | Shell tests for `health.sh` | runs against a temporary fleet |
 | `scripts/infer-checks.py` | Work out which preflight checks this fleet needs | read-only |
 | `dashboard/fleetctl.sh` | Install, run, inspect, back up and restore the dashboard daemon | n/a — subcommands |
 | `dashboard/agentctl.sh` | Install, run and inspect the fleet agent on an agent Mac | n/a — subcommands |
@@ -834,6 +835,22 @@ room to spare, that only idle, shut-down, over-size `ci-` devices are erased,
 that a building or slot-holding runner keeps its simulator and browsers, that
 host-wide steps wait for an idle fleet, that a dry run deletes nothing, and
 that two runs never overlap. Exits non-zero if any test fails.
+
+### `scripts/test-health.sh`
+
+Shell tests for `health.sh`. No flags.
+Source: [`scripts/test-health.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/test-health.sh).
+
+```bash
+scripts/test-health.sh
+```
+
+It builds a fake fleet in a temporary directory and puts stub `gh`, `launchctl`
+and `plutil` first on PATH, then runs the real `health.sh`. It checks that
+GitHub not answering is reported but not counted as unhealthy, that a runner
+missing from a real answer is `not-registered` and is a fault, that `offline`
+is a fault and `--repair` restarts it, and that a dead launchd job is still a
+fault while GitHub cannot be asked.
 
 ### `scripts/test-ephemeral.sh`
 
