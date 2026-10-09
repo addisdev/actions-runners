@@ -129,6 +129,11 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- An agent configured with `FLEET_COORDINATOR` alone reported to nobody:
+  `agentctl.sh` writes both coordinator keys into the plist, the unused one
+  empty, and `agent.js` read them with `??`, which takes an empty string as set.
+  Found by the first real second host.
+
 - **`health.sh` no longer goes red when GitHub does not answer.** A failed
   runner API call was read as "this runner is unhealthy", so a rate-limit or
   network blip turned the health job red for every runner at once (red in 147
