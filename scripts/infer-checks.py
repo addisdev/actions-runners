@@ -10,9 +10,12 @@ A separate file rather than a heredoc inside preflight.sh because /bin/bash on
 macOS is still 3.2, which mis-parses a heredoc inside command substitution.
 """
 
+import os
 import re
 import sqlite3
 import sys
+
+TOOLS_LIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cli-tools.txt')
 
 # Marker -> the checks it justifies. Substring matching on lowercased YAML, not
 # a YAML parse: the interesting facts live inside `run:` shell blocks, where a
@@ -27,6 +30,26 @@ MARKERS = {
     'NEED_ANDROID': ('gradle', 'gradlew', 'android'),
     'NEED_PLAYWRIGHT': ('playwright install', 'playwright test', '@playwright/test', 'microsoft/playwright'),
 }
+
+
+def inferred_tools(files: list) -> list:
+    """The `infer` tools of cli-tools.txt that a self-hosted workflow runs.
+
+    Matched as a word on lines that are not comments: `# shellcheck
+    disable=SC2016` names a tool and runs nothing. Coarse like MARKERS, and
+    wrong in the same safe direction — an extra check, never a missed one.
+    """
+    try:
+        with open(TOOLS_LIST) as f:
+            rows = [l.split() for l in f if l.strip() and not l.lstrip().startswith('#')]
+    except OSError:
+        return []
+    names = [r[0] for r in rows if len(r) >= 3 and r[2] == 'infer']
+    lines = [l for text in files for l in text.splitlines()
+             if not l.lstrip().startswith('#')]
+    code = '\n'.join(lines)
+    return [n for n in names
+            if re.search(r'(^|[\s;|&(`]|run:)' + re.escape(n) + r'(\s|$)', code, re.M)]
 
 
 def main() -> int:
@@ -65,6 +88,7 @@ def main() -> int:
 
     print(f'NEED_POSTGRES={1 if (versions or "postgres" in blob) else 0}')
     print('PG_VERSIONS="%s"' % ' '.join(sorted(versions, key=int)))
+    print('NEED_TOOLS="%s"' % ' '.join(inferred_tools(files)))
     print(f'INFERRED_FROM="{len(files)} self-hosted workflow files"')
     return 0
 
