@@ -129,6 +129,9 @@ jobs:
       - name: Disk cleanup tests
         run: bash scripts/test-cleanup.sh
 
+      - name: Health check tests
+        run: bash scripts/test-health.sh
+
   # ---------------------------------------------------------------------------
   # Offline release check (no network, checks tracked files for private data)
   # ---------------------------------------------------------------------------

@@ -108,6 +108,12 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- **`health.sh` no longer goes red when GitHub does not answer.** A failed
+  runner API call was read as "this runner is unhealthy", so a rate-limit or
+  network blip turned the health job red for every runner at once (red in 147
+  of 2617 runs on runner-host; every recent one was such a blip). It now says GitHub did not answer and still judges
+  launchd; a runner missing from a real answer is reported `not-registered`
+  and stays a fault. Covered by `scripts/test-health.sh`.
 - **`cockpit wait` sat on a frozen view and never returned.** On 2026-10-07
   runner-host's fast loop finished its last tick about 12:32Z under load.
   fleetd publishes only after a tick, so every client kept that glance
