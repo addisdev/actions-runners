@@ -108,6 +108,25 @@ function cancelVerdict(concurrency) {
   return PR_SCOPED_RE.test(s) ? 'yes' : 'unknown';
 }
 
+// The repository/organization variables a job-level `if:` gates on, e.g.
+// `if: vars.LAB_HOST != ''`. Such a job is SKIPPED, not queued, while the
+// variable is unset — which is exactly how a workflow parks a job for hardware
+// that does not exist yet. The lint cannot read variable values, so it cannot
+// tell set from unset; what it can say is that the job never queues by itself.
+function gatingVars(job) {
+  const cond = job?.if;
+  if (cond == null || typeof cond === 'boolean') return [];
+  return [...new Set([...String(cond).matchAll(/\bvars\.([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]))];
+}
+
+// Whether a job-level `if:` reads the repository's visibility, e.g.
+// `!github.event.repository.private` or `github.event.repository.visibility == 'public'`.
+function visibilityGuarded(job) {
+  const cond = job?.if;
+  if (cond == null || typeof cond === 'boolean') return false;
+  return /\brepository\.(private|visibility)\b/.test(String(cond));
+}
+
 function runsOnLabels(value) {
   if (value == null) return null;
   if (Array.isArray(value)) return value.map(String);
@@ -120,13 +139,16 @@ function runsOnLabels(value) {
   return null;
 }
 
-export function lintWorkflow({ repo, path, name, content, runnerLabelSets, fleetLabelSets }) {
+// `isPublic` is true only when the repo is known to be public. Unknown counts as
+// private, the same bias as the posture check: a missed warning costs more than
+// a spurious one.
+export function lintWorkflow({ repo, path, name, content, runnerLabelSets, fleetLabelSets, isPublic = false }) {
   const findings = [];
   const { doc, warnings, partial } = parseYaml(content);
   const wf = name ?? doc?.name ?? path;
 
-  const add = (rule, severity, job, message, hint) =>
-    findings.push({ repo, path, workflow: wf, rule, severity, job: job ?? null, message, hint });
+  const add = (rule, severity, job, message, hint, extra = null) =>
+    findings.push({ repo, path, workflow: wf, rule, severity, job: job ?? null, message, hint, ...(extra ?? {}) });
 
   if (partial) {
     add('unparsed', 'info', null,
@@ -234,11 +256,20 @@ export function lintWorkflow({ repo, path, name, content, runnerLabelSets, fleet
 
     // macOS on GitHub-hosted bills at 10x against the included allowance. That
     // multiplier is what took Actions down account-wide and created this fleet.
-    if (hostedImage && /^macos-/i.test(hostedImage)) {
-      add('hosted-macos', 'warning', jobName,
-        `Runs on GitHub-hosted ${hostedImage}`,
-        'Hosted macOS bills at 10x against the included allowance on private repos. Exhausting it ' +
-          'once blocked Actions account-wide, including the cheap Ubuntu jobs in unrelated repos.');
+    // Public repos run hosted runners for free, so there is nothing to warn
+    // about there: the fleet's own public repos use hosted macOS on purpose.
+    // A job whose `if:` reads the repo's visibility ("run only once public, or
+    // by hand") has already made that decision; it is noted as info,
+    // since a manual dispatch on a private repo still bills.
+    if (hostedImage && /^macos-/i.test(hostedImage) && !isPublic) {
+      const guarded = visibilityGuarded(job);
+      add('hosted-macos', guarded ? 'info' : 'warning', jobName,
+        `Runs on GitHub-hosted ${hostedImage}${guarded ? ' (guarded on repo visibility)' : ''}`,
+        guarded
+          ? 'Its if: skips the job while the repo is private, so it bills only when run by hand or ' +
+            'once the repo is public (where hosted minutes are free).'
+          : 'Hosted macOS bills at 10x against the included allowance on private repos. Exhausting it ' +
+            'once blocked Actions account-wide, including the cheap Ubuntu jobs in unrelated repos.');
     }
 
     // Does any runner registered for this repo satisfy the whole label set?
@@ -247,25 +278,43 @@ export function lintWorkflow({ repo, path, name, content, runnerLabelSets, fleet
     if (selfHosted && !dynamic) {
       const candidates = reusable ? (fleetLabelSets ?? []) : (runnerLabelSets ?? []);
       const scope = reusable ? 'the fleet' : repo;
+      // A job gated on a repo variable is reported, but as info: it is skipped
+      // while the variable is unset, so it cannot be what is holding a queue.
+      // Reported CRITICAL, a parked `hardware` job (if: vars.LAB_HOST != '') made
+      // the queue classifier call every run in its repo a label mismatch.
+      const gates = gatingVars(job);
+      const labelSeverity = gates.length ? 'info' : 'critical';
+      const gatedNote = gates.length
+        ? ` (gated on ${gates.map((v) => `vars.${v}`).join(', ')})`
+        : '';
+      const gatedHint = gates.length
+        ? `This job only runs when ${gates.map((v) => `vars.${v}`).join(', ')} is set; until then GitHub ` +
+          'skips it and nothing queues. Register a runner carrying these labels before setting it. '
+        : '';
       if (candidates.length === 0) {
-        add('unserved', 'critical', jobName,
-          reusable
+        add('unserved', labelSeverity, jobName,
+          (reusable
             ? 'No runners exist anywhere in the fleet'
-            : `No runner is registered for ${repo} at all`,
-          'This job will queue until it is cancelled. Register a runner, or move the job to a hosted one.');
+            : `No runner is registered for ${repo} at all`) + gatedNote,
+          gatedHint || 'This job will queue until it is cancelled. Register a runner, or move the job to a hosted one.',
+          { labels: lowered, ...(gates.length ? { gatedOn: gates } : {}) });
       } else {
         const wanted = lowered;
         const match = candidates.some((set) => wanted.every((l) => set.labels.includes(l)));
         if (!match) {
           const everLabel = new Set(candidates.flatMap((s) => s.labels));
           const missing = wanted.filter((l) => !everLabel.has(l));
-          add('unmatched-label', 'critical', jobName,
-            `No runner matches runs-on: [${labels.join(', ')}]`,
-            missing.length
+          add('unmatched-label', labelSeverity, jobName,
+            `No runner matches runs-on: [${labels.join(', ')}]${gatedNote}`,
+            gatedHint + (missing.length
               ? `No runner in ${scope} carries ${missing.map((m) => `\`${m}\``).join(', ')}. ` +
                 'Jobs matching this will queue until cancelled — this is exactly how the abandoned ' +
                 '`ollama` label produced runs that sat for 24 hours and were killed.'
-              : 'Every label exists on some runner, but no single runner carries all of them at once.');
+              : 'Every label exists on some runner, but no single runner carries all of them at once.'),
+            // The job's own runs-on, so a consumer (the queue-cause classifier)
+            // can tell which queued job this finding is about rather than
+            // blaming every run in the repo.
+            { labels: lowered, ...(gates.length ? { gatedOn: gates } : {}) });
         }
       }
     }
@@ -309,6 +358,18 @@ export function lintWorkflow({ repo, path, name, content, runnerLabelSets, fleet
   return findings;
 }
 
+// Whether a repo's workflow files should be linted, given the roster facts
+// (Map full_name -> { archived, private }). With facts present, a repo missing
+// from them is not one the owner has any more (deleted, or transferred away):
+// its cached files are leftovers, and were reported as live findings for weeks
+// (four repos last fetched 09-23). Archived repos are skipped because GitHub
+// runs nothing in them. With no facts at all (a fresh database), lint all.
+export function isLintableRepo(facts, repo) {
+  if (!facts || facts.size === 0) return true;
+  const r = facts.get(repo);
+  return Boolean(r) && !r.archived;
+}
+
 // Each file arrives once per ref that actually runs it, so the same finding can
 // be produced several times for one workflow. Reporting it per ref would triple
 // the screen for a repo whose branches agree, which is most of them — so
@@ -318,8 +379,17 @@ export function lintWorkflow({ repo, path, name, content, runnerLabelSets, fleet
 // problem; a finding on one ref is a *branch* problem, and the fix is usually to
 // bring that branch level rather than to edit the file. That distinction is
 // invisible when you only ever read the default branch.
-export function lintAll({ files, runnersByRepo }) {
+//
+// `repos` (optional) maps full_name -> { archived, private }. An archived repo
+// is skipped outright: GitHub will not run its workflows, so "no runner is
+// registered" for it is true and irrelevant. A repo's visibility decides
+// whether hosted macOS bills at all.
+export function lintAll({ files, runnersByRepo, repos = null }) {
   const grouped = new Map();
+  const facts = repos instanceof Map ? repos : new Map(
+    (Array.isArray(repos) ? repos : []).map((r) => [r.fullName ?? r.full_name, r])
+  );
+  files = (files ?? []).filter((f) => isLintableRepo(facts, f.repo));
   const fleetLabelSets = [...runnersByRepo.values()].flat();
 
   const record = (finding, ref, isDefault) => {
@@ -347,6 +417,8 @@ export function lintAll({ files, runnersByRepo }) {
         content: f.content,
         runnerLabelSets: runnersByRepo.get(f.repo) ?? [],
         fleetLabelSets,
+        // 0 as well as false: rows straight from SQLite carry integers.
+        isPublic: [false, 0].includes(facts.get(f.repo)?.private),
       })) record(finding, ref, isDefault);
     } catch (err) {
       record({

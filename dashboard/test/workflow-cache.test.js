@@ -3,9 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { openDb, UPSERT_REPO, LIVE_WORKFLOW_FILES } from '../lib/db.js';
+import { openDb, UPSERT_REPO } from '../lib/db.js';
 import { reposToPrune, repoIsGone } from '../lib/workflow-cache.js';
-import { lintAll } from '../lib/lint.js';
 
 describe('reposToPrune', () => {
   test('drops cached repos missing from the live roster', () => {
@@ -33,7 +32,7 @@ describe('repoIsGone', () => {
   });
 });
 
-describe('repo and workflow-file SQL', () => {
+describe('repo upsert SQL', () => {
   let dir;
   let db;
   before(() => {
@@ -45,8 +44,6 @@ describe('repo and workflow-file SQL', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const WF = 'name: CI\non:\n  pull_request:\njobs:\n  build:\n    runs-on: [self-hosted, macos]\n    steps:\n      - run: echo hi\n';
-
   test('the repo upsert refreshes visibility and name', () => {
     const upsert = db.prepare(UPSERT_REPO);
     upsert.run('o/fleet-runner', 'fleet-runner', 0, 1, '2026-09-01', 2, 1, 1);
@@ -55,22 +52,5 @@ describe('repo and workflow-file SQL', () => {
     assert.equal(row.private, 0);
     assert.equal(row.name, 'fleet-runner2');
     assert.equal(row.pushed_at, '2026-10-01');
-  });
-
-  test('only files of rostered, unarchived repos are read', () => {
-    const upsert = db.prepare(UPSERT_REPO);
-    upsert.run('o/live', 'live', 0, 1, null, 1, 1, 1);
-    upsert.run('o/archived', 'archived', 1, 1, null, 1, 0, 1);
-    const ins = db.prepare(`INSERT INTO workflow_files (repo, path, ref, name, sha, content, fetched_at, is_default)
-      VALUES (?, '.github/workflows/ci.yml', 'main', 'CI', 'x', ?, 1, 1)`);
-    for (const repo of ['o/live', 'o/archived', 'o/fleet-collector', 'o/fleet-runner-ios']) ins.run(repo, WF);
-
-    const files = db.prepare(LIVE_WORKFLOW_FILES).all();
-    assert.deepEqual(files.map((f) => f.repo), ['o/live']);
-
-    // And so the lint never sees the stale repos: an unserved finding for a
-    // deleted repo was what kept showing on the dashboard.
-    const findings = lintAll({ files, runnersByRepo: new Map() });
-    assert.deepEqual([...new Set(findings.map((f) => f.repo))], ['o/live']);
   });
 });

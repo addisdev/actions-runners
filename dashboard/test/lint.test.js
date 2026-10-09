@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { lintWorkflow } from '../lib/lint.js';
+import { lintWorkflow, lintAll } from '../lib/lint.js';
 import { WORKFLOW_WITH_TIMEOUT } from './fixtures/index.js';
 
 const REPO = 'testowner/app-web';
@@ -189,7 +189,7 @@ ${jobBlocks}`;
 const cancelFindings = (content) =>
   lint(content).filter((f) => f.rule === 'no-cancel-in-progress');
 
-describe('no-cancel-in-progress', () => {
+describe('no-cancel-in-progress: expressions and job-level concurrency', () => {
   test('a literal true passes', () => {
     const wf = prWorkflow({ concurrency: 'concurrency:\n  group: ci-${{ github.ref }}\n  cancel-in-progress: true\n' });
     assert.deepEqual(cancelFindings(wf), []);
@@ -283,5 +283,213 @@ describe('no-cancel-in-progress', () => {
   test('push-only workflows are not checked', () => {
     const wf = prWorkflow().replace('  pull_request:\n', '');
     assert.deepEqual(cancelFindings(wf), []);
+  });
+});
+
+const CI_SELF_HOSTED = `
+name: Web CI
+on: [push]
+jobs:
+  web-tests:
+    runs-on: [self-hosted, macos, arm64]
+    timeout-minutes: 20
+    steps:
+      - run: npm test
+`;
+
+const CI_HOSTED_MAC = `
+name: CI
+on: [push]
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - run: make
+`;
+
+const row = (repo, content, path = '.github/workflows/ci.yml') =>
+  ({ repo, path, ref: 'main', name: null, content, is_default: 1 });
+
+// A web repo archived when its product moved to a single repo, and
+// its cached web-ci.yml kept the Lint tab CRITICAL: "No runner is registered for
+// <repo> at all". True, and irrelevant: GitHub runs nothing in
+// an archived repo.
+describe('lintAll repo facts', () => {
+  test('an archived repo is not linted at all', () => {
+    const findings = lintAll({
+      files: [row('owner/archived-web', CI_SELF_HOSTED), row('owner/live-web', CI_SELF_HOSTED)],
+      runnersByRepo: new Map(),
+      repos: new Map([
+        ['owner/archived-web', { archived: true, private: true }],
+        ['owner/live-web', { archived: false, private: true }],
+      ]),
+    });
+    assert.ok(!findings.some((f) => f.repo === 'owner/archived-web'), 'archived repo must be skipped');
+    assert.ok(findings.some((f) => f.repo === 'owner/live-web' && f.rule === 'unserved'),
+      'a live repo with no runner is still critical');
+  });
+
+  test('archived rows straight from SQLite (integers) are skipped too', () => {
+    const findings = lintAll({
+      files: [row('owner/archived-web', CI_SELF_HOSTED)],
+      runnersByRepo: new Map(),
+      repos: [{ full_name: 'owner/archived-web', archived: 1, private: 1 }],
+    });
+    assert.deepEqual(findings, []);
+  });
+
+  // Cached files of a repo that has since been deleted (its workflow list now
+  // 404s) stayed in the cache and were linted as live for weeks.
+  test('a repo the roster no longer knows is not linted', () => {
+    const findings = lintAll({
+      files: [row('owner/deleted-ios', CI_HOSTED_MAC), row('owner/live-web', CI_SELF_HOSTED)],
+      runnersByRepo: new Map(),
+      repos: new Map([['owner/live-web', { archived: false, private: true }]]),
+    });
+    assert.ok(!findings.some((f) => f.repo === 'owner/deleted-ios'));
+    assert.ok(findings.some((f) => f.repo === 'owner/live-web'));
+  });
+
+  test('without repo facts every file is linted, as before', () => {
+    const findings = lintAll({ files: [row('owner/x', CI_SELF_HOSTED)], runnersByRepo: new Map() });
+    assert.ok(findings.some((f) => f.rule === 'unserved'));
+  });
+
+  // Hosted macOS bills 10x only on private repos; public repos run it free.
+  test('hosted-macos is not reported for a public repo', () => {
+    const findings = lintAll({
+      files: [row('owner/public-tool', CI_HOSTED_MAC)],
+      runnersByRepo: new Map(),
+      repos: [{ full_name: 'owner/public-tool', archived: 0, private: 0 }],
+    });
+    assert.ok(!findings.some((f) => f.rule === 'hosted-macos'));
+  });
+
+  test('hosted-macos is still reported for a repo of unknown visibility', () => {
+    const findings = lintAll({
+      files: [row('owner/unknown-tool', CI_HOSTED_MAC)],
+      runnersByRepo: new Map(),
+      repos: new Map(),
+    });
+    assert.ok(findings.some((f) => f.rule === 'hosted-macos' && f.repo === 'owner/unknown-tool'),
+      'unknown visibility counts as private');
+  });
+
+  test('hosted-macos is reported for a repo known to be private', () => {
+    const findings = lintAll({
+      files: [row('owner/private-tool', CI_HOSTED_MAC)],
+      runnersByRepo: new Map(),
+      repos: new Map([['owner/private-tool', { archived: false, private: true }]]),
+    });
+    assert.ok(findings.some((f) => f.rule === 'hosted-macos'));
+  });
+});
+
+// A TV app parks its `hardware` job behind `if: vars.LAB_HOST != ''` until
+// a device lab exists; the nightly is skipped, never queued. Reported CRITICAL,
+// it made the queue classifier call every run in the repo a label mismatch.
+describe('label findings on vars-gated jobs', () => {
+  const GATED = `
+name: hardware
+on:
+  schedule:
+    - cron: '0 9 * * *'
+jobs:
+  hardware:
+    if: vars.LAB_HOST != ''
+    runs-on: [self-hosted, device-lab]
+    timeout-minutes: 30
+    steps:
+      - run: make hardware-test
+`;
+
+  test('an unmatched label on a job gated by a repo variable is info, not critical', () => {
+    const found = lint(GATED, { path: '.github/workflows/hardware.yml' });
+    const f = found.find((x) => x.rule === 'unmatched-label');
+    assert.ok(f, 'still reported, so the lab setup is not forgotten');
+    assert.equal(f.severity, 'info');
+    assert.match(f.message, /gated on vars\.LAB_HOST/);
+    assert.deepEqual(f.gatedOn, ['LAB_HOST']);
+  });
+
+  test('a job gated by a repo variable in a repo with no runner is info, not critical', () => {
+    const found = lint(GATED, { runnerLabelSets: [] });
+    const f = found.find((x) => x.rule === 'unserved');
+    assert.equal(f.severity, 'info');
+  });
+
+  test('the same job without the gate stays critical', () => {
+    const found = lint(GATED.replace("    if: vars.LAB_HOST != ''\n", ''));
+    const f = found.find((x) => x.rule === 'unmatched-label');
+    assert.equal(f.severity, 'critical');
+  });
+
+  test('a gate on something other than a variable stays critical', () => {
+    const found = lint(GATED.replace("vars.LAB_HOST != ''", "github.event_name == 'schedule'"));
+    assert.equal(found.find((x) => x.rule === 'unmatched-label').severity, 'critical');
+  });
+
+  test('label findings carry the job\'s runs-on labels', () => {
+    const found = lint(GATED.replace("    if: vars.LAB_HOST != ''\n", ''));
+    assert.deepEqual(found.find((x) => x.rule === 'unmatched-label').labels, ['self-hosted', 'device-lab']);
+  });
+});
+
+describe('hosted-macos visibility guard', () => {
+  const GUARDED = `
+name: CI
+on: [push, workflow_dispatch]
+jobs:
+  test:
+    if: \${{ !github.event.repository.private || github.event_name == 'workflow_dispatch' }}
+    runs-on: macos-15
+    steps:
+      - run: swift test
+`;
+
+  test('a job whose if: reads repo visibility is info, not a warning', () => {
+    const f = lint(GUARDED).find((x) => x.rule === 'hosted-macos');
+    assert.ok(f);
+    assert.equal(f.severity, 'info');
+    assert.match(f.message, /guarded on repo visibility/);
+  });
+
+  test('an unguarded hosted macOS job on a private repo is still a warning', () => {
+    const f = lint(GUARDED.replace(/    if: .*\n/, '')).find((x) => x.rule === 'hosted-macos');
+    assert.equal(f.severity, 'warning');
+  });
+});
+
+describe('no-cancel-in-progress', () => {
+  const PR_WF = (cancel) => `
+name: CI
+on:
+  pull_request:
+concurrency:
+  group: ci-\${{ github.ref }}
+  cancel-in-progress: ${cancel}
+jobs:
+  test:
+    runs-on: [self-hosted, macos, arm64]
+    timeout-minutes: 10
+    steps:
+      - run: make test
+`;
+
+  test('literal true satisfies the rule', () => {
+    assert.ok(!rules(lint(PR_WF('true'))).includes('no-cancel-in-progress'));
+  });
+
+  test('an expression satisfies the rule (cancel PRs, never main)', () => {
+    for (const expr of [
+      "\${{ github.event_name == 'pull_request' }}",
+      "\${{ github.ref != 'refs/heads/main' }}",
+    ]) {
+      assert.ok(!rules(lint(PR_WF(expr))).includes('no-cancel-in-progress'), expr);
+    }
+  });
+
+  test('false is still flagged', () => {
+    assert.ok(rules(lint(PR_WF('false'))).includes('no-cancel-in-progress'));
   });
 });
