@@ -59,9 +59,12 @@ public struct WaitLoop: Sendable {
             var attempt = 0
             while !Task.isCancelled {
                 do {
-                    for try await ev in try await connect() {
+                    let stream = try await connect()
+                    await latest.beginStream(at: now())
+                    for try await ev in stream {
                         if case .glance(let g) = ev { await latest.set(g); attempt = 0 }
                     }
+                    await latest.endStream()
                 } catch {}
                 attempt += 1
                 try? await Task.sleep(nanoseconds: UInt64(backoff.delay(attempt: attempt) * 1e9))
@@ -86,9 +89,12 @@ public struct WaitLoop: Sendable {
 
         while true {
             let t = now()
-            let (g, version) = await latest.get()
-            let missing = g == nil && t - start > connectGrace * 1000
-            let stale = missing || (g?.isCollectorStale(now: t) ?? false)
+            let snap = await latest.snapshot(start: start)
+            let missing = snap.glance == nil && t - snap.noGlanceAnchor > connectGrace * 1000
+            let collectorStale = snap.glance?.isCollectorStale(now: t) ?? false
+            let stale = missing || collectorStale
+            let g = snap.glance
+            let version = snap.version
             let age = g?.collectorAgeMs(now: t)
 
             if let g, version != seen {
@@ -118,7 +124,9 @@ public struct WaitLoop: Sendable {
                 staleAnnounced = false
             }
 
-            if stale { nextCross = min(nextCross, askedAt.map { $0 + crossCheckStale * 1000 } ?? t) }
+            if collectorStale || (missing && !snap.streamOpen) {
+                nextCross = min(nextCross, askedAt.map { $0 + crossCheckStale * 1000 } ?? t)
+            }
             if let ask = self.github, t >= nextCross {
                 askedAt = t
                 if let answer = await ask(g) {
@@ -148,9 +156,23 @@ public struct WaitLoop: Sendable {
     }
 
     private actor Latest {
+        struct Snapshot {
+            var glance: Glance?
+            var version: Int
+            var noGlanceAnchor: Double
+            var streamOpen: Bool
+        }
+
         var glance: Glance?
         var version = 0
+        var streamStartedMs: Double?
+
+        func beginStream(at t: Double) { streamStartedMs = t }
+        func endStream() { streamStartedMs = nil }
         func set(_ g: Glance) { glance = g; version += 1 }
-        func get() -> (Glance?, Int) { (glance, version) }
+        func snapshot(start: Double) -> Snapshot {
+            Snapshot(glance: glance, version: version, noGlanceAnchor: streamStartedMs ?? start,
+                     streamOpen: streamStartedMs != nil)
+        }
     }
 }
