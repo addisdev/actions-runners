@@ -340,6 +340,29 @@ export const UPSERT_JOB = `
       completed_at=excluded.completed_at, runner_name=excluded.runner_name,
       queued_ms=excluded.queued_ms, duration_ms=excluded.duration_ms, seen_at=excluded.seen_at`;
 
+// The repo roster write. name and private are refreshed on conflict along with
+// the rest: they were left out, so a repo made public on GitHub stayed private
+// here for good, and the hosted-macOS posture check reads that column.
+export const UPSERT_REPO = `
+    INSERT INTO repos (full_name, name, archived, private, pushed_at, workflows, has_runner, updated_at)
+    VALUES (?,?,?,?,?,?,?,?)
+    ON CONFLICT(full_name) DO UPDATE SET
+      name=excluded.name, archived=excluded.archived, private=excluded.private,
+      pushed_at=excluded.pushed_at,
+      workflows=COALESCE(excluded.workflows, repos.workflows),
+      has_runner=excluded.has_runner, updated_at=excluded.updated_at`;
+
+// The cached workflow files every consumer reads: lint, the concurrency
+// advisor, the demand forecast. Only files of repos on the roster and not
+// archived. A repo deleted or renamed on GitHub leaves its rows behind when the
+// refresh can no longer list it, and those files were linted for weeks after
+// the repo stopped existing.
+export const LIVE_WORKFLOW_FILES = `
+    SELECT wf.repo, wf.path, wf.ref, wf.name, wf.content, wf.is_default
+      FROM workflow_files wf
+      JOIN repos r ON r.full_name = wf.repo
+     WHERE COALESCE(r.archived, 0) = 0`;
+
 export function openDb(path) {
   mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);

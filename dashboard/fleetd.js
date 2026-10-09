@@ -13,7 +13,8 @@ import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 
-import { openDb, setMeta, getMeta, UPSERT_JOB } from './lib/db.js';
+import { openDb, setMeta, getMeta, UPSERT_JOB, UPSERT_REPO, LIVE_WORKFLOW_FILES } from './lib/db.js';
+import { reposToPrune, repoIsGone } from './lib/workflow-cache.js';
 import { GitHub, isActiveRunStatus } from './lib/github.js';
 import {
   discoverRunnerDirs,
@@ -429,9 +430,8 @@ const stmt = {
   deleteWorkflowFile: db.prepare(
     'DELETE FROM workflow_files WHERE repo = ? AND path = ? AND ref = ?'
   ),
-  workflowFiles: db.prepare(
-    'SELECT repo, path, ref, name, content, is_default FROM workflow_files'
-  ),
+  deleteWorkflowRepo: db.prepare('DELETE FROM workflow_files WHERE repo = ?'),
+  workflowFiles: db.prepare(LIVE_WORKFLOW_FILES),
 
   // Queue-cause transitions. lastQueueEvent is what makes this a transition log
   // rather than a sample: a row is written only when the newest row for a run
@@ -514,13 +514,7 @@ const stmt = {
     GROUP BY head_branch HAVING n >= 2
     ORDER BY n DESC`),
   defaultBranchOf: db.prepare('SELECT default_branch FROM repos WHERE full_name = ?'),
-  upsertRepo: db.prepare(`
-    INSERT INTO repos (full_name, name, archived, private, pushed_at, workflows, has_runner, updated_at)
-    VALUES (?,?,?,?,?,?,?,?)
-    ON CONFLICT(full_name) DO UPDATE SET
-      archived=excluded.archived, pushed_at=excluded.pushed_at,
-      workflows=COALESCE(excluded.workflows, repos.workflows),
-      has_runner=excluded.has_runner, updated_at=excluded.updated_at`),
+  upsertRepo: db.prepare(UPSERT_REPO),
 };
 
 const b = (v) => (v ? 1 : 0);
@@ -2181,8 +2175,12 @@ function activeRefsFor(repo, defaultBranch) {
 async function slowTick() {
   const started = Date.now();
   refreshPosture();
+  // The owner's non-archived repos as of this tick, or null when the roster
+  // refresh failed. Workflow files for anything outside it are dropped below.
+  let liveRepos = null;
   try {
     const owned = await gh.ownedRepos();
+    liveRepos = new Set(owned.filter((r) => !r.archived).map((r) => r.full_name));
     const withRunners = new Set(dirsCache.map((d) => d.repo));
     const roster = [];
     for (const r of owned) {
@@ -2244,18 +2242,31 @@ async function slowTick() {
     // deleted drops to zero in the roster, and iterating the roster alone would
     // skip it forever, leaving the lint reporting on a file nobody can see.
     const cachedRepos = db.prepare('SELECT DISTINCT repo FROM workflow_files').all().map((r) => r.repo);
+    // Repos gone from the roster (deleted, renamed, transferred, archived) are
+    // dropped outright rather than listed: the list would 404 every tick.
+    const gone = new Set(reposToPrune({ cachedRepos, liveRepos }));
+    for (const repo of gone) {
+      dropped += Number(stmt.deleteWorkflowRepo.run(repo).changes ?? 0);
+      log(`workflow cache: ${repo} is no longer on the roster, its files dropped`);
+    }
     const toCheck = [...new Set([
       ...repoRoster.filter((r) => r.workflows > 0).map((r) => r.fullName),
       ...cachedRepos,
-    ])];
+    ])].filter((repo) => !gone.has(repo));
 
     for (const repo of toCheck) {
       let list;
       try {
         list = await gh.workflowList(repo);
       } catch (err) {
-        // A transient failure must not be read as "this repo has no workflows"
-        // and wipe its cache. Skip the repo entirely and try again next tick.
+        // A 404 is the repo itself gone, so its files go with it. Anything else
+        // is transient and must not be read as "this repo has no workflows" and
+        // wipe its cache: skip the repo entirely and try again next tick.
+        if (repoIsGone(err)) {
+          dropped += Number(stmt.deleteWorkflowRepo.run(repo).changes ?? 0);
+          log(`workflow cache: ${repo} answered ${err.status}, its files dropped`);
+          continue;
+        }
         warn(`workflow list ${repo}: ${err.message}`);
         continue;
       }
