@@ -2160,7 +2160,9 @@ async function runTiers(snap, localRunners, now) {
       drainBy: r.drainBy ?? null,
       ephemeral: Boolean(r.ephemeral),
     })),
-    queue: (snap.queue ?? []).map((q) => ({ id: q.id, repo: q.repo, labels: q.labels ?? [], queuedSinceMs: q.queuedSinceMs ?? 0 })),
+    queue: (snap.queue ?? []).map((q) => ({
+      id: q.id, repo: q.repo, labels: q.labels ?? [], queuedSinceMs: q.queuedSinceMs ?? 0, cause: q.cause ?? null,
+    })),
   });
 
   // A standby replica, or a read-only daemon, decides but never acts.

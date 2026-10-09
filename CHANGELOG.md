@@ -165,6 +165,13 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- **A runner that had updated itself read as idle mid-job.** Updated runners
+  start `Runner.Worker` from a versioned `bin.<version>/` directory, and the
+  daemon, `drain-runner.sh`, `drain-stop-when-idle.sh`, `deregister.sh` and
+  `install-hooks.sh` only looked under `bin/`. On the coordinator every busy
+  runner showed idle (2026-10-09), and draining one stopped its service under
+  the running job instead of waiting for it. All five now match both.
+
 - **`cockpit wait` could decide from GitHub before the first glance landed.**
   The loop treated "no glance yet" as a missing fleet view from the wait
   start and accelerated the GitHub cross-check while the SSE connection was

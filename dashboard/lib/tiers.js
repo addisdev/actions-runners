@@ -67,6 +67,12 @@ export const TIERS_DEFAULTS = {
 // `blind` is a cockpit-only rung (the viewer's network) and never reaches here.
 export const UNFIT_RUNGS = ['host-down', 'disk-floor', 'dead-service', 'saturated'];
 
+// Queue causes (lib/queue-cause.js) that no amount of online runners moves:
+// GitHub holding a run for a concurrency group or approval, a job for
+// GitHub-hosted runners, a label no runner has, or no telemetry at all. Such a
+// run neither resumes the overflow tier nor keeps it online.
+export const NOT_RUNNER_CAUSES = ['concurrency-block', 'github-hosted', 'label-mismatch', 'telemetry-unavailable'];
+
 const list = (v) => String(v ?? '').split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
 const int = (v, d) => {
   const n = Number(v);
@@ -169,7 +175,7 @@ export function primaryRungs(verdict, runnerStates, { primaryId, primaryIsLocal,
  * @param {object[]} input.runners  - fleet runners: { name, dirName, repo, hostId,
  *   local, labels, ghStatus, ghUnknown, workingLocally, ghBusy, drainState,
  *   drainBy, ephemeral }
- * @param {object[]} input.queue    - queued runs: { id, repo, labels, queuedSinceMs }
+ * @param {object[]} input.queue    - queued runs: { id, repo, labels, queuedSinceMs, cause }
  * @returns {{ state: object, decision: object }}
  */
 export function decideTiers({ config, now, state = null, primary, standby = [], runners = [], queue = [] }) {
@@ -243,7 +249,8 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
   const idlePrimaryFor = (q) => primaryRunners.some((r) => jobFits(q, r) && online(r) && !r.drainState && !busy(r));
   // Only work the fleet could actually run counts. A run waiting for a label
   // no runner carries is config drift; resuming a host would not move it.
-  const servable = queue.filter((q) => primaryRunners.some((r) => jobFits(q, r)) || standbyRunners.some((r) => jobFits(q, r)));
+  const servable = queue.filter((q) => !NOT_RUNNER_CAUSES.includes(q.cause)
+    && (primaryRunners.some((r) => jobFits(q, r)) || standbyRunners.some((r) => jobFits(q, r))));
   const stuck = servable.filter((q) => (q.queuedSinceMs ?? 0) > cfg.queueAgeMs
     && !idlePrimaryFor(q)
     && standbyRunners.some((r) => jobFits(q, r)));

@@ -47,6 +47,9 @@ while a tier that flaps stops and starts dozens of listeners each time.
 
 A queued run nothing in the fleet can serve (a label no runner carries) does
 not hold the tier online; that is config drift, and the Lint tab reports it.
+Neither does a run the queue classifier says is waiting on GitHub rather than
+on a runner (`concurrency-block`, `github-hosted`, `label-mismatch`,
+`telemetry-unavailable`): more runners online would not start it.
 
 Drains are graceful. `drain-runner.sh --drain` stops an idle runner and marks a
 busy one `draining`, and the completion hook stops it after its job.
