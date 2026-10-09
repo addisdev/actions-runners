@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyQueueCause, classifyQueuedRuns, queuedJobLabels, CAUSES } from '../lib/queue-cause.js';
+import { classifyQueueCause, classifyQueuedRuns, queuedJobLabels, lintFindingForRun, CAUSES } from '../lib/queue-cause.js';
 import { makeRunner, makeRunner2, makeActiveRun, makeHost } from './fixtures/index.js';
 
 const goodCapacity = { ok: true, reasons: [] };
@@ -383,5 +383,97 @@ describe('classifyQueuedRuns', () => {
 
   test('an empty snapshot yields no classifications', () => {
     assert.equal(classifyQueuedRuns({}).size, 0);
+  });
+});
+
+// A lint finding is about one job in one workflow file. It used to be reduced to
+// "this repo has a critical finding", so a TV app's CI run — jobs on
+// [self-hosted, macos, arm64], which its one runner carries, queued only because
+// that runner was busy — was labelled label-mismatch from a finding in
+// hardware.yml (runs-on: device-lab), and `cockpit wait` on that repo gave up on
+// every PR as pointless.
+describe('lint findings are matched per run', () => {
+  const TV = 'testowner/tv-app';
+  const hardwareFinding = {
+    repo: TV, path: '.github/workflows/hardware.yml', workflow: 'hardware',
+    rule: 'unmatched-label', severity: 'critical', job: 'hardware',
+    message: 'No runner matches runs-on: [self-hosted, device-lab]',
+    labels: ['self-hosted', 'device-lab'], refs: ['main'], refsChecked: ['main'],
+  };
+  const tvRunner = makeRunner({
+    name: 'test-host-tv-app', repo: TV, labels: ['self-hosted', 'macOS', 'ARM64'], ghBusy: true,
+  });
+  const ciRun = (overrides = {}) => makeActiveRun({
+    id: 4242, repo: TV, workflowName: 'CI', workflowPath: '.github/workflows/ci.yml',
+    branch: 'public-release-prep',
+    jobs: [{ status: 'queued', labels: ['self-hosted', 'macos', 'arm64'] }],
+    ...overrides,
+  });
+
+  test('a finding in another workflow file does not explain this run', () => {
+    assert.equal(lintFindingForRun(ciRun(), [hardwareFinding], ['self-hosted', 'macos', 'arm64']), null);
+  });
+
+  test('the TV app CI run is repo-capacity, not label-mismatch', () => {
+    const out = classifyQueuedRuns({
+      active: [ciRun()], runners: [tvRunner], capacity: goodCapacity, api: {}, collector: {},
+    }, [hardwareFinding]);
+    const c = out.get(4242);
+    assert.equal(c.cause, CAUSES.REPO_CAPACITY);
+    assert.ok(!c.evidence.join(' ').includes('lint'));
+  });
+
+  test('the same holds before the jobs list arrives', () => {
+    const out = classifyQueuedRuns({
+      active: [ciRun({ jobs: [] })], runners: [tvRunner], capacity: goodCapacity, api: {}, collector: {},
+    }, [hardwareFinding]);
+    assert.notEqual(out.get(4242).cause, CAUSES.LABEL_MISMATCH);
+  });
+
+  test('a run of the flagged workflow is still label-mismatch, citing the finding', () => {
+    const run = ciRun({
+      workflowName: 'hardware', workflowPath: '.github/workflows/hardware.yml', branch: 'main', jobs: [],
+    });
+    const out = classifyQueuedRuns({
+      active: [run], runners: [tvRunner], capacity: goodCapacity, api: {}, collector: {},
+    }, [hardwareFinding]);
+    const c = out.get(run.id);
+    assert.equal(c.cause, CAUSES.LABEL_MISMATCH);
+    assert.match(c.evidence.join(' '), /hardware\.yml job hardware/);
+  });
+
+  test('matches a run path carrying an @ref suffix', () => {
+    const run = ciRun({ workflowPath: '.github/workflows/hardware.yml@refs/heads/main', branch: 'main' });
+    assert.equal(lintFindingForRun(run, [hardwareFinding], null), hardwareFinding);
+  });
+
+  test('a finding about a different job in the same file is set aside when the labels are known', () => {
+    const run = ciRun({ workflowPath: '.github/workflows/hardware.yml', branch: 'main' });
+    assert.equal(lintFindingForRun(run, [hardwareFinding], ['self-hosted', 'macos', 'arm64']), null);
+    assert.equal(lintFindingForRun(run, [hardwareFinding], ['Self-Hosted', 'DEVICE-LAB']), hardwareFinding);
+  });
+
+  test('a finding absent on the run\'s linted branch does not apply', () => {
+    const f = { ...hardwareFinding, refs: ['main'], refsChecked: ['develop', 'main'] };
+    const run = ciRun({ workflowPath: '.github/workflows/hardware.yml', branch: 'develop' });
+    assert.equal(lintFindingForRun(run, [f], null), null);
+  });
+
+  test('a branch the lint never read keeps the finding', () => {
+    const run = ciRun({ workflowPath: '.github/workflows/hardware.yml', branch: 'feature/x' });
+    assert.equal(lintFindingForRun(run, [hardwareFinding], null), hardwareFinding);
+  });
+
+  test('non-critical and non-label findings never match', () => {
+    const run = ciRun({ workflowPath: '.github/workflows/hardware.yml', branch: 'main' });
+    assert.equal(lintFindingForRun(run, [{ ...hardwareFinding, severity: 'info' }], null), null);
+    assert.equal(lintFindingForRun(run, [{ ...hardwareFinding, rule: 'no-timeout' }], null), null);
+  });
+
+  test('a legacy Set of repos is still accepted', () => {
+    const out = classifyQueuedRuns({
+      active: [ciRun({ jobs: [] })], runners: [tvRunner], capacity: goodCapacity, api: {}, collector: {},
+    }, new Set([TV]));
+    assert.equal(out.get(4242).cause, CAUSES.LABEL_MISMATCH);
   });
 });

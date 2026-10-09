@@ -129,6 +129,19 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- **Lint and queue-cause false positives.** The Lint tab reported an archived
+  repo CRITICAL ("no runner is registered") because the roster skipped archived
+  repos without recording them, so their cached workflow files lived on; files of
+  deleted repos (workflow list 404) were also kept forever. Both are now dropped,
+  and the lint skips archived and unknown repos. `hosted-macos` no longer fires
+  on public repos (the upsert never refreshed `private`, so a repo made public
+  stayed private in the table) and is info when the job's `if:` reads the repo's
+  visibility. `no-cancel-in-progress` accepts an expression. Label findings on a
+  job gated by `if: vars.*` are info. The queue-cause classifier matched lint
+  findings per repo, so a queued `CI` run behind a busy runner was called
+  `label-mismatch` because a different workflow had a finding; it now matches
+  the finding's workflow file, branch and job labels (`lintFindingForRun`).
+
 - An agent configured with `FLEET_COORDINATOR` alone reported to nobody:
   `agentctl.sh` writes both coordinator keys into the plist, the unused one
   empty, and `agent.js` read them with `??`, which takes an empty string as set.

@@ -45,9 +45,9 @@ import {
   createPairingCode, exchangeCode, deviceTokenMatches, listDevices, revokeDevice, PAIRING_CODE_TTL_MS,
 } from './lib/devices.js';
 import { Alerts, loadConfig as loadAlertConfig } from './lib/alerts.js';
-import { lintAll } from './lib/lint.js';
+import { lintAll, isLintableRepo } from './lib/lint.js';
 import { adviseAll } from './lib/concurrency-advisor.js';
-import { classifyQueuedRuns, classifyQueueCause, queuedJobLabels } from './lib/queue-cause.js';
+import { classifyQueuedRuns, classifyQueueCause, queuedJobLabels, lintFindingForRun } from './lib/queue-cause.js';
 import { createSettings, SCHEMA as SETTINGS_SCHEMA, ENV_ONLY } from './lib/settings.js';
 import { headroom } from './lib/capacity.js';
 import { sizeFleet, concurrencyByRepo, queueEffect, sizingKey } from './lib/sizing.js';
@@ -341,6 +341,22 @@ const etaBaselines = createEtaBaselines(db);
 const diskForecaster = createDiskForecaster(db);
 let postureCache = null;
 
+// What the lint needs to know about each repo: archived ones are skipped (GitHub
+// will not run them), and public ones do not bill for hosted macOS. Read from the
+// roster table, which the slow loop keeps current, archived repos included.
+function lintRepoFacts() {
+  const facts = new Map();
+  try {
+    for (const r of db.prepare('SELECT full_name, archived, private FROM repos').all()) {
+      facts.set(r.full_name, {
+        archived: Boolean(r.archived),
+        private: r.private == null ? null : Boolean(r.private),
+      });
+    }
+  } catch { /* a fresh database: lint everything, treat everything as private */ }
+  return facts;
+}
+
 function lintFindings() {
   const runnersByRepo = new Map();
   const addRunner = (repo, labels) => {
@@ -349,7 +365,7 @@ function lintFindings() {
   };
   for (const r of snapshot.runners ?? []) if (r.registered) addRunner(r.repo, r.labels);
   for (const e of snapshot.elsewhere ?? []) addRunner(e.repo, e.labels);
-  return lintAll({ files: stmt.workflowFiles.all(), runnersByRepo });
+  return lintAll({ files: stmt.workflowFiles.all(), runnersByRepo, repos: lintRepoFacts() });
 }
 
 // Standing risks, on the slow loop: every probe is a read, none is free.
@@ -518,7 +534,7 @@ const stmt = {
     INSERT INTO repos (full_name, name, archived, private, pushed_at, workflows, has_runner, updated_at)
     VALUES (?,?,?,?,?,?,?,?)
     ON CONFLICT(full_name) DO UPDATE SET
-      archived=excluded.archived, pushed_at=excluded.pushed_at,
+      archived=excluded.archived, private=excluded.private, pushed_at=excluded.pushed_at,
       workflows=COALESCE(excluded.workflows, repos.workflows),
       has_runner=excluded.has_runner, updated_at=excluded.updated_at`),
 };
@@ -1824,7 +1840,11 @@ async function fastTick(progress = null) {
   // Uses fleetRunners so that runners on agent hosts are included in the label
   // map — a remote runner carrying xcode-16 should clear an xcode-16 label
   // check rather than having the classifier report LABEL_MISMATCH.
-  const criticalLintRepos = (() => {
+  //
+  // The findings are kept whole, not reduced to a set of repos: each queued run
+  // is matched to a finding in its own workflow file and job (lintFindingForRun),
+  // so a mismatch in one workflow no longer brands every queued run in the repo.
+  const criticalLintFindings = (() => {
     try {
       const byRepo = new Map();
       for (const r of fleetRunners) {
@@ -1832,21 +1852,19 @@ async function fastTick(progress = null) {
         if (!byRepo.has(r.repo)) byRepo.set(r.repo, []);
         byRepo.get(r.repo).push({ labels: (r.labels ?? []).map((l) => String(l).toLowerCase()) });
       }
-      return new Set(
-        lintAll({ files: stmt.workflowFiles.all(), runnersByRepo: byRepo })
-          .filter((f) => f.severity === 'critical')
-          .map((f) => f.repo)
-      );
+      return lintAll({ files: stmt.workflowFiles.all(), runnersByRepo: byRepo, repos: lintRepoFacts() })
+        .filter((f) => f.severity === 'critical');
     } catch {
-      // A lint failure must not take the drift view with it. Without this set
-      // the classifier simply loses one input and falls through to its other
-      // evidence, which is the right way to degrade.
-      return new Set();
+      // A lint failure must not take the drift view with it. Without these
+      // findings the classifier simply loses one input and falls through to
+      // its other evidence, which is the right way to degrade.
+      return [];
     }
   })();
 
-  const classifyRun = (run) =>
-    classifyQueueCause({
+  const classifyRun = (run) => {
+    const runLabels = queuedJobLabels(run);
+    return classifyQueueCause({
       run,
       // Fleet-wide runner list so remote runners count toward busy/idle state.
       runners: fleetRunners,
@@ -1855,9 +1873,10 @@ async function fastTick(progress = null) {
       capacity: fleetCapacity,
       api: gh.rate,
       collector: { lastError: ghError, repoErrors },
-      runLabels: queuedJobLabels(run),
-      hasLintFindings: criticalLintRepos.has(run.repo),
+      runLabels,
+      lintFinding: lintFindingForRun(run, criticalLintFindings, runLabels),
     });
+  };
 
   const drift = deriveDrift({
     runners, elsewhere, active, repos: repoRoster, now: started, classify: classifyRun,
@@ -2186,7 +2205,17 @@ async function slowTick() {
     const withRunners = new Set(dirsCache.map((d) => d.repo));
     const roster = [];
     for (const r of owned) {
-      if (r.archived) continue;
+      if (r.archived) {
+        // Recorded, not just skipped. A repo archived after the roster first saw
+        // it otherwise stays `archived = 0` in this table forever, and its cached
+        // workflow files keep the lint reporting "no runner is registered" for a
+        // repo GitHub will never run (a web repo archived when its product moved
+        // to a single repo, still reported CRITICAL weeks later).
+        // workflows is null so the existing count is kept without an API call.
+        stmt.upsertRepo.run(r.full_name, r.name, 1, b(r.private), r.pushed_at, null,
+          b(withRunners.has(r.full_name)), Date.now());
+        continue;
+      }
       let workflows = null;
       try {
         workflows = await gh.workflowCount(r.full_name);
@@ -2249,11 +2278,35 @@ async function slowTick() {
       ...cachedRepos,
     ])];
 
+    const archived = new Set(
+      db.prepare('SELECT full_name FROM repos WHERE archived = 1').all().map((r) => r.full_name)
+    );
+    const forget = (repo) => {
+      for (const row of db.prepare('SELECT path, ref FROM workflow_files WHERE repo = ?').all(repo)) {
+        stmt.deleteWorkflowFile.run(repo, row.path, row.ref);
+        dropped++;
+      }
+    };
+
     for (const repo of toCheck) {
+      // An archived repo cannot run workflows; its files are dropped rather than
+      // refreshed, so nothing downstream reads them.
+      if (archived.has(repo)) {
+        forget(repo);
+        continue;
+      }
       let list;
       try {
         list = await gh.workflowList(repo);
       } catch (err) {
+        // A 404 is not transient: the repo was deleted (or renamed away from
+        // this name). Without this its cached files were re-checked and kept
+        // forever, linted under a name that no longer exists.
+        if (err?.status === 404) {
+          warn(`workflow list ${repo}: 404, dropping its cached workflow files`);
+          forget(repo);
+          continue;
+        }
         // A transient failure must not be read as "this repo has no workflows"
         // and wipe its cache. Skip the repo entirely and try again next tick.
         warn(`workflow list ${repo}: ${err.message}`);
@@ -2889,9 +2942,12 @@ const server = http.createServer(async (req, res) => {
     for (const r of snapshot.runners) if (r.registered) addRunner(r.repo, r.labels);
     for (const e of snapshot.elsewhere) addRunner(e.repo, e.labels);
 
-    const files = stmt.workflowFiles.all();
+    const repoFacts = lintRepoFacts();
+    // Archived and no-longer-owned repos are not linted, so they are not
+    // counted as checked either.
+    const files = stmt.workflowFiles.all().filter((f) => isLintableRepo(repoFacts, f.repo));
     try {
-      const findings = lintAll({ files, runnersByRepo });
+      const findings = lintAll({ files, runnersByRepo, repos: repoFacts });
       return json(res, {
         // `files` counts distinct workflow files; `checks` counts file×ref pairs
         // actually linted. Reporting only the latter as "files" would claim 54
@@ -2944,15 +3000,15 @@ const server = http.createServer(async (req, res) => {
           if (!runnersByRepo.has(r.repo)) runnersByRepo.set(r.repo, []);
           runnersByRepo.get(r.repo).push({ labels: r.labels.map((l) => l.toLowerCase()) });
         }
-        return lintAll({ files: stmt.workflowFiles.all(), runnersByRepo });
+        return lintAll({ files: stmt.workflowFiles.all(), runnersByRepo, repos: lintRepoFacts() });
       } catch { return []; }
     })();
-    const reposWithLintFindings = new Set(lintFindings.filter((f) => f.severity === 'critical').map((f) => f.repo));
+    // Whole findings, matched per run by workflow file and job labels.
     const causes = classifyQueuedRuns({
       ...snapshot,
       runners: fleetRunners,
       capacity: snapshot.fleetCapacity ?? snapshot.capacity,
-    }, reposWithLintFindings);
+    }, lintFindings.filter((f) => f.severity === 'critical'));
     return json(res, { causes: Object.fromEntries(causes) });
   }
 

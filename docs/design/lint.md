@@ -41,6 +41,19 @@ Two scoping rules stop false positives:
   on any machine.** A repo that splits `ci` and `release` across two hosts on
   purpose would otherwise be flagged as broken by a check that only saw the
   local runners.
+- **Only repos GitHub will run are linted.** An archived repo is skipped (GitHub
+  runs nothing in it), and so is a repo the roster no longer lists (deleted or
+  transferred). The slow loop records archived repos and drops cached workflow
+  files for archived repos and for repos whose workflow list answers 404.
+- **Gated jobs are info, not critical.** A label finding on a job whose `if:`
+  reads a repo variable (`if: vars.LAB_HOST != ''`) is reported as info: GitHub
+  skips that job while the variable is unset, so it never queues.
+- **Hosted macOS on a public repo is free** and is not reported. A private repo's
+  job whose `if:` reads the repo's visibility is info. Unknown visibility counts
+  as private.
+- **`cancel-in-progress` may be an expression**, such as
+  `${{ github.event_name == 'pull_request' }}`, which cancels stale PR runs
+  without ever cancelling a push to main.
 
 ## It lints the branches that actually run
 
