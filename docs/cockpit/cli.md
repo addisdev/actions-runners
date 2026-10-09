@@ -172,9 +172,14 @@ $ cockpit wait comet-web --pr 96
 | `2` | `⏹ not waiting — <reason>` | Waiting cannot end well: the host is down, the disk floor is holding jobs, GitHub is refusing jobs for billing, or one of the checks is queued with a cause that never clears. Stop and report the reason |
 | `3` | `…timed out` or `? dashboard unreachable` | The timeout passed, or (for `--sha` and `--branch`) the dashboard could not be reached; try `cockpit sentinel` |
 
-The deadline is checked on a timer, so a wait always ends by `--timeout`, even
-on a stream that has gone quiet. A dropped stream is reopened with backoff (3
-seconds, doubling to 30), and a dead tunnel is replaced.
+The deadline is a wall-clock timer of its own, so a wait always ends by
+`--timeout`: no stream, tunnel or `gh` call can hold it (each GitHub ask gets at
+most 25 seconds, capped by the time left), and the command line adds a last
+backstop that exits `3` thirty seconds past the deadline whatever else is
+happening. A dropped stream is reopened with backoff (3 seconds, doubling to
+30). A stream with no glance and no keepalive for 75 seconds (fleetd sends one
+every 25) is treated as dead: the wait drops its tunnel, opens a new one and
+asks GitHub meanwhile.
 
 ### `--pr` judges the head commit
 
@@ -195,7 +200,8 @@ the daemon's REST budget):
 
 | Cockpit's view | GitHub is asked |
 |---|---|
-| More than 4 minutes old, missing, or the dashboard unreachable | Every 30 seconds |
+| More than 4 minutes old, missing, silent, or the dashboard unreachable | Every 30 seconds |
+| Fresh, but with no runs for this PR (finished before the view's window) | At once, then every 30 seconds |
 | Fresh | Every 2 minutes |
 
 GitHub's **finished** answer ends the wait, and says that it came from GitHub

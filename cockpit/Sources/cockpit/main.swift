@@ -153,6 +153,13 @@ final class RouteCache: @unchecked Sendable {
         lock.withLock { route = r }
         return r.baseURL
     }
+
+    /// The route answered nothing: drop it, so the next use opens a new tunnel
+    /// instead of reconnecting to a forward whose far end is gone.
+    func invalidate() {
+        lock.withLock { route = nil }
+        transport.close()
+    }
 }
 
 func printJSON<T: Encodable>(_ v: T) {
@@ -355,6 +362,14 @@ case "wait":
     // One route, reopened when the tunnel dies; an unreachable dashboard no
     // longer ends the wait (2026-10-03/04: "Dashboard unreachable" at load
     // 567) while GitHub can still answer.
+    // The last word on the deadline, outside Swift concurrency altogether: if
+    // anything below still has not answered `timeout` + 30 s from now, say so
+    // and exit (2026-10-09: waits ran 1.5 h past --timeout, see WaitLoop).
+    DispatchQueue.global().asyncAfter(wallDeadline: .now() + timeout + 30) {
+        print("… \(target.label): timed out (no answer from cockpit or GitHub by the deadline)")
+        transport.close()
+        exit(3)
+    }
     let routes = RouteCache(transport)
     if target.pr == nil, (try? await routes.base()) == nil {
         // Only a PR can be asked of GitHub directly; anything else needs the dashboard.
@@ -370,6 +385,7 @@ case "wait":
             }
         }
     )
+    loop.onDrop = { routes.invalidate() }
     if !opts.json { loop.progress = { FileHandle.standardError.write(Data(($0 + "\n").utf8)) } }
     report(await loop.run())
 case "top":

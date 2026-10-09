@@ -146,6 +146,24 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- **`cockpit wait` outlived its deadline by hours.** On 2026-10-09 three
+  `cockpit wait --pr` sessions (aliquant-backend #54, aliquant-web #116,
+  homelab-map #11) ran 1 h 37 min with no timeout while all three PRs were
+  merged and green. `sample` put each one in `-[NSConcreteTask waitUntilExit]`
+  inside the GitHub cross-check, with the `gh` child already gone: `gh` had
+  overrun its 20 s budget, the timer called `terminate()` while a worker sat
+  in `waitUntilExit()`, and Foundation never marked the task finished (a
+  stand-alone repro hangs within a few tries). The loop awaited that ask
+  inline, so neither the deadline nor cockpit's own (live) stream could end
+  the wait, and the wait's SSH tunnel stayed up with it. Now `Subprocess` runs
+  every short-lived program without `waitUntilExit` and always answers by its
+  deadline; the wait's deadline is a wall-clock timer of its own
+  (`Deadline.race`), each GitHub ask has its own budget, and the CLI exits `3`
+  thirty seconds past `--timeout` whatever else is happening. A stream silent
+  for 75 s is torn down and its tunnel reopened, and a view with no runs for
+  the PR asks GitHub at once instead of after two minutes (short `--fresh`
+  retries had exited "no runs seen" on a green PR).
+
 - Runners ran jobs with whatever PATH the shell that registered them had:
   `config.sh` copies the caller's `$PATH` into `.path`, and the runner gives
   jobs that, not `.env`'s. runner-host had six PATHs (17 runners with no

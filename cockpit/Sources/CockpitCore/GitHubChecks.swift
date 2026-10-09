@@ -119,29 +119,11 @@ public struct GHChecksProbe: Sendable {
         ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"].first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
+    /// Never hangs past `timeout`: see `Subprocess` for the 2026-10-09 hang
+    /// this used to have (terminate() racing waitUntilExit()).
     static func gh(_ args: [String], timeout: TimeInterval) async -> Data? {
-        await withCheckedContinuation { (c: CheckedContinuation<Data?, Never>) in
-            let p = Process()
-            if let path = ghPath {
-                p.executableURL = URL(fileURLWithPath: path); p.arguments = args
-            } else {
-                p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.arguments = ["gh"] + args
-            }
-            let out = Pipe()
-            p.standardOutput = out
-            p.standardError = FileHandle.nullDevice
-            p.standardInput = FileHandle.nullDevice
-            do { try p.run() } catch { c.resume(returning: nil); return }
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-                if p.isRunning { p.terminate() }
-            }
-            // Read to EOF before waiting: a reply larger than the pipe buffer
-            // would otherwise block gh on write and never exit.
-            DispatchQueue.global().async {
-                let data = out.fileHandleForReading.readDataToEndOfFile()
-                p.waitUntilExit()
-                c.resume(returning: p.terminationStatus == 0 ? data : nil)
-            }
-        }
+        let (path, argv) = ghPath.map { ($0, args) } ?? ("/usr/bin/env", ["gh"] + args)
+        guard let r = await Subprocess.run(path, argv, timeout: timeout), r.status == 0 else { return nil }
+        return r.stdout
     }
 }
