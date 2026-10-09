@@ -13,6 +13,7 @@ mk() {
 }
 mk drifted /usr/bin:/bin
 mk fine "$WANT"
+mk drained /usr/bin:/bin; touch "$T/drained/.drain"
 
 out="$(FLEET_ROOT="$T" FLEET_RUNNER_PATH="$WANT" "$HERE/runner-path.sh")"
 echo "$out" | grep -q "would drifted" || fail "dry run did not list the drifted runner: $out"
@@ -25,4 +26,6 @@ grep -qx "PATH=$WANT" "$T/drifted/.env" || fail ".env PATH not rewritten"
 grep -qx "WB_SKIP=1" "$T/drifted/.env" || fail "other .env lines lost"
 [ "$(tr '\n' ' ' < "$T/drifted/svc.log")" = "stop start " ] || fail "runner not restarted"
 [ ! -f "$T/fine/svc.log" ] || fail "a matching runner was restarted"
+[ "$(cat "$T/drained/.path")" = "$WANT" ] || fail "drained runner .path not rewritten"
+[ ! -f "$T/drained/svc.log" ] || fail "a drained runner was started (undoes the drain)"
 echo "ok runner-path"
