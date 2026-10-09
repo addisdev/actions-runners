@@ -134,6 +134,8 @@ jobs:
 
       - name: Preflight CLI tool tests
         run: bash scripts/test-preflight-tools.sh
+      - name: runner-path.sh — one job PATH per runner
+        run: bash scripts/test-runner-path.sh
 
   # ---------------------------------------------------------------------------
   # Offline release check (no network, checks tracked files for private data)

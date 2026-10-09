@@ -93,11 +93,21 @@ fi
 [ "$(shasum -a 256 "$CACHE" | cut -d' ' -f1)" = "$SHA" ] || { echo "checksum mismatch on $CACHE" >&2; exit 1; }
 tar xzf "$CACHE"
 
+# The PATH every job on this fleet gets, on every host. Written to .env AND to
+# .path: config.sh records the CALLER's $PATH in .path, and the runner gives
+# jobs that, so a runner registered from an SSH session, a login shell or a
+# script each ran jobs with a different PATH. runner-host had six — 17 runners
+# with no Homebrew at all, nine with nvm's Node and SnowSQL from an interactive
+# shell — and a second host's `python3` resolved to Homebrew's 3.14 where the
+# twin's was Xcode's 3.9, which broke kit-ci there. scripts/runner-path.sh
+# brings existing runners in line.
+RUNNER_PATH="${FLEET_RUNNER_PATH:-/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin}"
+
 # A LaunchAgent does not inherit a login shell's PATH, so anything under
 # /opt/homebrew is missing unless it is named here. That failure reads as a
 # missing dependency rather than a missing PATH, which costs an hour.
-cat > .env <<'ENV'
-PATH=/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin
+cat > .env <<ENV
+PATH=$RUNNER_PATH
 ENV
 # Same reason: Gradle finds the SDK through ANDROID_HOME, and a LaunchAgent has
 # no login shell to set it. Only written when the SDK is actually installed.
@@ -157,6 +167,9 @@ LABELS="${LABEL_CSV:+--labels $LABEL_CSV}"
 # any exclusion that has to be remembered afterwards will not be.
 mkdir -p _work
 touch _work/.metadata_never_index
+
+# After config.sh, which has just written the caller's PATH here (see RUNNER_PATH).
+printf '%s\n' "$RUNNER_PATH" > .path
 
 ./svc.sh install >/dev/null
 ./svc.sh start >/dev/null
