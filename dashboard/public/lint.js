@@ -165,7 +165,7 @@ export function render() {
           ['playwright-shared-cache', 'Concurrent browser installs on one Mac hang on __dirlock when runners share the default cache.'],
           ['playwright-install-timeout', 'A stuck browser download holds the runner until the job timeout — often hours on self-hosted.'],
           ['playwright-no-failure-artifacts', 'Failed UI tests need traces or HTML reports — logs alone rarely show what broke.'],
-          ['no-cancel-in-progress', 'Every push to a PR starts another run while the last one is still going, and they queue.'],
+          ['no-cancel-in-progress', 'Every push to a PR starts another run while the last one is still going, and they queue. An expression on the event or ref (cancel PR runs, never main) counts.'],
           ['unparsed', 'The parser would not guess. Nothing was checked for that file or job.'],
         ].map(([rule, why]) =>
           h('tr', {},

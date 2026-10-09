@@ -13,7 +13,7 @@ something that actually went wrong on this fleet, not to a style preference:
 | `unserved` | the repo has self-hosted jobs and no runner registered anywhere |
 | `no-timeout` | a self-hosted job with no `timeout-minutes`; GitHub's 6-hour default never applied to self-hosted |
 | `hosted-macos` | a job on GitHub-hosted macOS, which bills at 10x against the included allowance |
-| `no-cancel-in-progress` | a `pull_request` workflow that does not supersede its own runs |
+| `no-cancel-in-progress` | a `pull_request` workflow that does not supersede its own runs. `true`, or an expression on the event or ref (`${{ github.event_name == 'pull_request' }}`, as [workflows.md](../workflows.md) recommends), at workflow level or on every job; any other expression is info |
 | `unparsed` | the parser would not guess — nothing was checked there |
 
 **The YAML is parsed, not grepped.**
@@ -53,7 +53,12 @@ Two scoping rules stop false positives:
   as private.
 - **`cancel-in-progress` may be an expression**, such as
   `${{ github.event_name == 'pull_request' }}`, which cancels stale PR runs
-  without ever cancelling a push to main.
+  without ever cancelling a push to main. It must read the event or the ref; any
+  other expression is info. Job-level `concurrency:` counts when the workflow
+  has none that cancels, and the jobs without it are named.
+- **A repo no longer on the owner's roster loses its cached files**, not only one
+  that 404s: a renamed or transferred repo still answers under its old name
+  through GitHub's redirect.
 
 ## It lints the branches that actually run
 

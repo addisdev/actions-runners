@@ -340,6 +340,18 @@ export const UPSERT_JOB = `
       completed_at=excluded.completed_at, runner_name=excluded.runner_name,
       queued_ms=excluded.queued_ms, duration_ms=excluded.duration_ms, seen_at=excluded.seen_at`;
 
+// The repo roster write. name and private are refreshed on conflict along with
+// the rest: private was left out, so a repo made public on GitHub stayed private
+// here for good, and the hosted-macOS lint and posture checks read that column.
+export const UPSERT_REPO = `
+    INSERT INTO repos (full_name, name, archived, private, pushed_at, workflows, has_runner, updated_at)
+    VALUES (?,?,?,?,?,?,?,?)
+    ON CONFLICT(full_name) DO UPDATE SET
+      name=excluded.name, archived=excluded.archived, private=excluded.private,
+      pushed_at=excluded.pushed_at,
+      workflows=COALESCE(excluded.workflows, repos.workflows),
+      has_runner=excluded.has_runner, updated_at=excluded.updated_at`;
+
 export function openDb(path) {
   mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);

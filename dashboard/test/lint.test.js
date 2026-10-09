@@ -169,6 +169,123 @@ jobs:
   });
 });
 
+// Builds a PR workflow with the given workflow-level and per-job concurrency
+// blocks (YAML text, already indented for their position).
+function prWorkflow({ concurrency = '', jobs = { build: '' } } = {}) {
+  const jobBlocks = Object.entries(jobs).map(([name, extra]) => `  ${name}:
+    runs-on: ubuntu-latest
+${extra}    steps:
+      - run: echo hi
+`).join('');
+  return `name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+${concurrency}jobs:
+${jobBlocks}`;
+}
+
+const cancelFindings = (content) =>
+  lint(content).filter((f) => f.rule === 'no-cancel-in-progress');
+
+describe('no-cancel-in-progress: expressions and job-level concurrency', () => {
+  test('a literal true passes', () => {
+    const wf = prWorkflow({ concurrency: 'concurrency:\n  group: ci-${{ github.ref }}\n  cancel-in-progress: true\n' });
+    assert.deepEqual(cancelFindings(wf), []);
+  });
+
+  test('the recommended event_name expression passes', () => {
+    const wf = prWorkflow({
+      concurrency: "concurrency:\n  group: ci-${{ github.ref }}\n  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n",
+    });
+    assert.deepEqual(cancelFindings(wf), []);
+  });
+
+  test("actions-runners' own ref comparison passes", () => {
+    const wf = prWorkflow({
+      concurrency: "concurrency:\n  group: ${{ github.ref }}-ci\n  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}\n",
+    });
+    assert.deepEqual(cancelFindings(wf), []);
+  });
+
+  test('a quoted expression and other ref reads pass', () => {
+    for (const expr of [
+      `"\${{ github.event_name == 'pull_request' }}"`,
+      `\${{ github.head_ref != '' }}`,
+      `\${{ !contains(github.ref_name, 'release') }}`,
+      `\${{ startsWith(github.event_name, 'pull_request') }}`,
+    ]) {
+      const wf = prWorkflow({ concurrency: `concurrency:\n  group: g\n  cancel-in-progress: ${expr}\n` });
+      assert.deepEqual(cancelFindings(wf), [], expr);
+    }
+  });
+
+  test('no concurrency at all is a warning', () => {
+    const [f, ...rest] = cancelFindings(prWorkflow());
+    assert.equal(rest.length, 0);
+    assert.equal(f.severity, 'warning');
+    assert.match(f.message, /no concurrency group/);
+    assert.match(f.hint, /github\.event_name == 'pull_request'/);
+  });
+
+  test('a group with cancel-in-progress false or missing is a warning', () => {
+    for (const block of [
+      'concurrency:\n  group: g\n  cancel-in-progress: false\n',
+      'concurrency:\n  group: g\n',
+      'concurrency: ci-group\n',
+    ]) {
+      const [f] = cancelFindings(prWorkflow({ concurrency: block }));
+      assert.equal(f?.severity, 'warning', block);
+      assert.match(f.message, /cancel-in-progress is not true/);
+    }
+  });
+
+  test('an expression that reads neither event nor ref is info, not a warning', () => {
+    const wf = prWorkflow({ concurrency: 'concurrency:\n  group: g\n  cancel-in-progress: ${{ inputs.cancel }}\n' });
+    const [f, ...rest] = cancelFindings(wf);
+    assert.equal(rest.length, 0);
+    assert.equal(f.severity, 'info');
+  });
+
+  test('job-level concurrency on every job passes', () => {
+    const wf = prWorkflow({
+      jobs: {
+        build: "    concurrency:\n      group: build-${{ github.ref }}\n      cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n",
+        test: '    concurrency:\n      group: test-${{ github.ref }}\n      cancel-in-progress: true\n',
+      },
+    });
+    assert.deepEqual(cancelFindings(wf), []);
+  });
+
+  test('job-level concurrency on some jobs names the ones without it', () => {
+    const wf = prWorkflow({
+      jobs: {
+        build: '    concurrency:\n      group: build-${{ github.ref }}\n      cancel-in-progress: true\n',
+        test: '',
+        lint: '    concurrency: lint-group\n',
+      },
+    });
+    const [f, ...rest] = cancelFindings(wf);
+    assert.equal(rest.length, 0);
+    assert.equal(f.severity, 'warning');
+    assert.match(f.message, /test, lint do not cancel/);
+  });
+
+  test('a job-level block covers a workflow-level group that does not cancel', () => {
+    const wf = prWorkflow({
+      concurrency: 'concurrency:\n  group: g\n',
+      jobs: { build: '    concurrency:\n      group: b\n      cancel-in-progress: true\n' },
+    });
+    assert.deepEqual(cancelFindings(wf), []);
+  });
+
+  test('push-only workflows are not checked', () => {
+    const wf = prWorkflow().replace('  pull_request:\n', '');
+    assert.deepEqual(cancelFindings(wf), []);
+  });
+});
+
 const CI_SELF_HOSTED = `
 name: Web CI
 on: [push]

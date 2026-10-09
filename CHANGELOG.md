@@ -136,7 +136,10 @@ Portable, mobile-first dashboard.
   and the lint skips archived and unknown repos. `hosted-macos` no longer fires
   on public repos (the upsert never refreshed `private`, so a repo made public
   stayed private in the table) and is info when the job's `if:` reads the repo's
-  visibility. `no-cancel-in-progress` accepts an expression. Label findings on a
+  visibility. `no-cancel-in-progress` accepts an expression that reads the event
+  or the ref (any other expression is info) and counts job-level concurrency;
+  cached workflow files of repos gone from the roster are dropped even when the
+  old name still redirects, and the upsert refreshes `name` too. Label findings on a
   job gated by `if: vars.*` are info. The queue-cause classifier matched lint
   findings per repo, so a queued `CI` run behind a busy runner was called
   `label-mismatch` because a different workflow had a finding; it now matches

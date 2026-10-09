@@ -13,7 +13,8 @@ import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 
-import { openDb, setMeta, getMeta, UPSERT_JOB } from './lib/db.js';
+import { openDb, setMeta, getMeta, UPSERT_JOB, UPSERT_REPO } from './lib/db.js';
+import { reposToPrune, repoIsGone } from './lib/workflow-cache.js';
 import { GitHub, isActiveRunStatus } from './lib/github.js';
 import {
   discoverRunnerDirs,
@@ -530,13 +531,7 @@ const stmt = {
     GROUP BY head_branch HAVING n >= 2
     ORDER BY n DESC`),
   defaultBranchOf: db.prepare('SELECT default_branch FROM repos WHERE full_name = ?'),
-  upsertRepo: db.prepare(`
-    INSERT INTO repos (full_name, name, archived, private, pushed_at, workflows, has_runner, updated_at)
-    VALUES (?,?,?,?,?,?,?,?)
-    ON CONFLICT(full_name) DO UPDATE SET
-      archived=excluded.archived, private=excluded.private, pushed_at=excluded.pushed_at,
-      workflows=COALESCE(excluded.workflows, repos.workflows),
-      has_runner=excluded.has_runner, updated_at=excluded.updated_at`),
+  upsertRepo: db.prepare(UPSERT_REPO),
 };
 
 const b = (v) => (v ? 1 : 0);
@@ -2200,8 +2195,12 @@ function activeRefsFor(repo, defaultBranch) {
 async function slowTick() {
   const started = Date.now();
   refreshPosture();
+  // The owner's non-archived repos as of this tick, or null when the roster
+  // refresh failed. Workflow files for anything outside it are dropped below.
+  let liveRepos = null;
   try {
     const owned = await gh.ownedRepos();
+    liveRepos = new Set(owned.filter((r) => !r.archived).map((r) => r.full_name));
     const withRunners = new Set(dirsCache.map((d) => d.repo));
     const roster = [];
     for (const r of owned) {
@@ -2273,11 +2272,6 @@ async function slowTick() {
     // deleted drops to zero in the roster, and iterating the roster alone would
     // skip it forever, leaving the lint reporting on a file nobody can see.
     const cachedRepos = db.prepare('SELECT DISTINCT repo FROM workflow_files').all().map((r) => r.repo);
-    const toCheck = [...new Set([
-      ...repoRoster.filter((r) => r.workflows > 0).map((r) => r.fullName),
-      ...cachedRepos,
-    ])];
-
     const archived = new Set(
       db.prepare('SELECT full_name FROM repos WHERE archived = 1').all().map((r) => r.full_name)
     );
@@ -2287,6 +2281,20 @@ async function slowTick() {
         dropped++;
       }
     };
+
+    // Repos no longer on the owner's roster are dropped without being listed.
+    // A deleted repo would 404 below, but a renamed or transferred one still
+    // answers under its old name through GitHub's redirect, so its files were
+    // kept and linted under a name the roster no longer has.
+    const gone = new Set(reposToPrune({ cachedRepos, liveRepos }));
+    for (const repo of gone) {
+      log(`workflow cache: ${repo} is no longer on the roster, dropping its cached workflow files`);
+      forget(repo);
+    }
+    const toCheck = [...new Set([
+      ...repoRoster.filter((r) => r.workflows > 0).map((r) => r.fullName),
+      ...cachedRepos,
+    ])].filter((repo) => !gone.has(repo));
 
     for (const repo of toCheck) {
       // An archived repo cannot run workflows; its files are dropped rather than
@@ -2299,16 +2307,16 @@ async function slowTick() {
       try {
         list = await gh.workflowList(repo);
       } catch (err) {
-        // A 404 is not transient: the repo was deleted (or renamed away from
-        // this name). Without this its cached files were re-checked and kept
-        // forever, linted under a name that no longer exists.
-        if (err?.status === 404) {
-          warn(`workflow list ${repo}: 404, dropping its cached workflow files`);
+        // A 404 or 410 is not transient: the repo was deleted (or renamed away
+        // from this name). Without this its cached files were re-checked and
+        // kept forever, linted under a name that no longer exists. Anything else
+        // must not be read as "this repo has no workflows" and wipe its cache:
+        // skip the repo entirely and try again next tick.
+        if (repoIsGone(err)) {
+          warn(`workflow list ${repo}: ${err.status}, dropping its cached workflow files`);
           forget(repo);
           continue;
         }
-        // A transient failure must not be read as "this repo has no workflows"
-        // and wipe its cache. Skip the repo entirely and try again next tick.
         warn(`workflow list ${repo}: ${err.message}`);
         continue;
       }

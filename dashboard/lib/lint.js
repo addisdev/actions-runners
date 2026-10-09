@@ -84,6 +84,30 @@ function hasFailureArtifacts(job) {
   return false;
 }
 
+// Whether a concurrency block cancels superseded PR runs: 'yes', 'no', or
+// 'unknown' for an expression this file cannot evaluate. null means there is no
+// block at all. A bare string is a group name only, so it never cancels.
+//
+// An expression that reads the event or the ref counts as yes. That is the
+// recommended shape, `${{ github.event_name == 'pull_request' }}`: cancel a PR
+// run its next push supersedes, never cancel a push to main. This repo's own
+// ci.yml does the same with `${{ github.ref != 'refs/heads/main' }}`. Requiring
+// a literal `true` reported both as broken, and the only way to silence it was
+// to start cancelling main.
+const PR_SCOPED_RE = /\bgithub\.(event_name|ref|ref_name|ref_type|ref_protected|head_ref|base_ref)\b|\bpull_request\b/;
+
+function cancelVerdict(concurrency) {
+  if (concurrency == null) return null;
+  if (typeof concurrency !== 'object') return 'no';
+  const value = concurrency['cancel-in-progress'];
+  if (value === true) return 'yes';
+  if (value == null || value === false) return 'no';
+  const s = String(value).trim();
+  if (/^true$/i.test(s)) return 'yes';
+  if (!s.includes('${{')) return 'no';
+  return PR_SCOPED_RE.test(s) ? 'yes' : 'unknown';
+}
+
 // The repository/organization variables a job-level `if:` gates on, e.g.
 // `if: vars.LAB_HOST != ''`. Such a job is SKIPPED, not queued, while the
 // variable is unset — which is exactly how a workflow parks a job for hardware
@@ -155,22 +179,44 @@ export function lintWorkflow({ repo, path, name, content, runnerLabelSets, fleet
   // runner instead.
   const reusable = triggerNames.length > 0 && triggerNames.every((t) => norm(t) === 'workflow_call');
 
-  const cancel = doc.concurrency && typeof doc.concurrency === 'object'
-    ? doc.concurrency['cancel-in-progress']
-    : null;
-
-  // An expression counts: `${{ github.event_name == 'pull_request' }}` (or
-  // `${{ github.ref != 'refs/heads/main' }}`) is the usual way to cancel stale
-  // PR runs while never cancelling a push to main, which is the behaviour this
-  // rule asks for. Only its value at run time is unknown, not its intent.
-  const cancelIsExpression = typeof cancel === 'string' && cancel.includes('${{');
-  if (onPullRequest && cancel !== true && !cancelIsExpression && !reusable) {
-    add('no-cancel-in-progress', 'warning', null,
-      doc.concurrency
-        ? 'Runs on pull_request with a concurrency group but cancel-in-progress is not true'
-        : 'Runs on pull_request with no concurrency group',
+  // Concurrency can be set on the workflow or on each job. The workflow-level
+  // block covers every job; failing that, each job has to cancel through its
+  // own block, and only the jobs that do not are reported.
+  const workflowCancel = cancelVerdict(doc.concurrency);
+  if (onPullRequest && !reusable && workflowCancel !== 'yes') {
+    const jobCancel = Object.entries(jobs)
+      .filter(([, job]) => job && typeof job === 'object')
+      .map(([jobName, job]) => {
+        const own = cancelVerdict(job.concurrency);
+        const verdict = own === 'yes' ? 'yes'
+          : own === 'unknown' || workflowCancel === 'unknown' ? 'unknown'
+            : 'no';
+        return { jobName, own, verdict };
+      });
+    const lacking = jobCancel.filter((j) => j.verdict === 'no');
+    const anyJobBlock = jobCancel.some((j) => j.own != null);
+    const hint =
       'Each push to a PR starts another run while the previous one is still going. With one runner ' +
-        'per repo they queue behind each other, so the newest change waits on results nobody wants.');
+      'per repo they queue behind each other, so the newest change waits on results nobody wants. ' +
+      "`cancel-in-progress: ${{ github.event_name == 'pull_request' }}` cancels superseded PR runs " +
+      'and never a push to main.';
+
+    if (lacking.length && jobCancel.some((j) => j.verdict === 'yes')) {
+      add('no-cancel-in-progress', 'warning', null,
+        `Runs on pull_request but ${lacking.map((j) => j.jobName).join(', ')} ` +
+          `${lacking.length === 1 ? 'does' : 'do'} not cancel superseded runs (other jobs do)`,
+        hint);
+    } else if (lacking.length) {
+      add('no-cancel-in-progress', 'warning', null,
+        doc.concurrency || anyJobBlock
+          ? 'Runs on pull_request with a concurrency group but cancel-in-progress is not true'
+          : 'Runs on pull_request with no concurrency group',
+        hint);
+    } else if (jobCancel.some((j) => j.verdict === 'unknown')) {
+      add('no-cancel-in-progress', 'info', null,
+        'cancel-in-progress is an expression that does not read the event or the ref',
+        'Its value depends on the run, so whether PR runs supersede each other was not judged.');
+    }
   }
 
   for (const [jobName, job] of Object.entries(jobs)) {
