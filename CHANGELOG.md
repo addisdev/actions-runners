@@ -181,6 +181,8 @@ Portable, mobile-first dashboard.
   `FLEET_RUNNER_PATH` into `.path` after `config.sh`; `scripts/runner-path.sh`
   aligns existing runners (idle ones only, dry run by default) and join-host's
   preflight reports drift.
+  `runner-path.sh --apply` leaves a drained runner (`.drain`) stopped: it
+  writes the new PATH but no longer starts it, which had undone every drain.
 
 - **Lint and queue-cause false positives.** The Lint tab reported an archived
   repo CRITICAL ("no runner is registered") because the roster skipped archived

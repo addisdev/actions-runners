@@ -15,7 +15,7 @@
 # Changing a runner's PATH changes which python3, node or git its jobs find.
 # Dry run by default; --apply touches only runners with no job running
 # (no Runner.Worker under their directory) and restarts each so .path is read
-# again. A busy runner is reported and left for the next run.
+# again; a drained runner gets the new PATH but stays stopped. A busy runner is reported and left for the next run.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -55,6 +55,12 @@ for dir in "$ROOT"/*/; do
     tmp="$(mktemp)"
     sed "s|^PATH=.*|PATH=$WANT|" "$dir/.env" > "$tmp" && cat "$tmp" > "$dir/.env"
     rm -f "$tmp"
+  fi
+  # A drained runner (scripts/drain-runner.sh) is stopped on purpose: give it the
+  # PATH for when it is resumed, but starting it here would undo the drain.
+  if [ -f "$dir/.drain" ]; then
+    echo "  set   $name (drained: left stopped)"
+    changed=$((changed + 1)); continue
   fi
   if (cd "$dir" && ./svc.sh stop >/dev/null 2>&1; ./svc.sh start >/dev/null 2>&1); then
     echo "  set   $name"
