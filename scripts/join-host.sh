@@ -10,7 +10,8 @@
 # What it does, each step safe to repeat:
 #   1. Preflight: macOS, Node, a git clone, fleet.env with the agent settings,
 #      the coordinator answering, and the toolchains jobs use (Xcode, Java,
-#      Android SDK, gh). Missing toolchains are reported with how to install
+#      Android SDK, gh, and the plain CLI tools in scripts/cli-tools.txt such
+#      as shellcheck). Missing toolchains are reported with how to install
 #      them; only Xcode changes the plan (Simulator runners are skipped without it).
 #   2. --install-tools: `brew install` the formulae that are missing.
 #   3. The agent (dashboard/agentctl.sh install): heartbeats out to the
@@ -35,7 +36,7 @@ while [ $# -gt 0 ]; do
     --apply) APPLY=1 ;;
     --install-tools) INSTALL_TOOLS=1 ;;
     --only|--tokens-from|--coordinator) PASS+=("$1" "${2:?$1 needs a value}"); shift ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -96,6 +97,21 @@ fi
 
 MISSING_FORMULAE=()
 for f in gh jq node; do command -v "$f" >/dev/null || MISSING_FORMULAE+=("$f"); done
+
+# Every tool in cli-tools.txt, not just the inferred ones: the workflow history
+# lives in the coordinator's database, and this host will take the same jobs.
+# Looked up on the runners' PATH, which is what a job sees.
+ALL_TOOLS="$("$HERE/scripts/check-tools.sh" --list all)"
+while IFS=$'\t' read -r state tool formula why; do
+  if [ "$state" = ok ]; then
+    ok "$tool"
+  elif [ "$formula" = - ]; then
+    warn "no $tool on the runners' PATH — $why"
+  else
+    warn "no $tool on the runners' PATH ($why): brew install $formula, or --install-tools"
+    case " ${MISSING_FORMULAE[*]:-} " in *" $formula "*) ;; *) MISSING_FORMULAE+=("$formula") ;; esac
+  fi
+done < <("$HERE/scripts/check-tools.sh" $ALL_TOOLS)
 [ -x /opt/homebrew/opt/openjdk@21/bin/java ] || /usr/libexec/java_home >/dev/null 2>&1 || MISSING_FORMULAE+=("openjdk@21")
 
 if [ "$PROBLEMS" -gt 0 ]; then

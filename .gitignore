@@ -61,6 +61,9 @@
 !scripts/
 !scripts/*.sh
 !scripts/*.py
+# The CLI tools preflight.sh and join-host.sh check. Named, not `!scripts/*.txt`:
+# a token list piped to mirror-runners.sh --tokens-from must never be tracked.
+!scripts/cli-tools.txt
 
 # Runner job hooks, referenced from each runner's .env. Same directory-first
 # rule as above. The admission state these write — .admission/, holding one slot

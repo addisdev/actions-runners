@@ -12,6 +12,16 @@ Portable, mobile-first dashboard.
 
 ### Added
 
+- **Preflight checks plain CLI tools.** `preflight.sh` checked Xcode, Postgres,
+  Java, node and gh but nothing a Makefile calls, so a repo's `make lint` met
+  `make: shellcheck: No such file or directory` on a new host (2026-10-09).
+  `scripts/cli-tools.txt` lists the tools (shellcheck, jq, make always; deno
+  and ruby when a self-hosted workflow runs them, via `infer-checks.py`), and
+  `scripts/check-tools.sh` looks them up on the runners' PATH. `join-host.sh`
+  checks every listed tool and `--install-tools` brew-installs the missing
+  ones. Preflight also warns when the runners' python3 is PEP 668 externally
+  managed. Tests: `scripts/test-preflight-tools.sh`.
+
 - **Admission decisions from every host.** An agent host's hooks log locally
   like the coordinator's, and nothing read that file, so holds on a second host
   never reached the dashboard or the admission-hold alert. The agent now ships

@@ -42,7 +42,9 @@ without `--repair` — have no `--apply` because there is nothing to guard.
 | `scripts/test-ephemeral.sh` | Shell tests for the ephemeral reaper | runs against a temporary fleet |
 | `scripts/test-cleanup.sh` | Shell tests for disk cleanup | runs against a temporary fleet |
 | `scripts/test-health.sh` | Shell tests for `health.sh` | runs against a temporary fleet |
+| `scripts/test-preflight-tools.sh` | Shell tests for the CLI-tool checks | stub PATH and a temporary database |
 | `scripts/infer-checks.py` | Work out which preflight checks this fleet needs | read-only |
+| `scripts/check-tools.sh` | Check the CLI tools in `scripts/cli-tools.txt` on the runners' PATH | read-only |
 | `dashboard/fleetctl.sh` | Install, run, inspect, back up and restore the dashboard daemon | n/a — subcommands |
 | `dashboard/agentctl.sh` | Install, run and inspect the fleet agent on an agent Mac | n/a — subcommands |
 | `install.sh` | One-command setup for coordinator or agent role | n/a — runs preflight then fleetctl/agentctl |
@@ -319,6 +321,19 @@ fetched into SQLite, read via `scripts/infer-checks.py`. Only files mentioning
 hardware and implies nothing about this Mac. With no readable database it says
 so and checks everything, which is the safe direction to fail in.
 
+Plain CLI tools — shellcheck, jq, make, deno, ruby — are listed once in
+`scripts/cli-tools.txt` and checked by `scripts/check-tools.sh` on the PATH
+register.sh gives each runner, not the caller's. Tools marked `always` are
+checked whatever the inference says, because workflows reach them through a
+Makefile or script the YAML never shows: a repo's `make lint` failed on a
+host with `make: shellcheck: No such file or directory`. Tools marked `infer`
+are checked when a self-hosted workflow runs them outside a comment. Add a line
+there when a workflow starts depending on a new one.
+
+Preflight also warns, without failing, when the runners' `python3` is PEP 668
+"externally managed" (Homebrew Python): a workflow's bare `pip install` fails
+there, so it must install into a venv.
+
 | Variable | Effect |
 |---|---|
 | `FLEET_DB` | The dashboard database to infer from. Defaults to `dashboard/fleet.db` beside the script. |
@@ -344,7 +359,8 @@ job failure names no cause and points at GitHub rather than at the network.
 
 Joins this Mac to an existing fleet as a second runner host in one command:
 preflight (macOS, Node, a clone, `fleet.env` agent settings, the coordinator
-answering, and the toolchains jobs use), then the agent, the mirrored runners
+answering, and the toolchains jobs use, including every CLI tool in
+`scripts/cli-tools.txt`), then the agent, the mirrored runners
 and the health-repair timer. Dry run unless `--apply`. Start from
 `examples/fleet.env.second-host`; see [Federation](../federation.md#adding-a-second-runner-host).
 Source: [`scripts/join-host.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/join-host.sh).
@@ -354,6 +370,10 @@ scripts/join-host.sh                                  # check everything, change
 scripts/join-host.sh --apply --only peertest,radiator # pilot a few repos
 scripts/join-host.sh --apply --install-tools          # also brew-install what is missing
 ```
+
+`--install-tools` installs the missing tools that have a Homebrew formula
+(gh, jq, node, openjdk@21, and from `cli-tools.txt` shellcheck, deno). Tools
+macOS ships, such as make, are reported with their own fix instead.
 
 ### `scripts/mirror-runners.sh`
 
