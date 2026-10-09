@@ -74,10 +74,12 @@ export const RECOMMENDED = {
  * @param {object}   opts.api      - Current snapshot.api (remaining, etc.)
  * @param {object}   [opts.collector] - Current snapshot.collector
  * @param {string[]} [opts.runLabels] - Labels the queued run's jobs need (from jobsForRun)
- * @param {boolean}  [opts.hasLintFindings] - Whether this workflow has open lint findings
+ * @param {boolean}  [opts.hasLintFindings] - Whether this run's own workflow job has a critical
+ *                                            label finding (see lintFindingForRun)
+ * @param {object}   [opts.lintFinding] - That finding, to cite in the evidence
  * @returns {{ cause, confidence, evidence: string[], recommended, actionEligible }}
  */
-export function classifyQueueCause({ run, runners, capacity, api = {}, collector = {}, runLabels = null, hasLintFindings = false } = {}) {
+export function classifyQueueCause({ run, runners, capacity, api = {}, collector = {}, runLabels = null, hasLintFindings = false, lintFinding = null } = {}) {
   const evidence = [];
 
   // ---- telemetry availability -------------------------------------------
@@ -162,8 +164,13 @@ export function classifyQueueCause({ run, runners, capacity, api = {}, collector
   }
 
   // ---- lint-detected mismatch (structural, pre-job) ----------------------
-  if (hasLintFindings) {
-    evidence.push('Workflow lint detected a label mismatch or unmatched runs-on');
+  if (hasLintFindings || lintFinding) {
+    if (lintFinding) {
+      const file = String(lintFinding.path ?? '').split('/').pop() || lintFinding.workflow;
+      evidence.push(`Workflow lint: ${file}${lintFinding.job ? ` job ${lintFinding.job}` : ''} — ${lintFinding.message}`);
+    } else {
+      evidence.push('Workflow lint detected a label mismatch or unmatched runs-on');
+    }
     return result(CAUSES.LABEL_MISMATCH, 'medium', evidence, false);
   }
 
@@ -296,17 +303,69 @@ export function queuedJobLabels(run) {
   return chosen?.labels?.length ? [...chosen.labels] : null;
 }
 
+// The lint rules that prove a job's runs-on can never be satisfied.
+const LABEL_RULES = new Set(['unserved', 'unmatched-label']);
+
+// GitHub reports a run's path as `.github/workflows/ci.yml`, and for some
+// events with an `@ref` suffix. The lint keys on the bare path.
+const barePath = (p) => String(p ?? '').split('@')[0];
+
+const sameLabels = (a, b) => {
+  const x = new Set(a.map((l) => String(l).toLowerCase()));
+  const y = new Set(b.map((l) => String(l).toLowerCase()));
+  return x.size === y.size && [...x].every((l) => y.has(l));
+};
+
+/**
+ * The critical lint finding that explains THIS queued run, if any.
+ *
+ * A lint finding is about one job in one workflow file, not about a repo. This
+ * used to be a repo-level set, so a `CI` run queued behind a busy runner
+ * was labelled label-mismatch because a different file (hardware.yml, asking
+ * for a `device-lab` label) had a finding — and the remedy it gave, "do not add a
+ * runner", was the opposite of the truth.
+ *
+ * A finding applies when it is in the run's repo AND its workflow file AND,
+ * when the queued job's labels are known, it is about a job asking for exactly
+ * those labels. A finding is also set aside when the run's branch was linted
+ * and the finding does not appear on it; a branch the lint never read keeps
+ * the finding, since that is the best evidence there is.
+ *
+ * @param {object}   run       - shaped run (repo, workflowPath, branch)
+ * @param {object[]} findings  - lintAll output
+ * @param {string[]|null} [runLabels] - the queued job's labels (queuedJobLabels)
+ * @returns {object|null}
+ */
+export function lintFindingForRun(run, findings, runLabels = null) {
+  if (!run || !Array.isArray(findings) || findings.length === 0) return null;
+  const path = barePath(run.workflowPath);
+  for (const f of findings) {
+    if (f.severity !== 'critical' || !LABEL_RULES.has(f.rule)) continue;
+    if (f.repo !== run.repo) continue;
+    // No path on the run means nothing ties the finding to it; claiming a
+    // mismatch on a repo-level guess is the bug this function replaced.
+    if (!path || barePath(f.path) !== path) continue;
+    if (runLabels?.length && Array.isArray(f.labels) && !sameLabels(f.labels, runLabels)) continue;
+    const checked = f.refsChecked ?? [];
+    if (run.branch && checked.includes(run.branch) && !(f.refs ?? []).includes(run.branch)) continue;
+    return f;
+  }
+  return null;
+}
+
 /**
  * Classify all queued runs in the snapshot.
  *
  * @param {object} snap - snapshot from fleetd
- * @param {Map}    [lintByRepo] - Optional: Set of repos with open lint findings
+ * @param {object[]|Set} [lint] - lintAll findings (preferred: matched per run by
+ *   lintFindingForRun), or the legacy Set of repos with critical findings
  * @returns {Map<number, ReturnType<classifyQueueCause>>}  Keyed by run.id
  */
-export function classifyQueuedRuns(snap, lintByRepo = new Set()) {
+export function classifyQueuedRuns(snap, lint = []) {
   const results = new Map();
   for (const run of snap.active ?? []) {
     if (run.status !== 'queued') continue;
+    const labels = queuedJobLabels(run);
     const classification = classifyQueueCause({
       run,
       runners: snap.runners ?? [],
@@ -318,8 +377,10 @@ export function classifyQueuedRuns(snap, lintByRepo = new Set()) {
       // run.labels here meant this path never saw any labels at all and so
       // could never reach label-mismatch, while the daemon's own call site
       // could. Same derivation as fleetd.js now.
-      runLabels: queuedJobLabels(run),
-      hasLintFindings: lintByRepo.has(run.repo),
+      runLabels: labels,
+      ...(lint instanceof Set
+        ? { hasLintFindings: lint.has(run.repo) }
+        : { lintFinding: lintFindingForRun(run, lint, labels) }),
     });
     results.set(run.id, classification);
   }
