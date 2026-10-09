@@ -18,7 +18,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIST="${CHECK_TOOLS_LIST:-$HERE/cli-tools.txt}"
-RUNNER_PATH="${CHECK_TOOLS_PATH:-/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin}"
+RUNNER_PATH="${CHECK_TOOLS_PATH:-${FLEET_RUNNER_PATH:-/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin}}"
 
 entries() { grep -v '^[[:space:]]*#' "$LIST" | awk 'NF >= 3'; }
 

@@ -146,6 +146,16 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- Runners ran jobs with whatever PATH the shell that registered them had:
+  `config.sh` copies the caller's `$PATH` into `.path`, and the runner gives
+  jobs that, not `.env`'s. runner-host had six PATHs (17 runners with no
+  Homebrew, nine with nvm's Node and SnowSQL from an interactive shell), and a
+  second host's `python3` resolved to Homebrew's 3.14 where its twin's was
+  Xcode's 3.9, which broke kit-ci there. `register.sh` writes
+  `FLEET_RUNNER_PATH` into `.path` after `config.sh`; `scripts/runner-path.sh`
+  aligns existing runners (idle ones only, dry run by default) and join-host's
+  preflight reports drift.
+
 - **Lint and queue-cause false positives.** The Lint tab reported an archived
   repo CRITICAL ("no runner is registered") because the roster skipped archived
   repos without recording them, so their cached workflow files lived on; files of

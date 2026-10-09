@@ -889,6 +889,32 @@ that a building or slot-holding runner keeps its simulator and browsers, that
 host-wide steps wait for an idle fleet, that a dry run deletes nothing, and
 that two runs never overlap. Exits non-zero if any test fails.
 
+### `scripts/runner-path.sh`
+
+Gives every runner on this host the same job PATH. A job's PATH comes from the
+runner's `.path`, which `config.sh` fills from whatever shell registered it, so
+older runners differ (on runner-host: six PATHs, 17 runners with no Homebrew).
+`register.sh` now writes `FLEET_RUNNER_PATH` itself; this rewrites `.path` and
+`.env`'s PATH for runners registered before that, only when idle, and restarts
+each. Dry run unless `--apply`.
+Source: [`scripts/runner-path.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/runner-path.sh).
+
+```bash
+scripts/runner-path.sh            # which runners differ
+scripts/runner-path.sh --apply    # rewrite the idle ones and restart them
+```
+
+### `scripts/test-runner-path.sh`
+
+Tests `scripts/runner-path.sh` against throwaway runner directories: a dry run
+changes nothing, `--apply` rewrites `.path` and `.env` and restarts only the
+runner that differed.
+Source: [`scripts/test-runner-path.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/test-runner-path.sh).
+
+```bash
+bash scripts/test-runner-path.sh
+```
+
 ### `scripts/test-health.sh`
 
 Shell tests for `health.sh`. No flags.

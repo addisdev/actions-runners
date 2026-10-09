@@ -105,10 +105,17 @@ case ",${FLEET_HOST_LABELS:-}," in
   *,xcode-*) [ "$HAS_XCODE" -eq 1 ] || bad "FLEET_HOST_LABELS advertises an xcode label but xcodebuild does not run" ;;
 esac
 
+# Runners whose job PATH (.path) is not the fleet's: they find a different
+# python3, node or git than their twins on other hosts. scripts/runner-path.sh.
+drift="$("$HERE/scripts/runner-path.sh" 2>/dev/null | sed -n 's/.* \([0-9][0-9]*\) would change.*/\1/p')"
+if [ -n "$drift" ] && [ "$drift" != 0 ]; then
+  warn "$drift runner(s) here have a job PATH other than the fleet's: scripts/runner-path.sh --apply"
+fi
+
 # Python modules jobs import without installing them. Checked with both
 # interpreters a job can reach: the runners' PATH puts Homebrew's python3 first
 # where it exists, and scripts that name /usr/bin/python3 get Xcode's.
-for py in "$(PATH=/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin command -v python3)" /usr/bin/python3; do
+for py in "$(PATH="${FLEET_RUNNER_PATH:-/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin}" command -v python3)" /usr/bin/python3; do
   [ -x "$py" ] || continue
   if "$py" -c 'import yaml' >/dev/null 2>&1; then
     ok "PyYAML importable by $py"
