@@ -228,6 +228,16 @@ describe('overflow tier', () => {
     assert.deepEqual(r.decision.triggers, []);
   });
 
+  test('a run GitHub is holding (concurrency group) neither resumes nor keeps overflow online', () => {
+    const runners = fleet({ ...resting(), 'laptop-app-web': { ghBusy: true }, 'laptop-app-web-2': { ghBusy: true } });
+    const queue = [{ id: 11, repo: 'o/app-web', labels: ['ci'], queuedSinceMs: 10 * MIN, cause: 'concurrency-block' }];
+    let r = decideTiers(input({ runners, queue, state: STANDBY_STATE }));
+    assert.equal(r.decision.overflow, 'standby');
+    assert.deepEqual(r.decision.triggers, []);
+    r = decideTiers(input({ queue, state: { overflow: 'active', since: NOW - 20 * MIN, quietSince: NOW - 11 * MIN, pending: {} } }));
+    assert.equal(r.decision.overflow, 'standby');
+  });
+
   test('a run only the primary can serve does not resume the standby host', () => {
     const runners = fleet({ ...resting(), 'laptop-app-db': { workingLocally: true } });
     const queue = [{ id: 10, repo: 'o/app-db', labels: ['postgres'], queuedSinceMs: 5 * MIN }];
