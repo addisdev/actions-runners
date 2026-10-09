@@ -80,9 +80,42 @@ if xcodebuild -version >/dev/null 2>&1; then
 else
   warn "no Xcode (xcode-select points at $(xcode-select -p 2>/dev/null || echo nothing)) — Simulator runners will be skipped"
 fi
+if [ "$HAS_XCODE" -eq 1 ]; then
+  # -version answers before the license is accepted; swiftc then exits 69 in
+  # the first job. Accepting needs sudo, so this can only report it.
+  if xcodebuild -license check >/dev/null 2>&1; then
+    ok "Xcode license accepted"
+  else
+    bad "Xcode license not accepted: sudo xcodebuild -license accept && sudo xcodebuild -runFirstLaunch"
+  fi
+  # Both hosts must build with the SAME Xcode, or a job's SDK depends on which
+  # host GitHub picked: code using the newer SDK fails on the older host only,
+  # and it reads as a flaky build. Set the fleet's version in fleet.env.
+  XCODE_HERE="$(xcodebuild -version | sed -n 's/^Xcode //p' | head -1)"
+  if [ -n "${FLEET_XCODE_VERSION:-}" ]; then
+    case "$XCODE_HERE" in
+      "$FLEET_XCODE_VERSION"|"$FLEET_XCODE_VERSION".*) ok "Xcode $XCODE_HERE matches FLEET_XCODE_VERSION=$FLEET_XCODE_VERSION" ;;
+      *) bad "Xcode $XCODE_HERE here, but the fleet builds with $FLEET_XCODE_VERSION (FLEET_XCODE_VERSION): install that one, or Simulator jobs will build against a different SDK depending on the host" ;;
+    esac
+  else
+    warn "FLEET_XCODE_VERSION not set: nothing checks that this Xcode ($XCODE_HERE) is the one the other hosts build with"
+  fi
+fi
 case ",${FLEET_HOST_LABELS:-}," in
   *,xcode-*) [ "$HAS_XCODE" -eq 1 ] || bad "FLEET_HOST_LABELS advertises an xcode label but xcodebuild does not run" ;;
 esac
+
+# Python modules jobs import without installing them. Checked with both
+# interpreters a job can reach: the runners' PATH puts Homebrew's python3 first
+# where it exists, and scripts that name /usr/bin/python3 get Xcode's.
+for py in "$(PATH=/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin command -v python3)" /usr/bin/python3; do
+  [ -x "$py" ] || continue
+  if "$py" -c 'import yaml' >/dev/null 2>&1; then
+    ok "PyYAML importable by $py"
+  else
+    warn "no PyYAML for $py (kit-ci imports it): $py -m pip install --user pyyaml, or brew install pyyaml for Homebrew's python"
+  fi
+done
 if /usr/libexec/java_home >/dev/null 2>&1 || [ -x /opt/homebrew/opt/openjdk@21/bin/java ]; then
   ok "Java present"
 else
