@@ -113,6 +113,36 @@ FLEET_AGENT_ALLOW_REGISTER=1
 ./dashboard/agentctl.sh restart
 ```
 
+## Adding a second runner host
+
+A second Mac shares the load when it has runners for the same repos with the
+same labels: GitHub then hands each job to whichever host has an idle match,
+and each host's admission hook limits how many run there at once. One command
+sets that up from a clone:
+
+```bash
+git clone https://github.com/your-org/actions-runners.git ~/actions-runners
+cd ~/actions-runners && cp examples/fleet.env.second-host fleet.env   # edit the marked lines
+scripts/join-host.sh            # dry run: preflight, then what it would register
+scripts/join-host.sh --apply --only one-low-risk-repo                # pilot
+scripts/join-host.sh --apply    # the rest
+```
+
+On the coordinator first: `./dashboard/fleetctl.sh agent-token --host <id>`
+for the token file, and the name or IP the new host uses for the coordinator in
+`FLEET_ALLOWED_HOSTS` (then `./dashboard/fleetctl.sh install`, which rewrites the
+plist). Raise `maxTotalRunners` on the Capacity tab if the fleet is at it.
+
+Copying is by label set, not by repo: a repo whose runners are labelled `ci`
+and `ui-web` gets one of each. A set that needs a label this host does not
+advertise is skipped and named, as are Simulator runners when `xcodebuild` does
+not run here and repos in `FLEET_MIRROR_SKIP_REPOS`. Advertise a label only once
+it is safe for CI to use here: `postgres` lets jobs create and drop databases on
+this host's server.
+
+Because the new host has no `fleetd`, point its admission hook's cancellation
+check at the coordinator with `FLEET_ADMIT_STATUS_URL` (the template does).
+
 ## Capability labels
 
 Labels declared in `FLEET_HOST_LABELS` are used by the placement engine to

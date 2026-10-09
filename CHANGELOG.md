@@ -12,6 +12,16 @@ Portable, mobile-first dashboard.
 
 ### Added
 
+- **One-command second host.** `scripts/join-host.sh` joins a Mac to the fleet:
+  preflight (including the toolchains jobs use), the agent, mirrored runners and
+  the health timer, dry run unless `--apply`. `scripts/mirror-runners.sh` and
+  `dashboard/lib/mirror.js` copy the coordinator's runners one per distinct
+  label set, skipping what the host cannot run (a missing label, Simulator
+  runners without Xcode, `FLEET_MIRROR_SKIP_REPOS`), with registration tokens
+  optionally minted elsewhere (`--tokens-from`). Template:
+  `examples/fleet.env.second-host`. The agent and installer accept the token
+  from `FLEET_AGENT_TOKEN_FILE`. Runner pin 2.336.0 → 2.337.0.
+
 - **Fleet verdict.** `lib/verdict.js` reduces drift, queue causes, failure
   classes, admission holds and alerts to one ordered ladder — cannot read
   GitHub, host down, disk floor, dead service, saturated, account blocked,

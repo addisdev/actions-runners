@@ -124,7 +124,9 @@ check_required_agent() {
   local missing=0
   [[ -z "${FLEET_COORDINATOR:-}" && -z "${FLEET_COORDINATORS:-}" ]] \
     && { fail "FLEET_COORDINATOR or FLEET_COORDINATORS not set in fleet.env"; missing=1; }
-  [[ -z "${FLEET_AGENT_TOKEN:-}" ]] && { fail "FLEET_AGENT_TOKEN not set in fleet.env"; missing=1; }
+  if [[ -z "${FLEET_AGENT_TOKEN:-}" ]] && ! [[ -n "${FLEET_AGENT_TOKEN_FILE:-}" && -s "${FLEET_AGENT_TOKEN_FILE}" ]]; then
+    fail "FLEET_AGENT_TOKEN (or a non-empty FLEET_AGENT_TOKEN_FILE) not set in fleet.env"; missing=1
+  fi
   [[ -z "${FLEET_HOST_NAME:-}" ]]  && { fail "FLEET_HOST_NAME not set in fleet.env"; missing=1; }
   if [[ "$missing" -ne 0 ]]; then
     echo ""
