@@ -134,6 +134,24 @@ kill "$FAKE_PID" "$SLEEP_PID" 2>/dev/null
 wait "$FAKE_PID" "$SLEEP_PID" 2>/dev/null
 
 echo
+echo "drain-runner.sh — a busy runner whose worker runs from a versioned bin/"
+# An updated runner starts Runner.Worker from bin.<version>/, not bin/.
+make_runner app-upd testowner/app-upd host-app-upd
+(
+  exec -a "$TMP/app-upd/bin.2.337.0/Runner.Worker spawnclient 1 2" sleep 20
+) &
+UPD_PID=$!
+sleep 0.5
+FLEET_ROOT="$TMP" "$ROOT/scripts/drain-runner.sh" app-upd --drain >/dev/null 2>&1
+check "is seen as busy and marked draining" "$(head -1 "$TMP/app-upd/.drain")" "draining"
+check "is not stopped mid-job" "$(svc_log app-upd)" ""
+check "gets the drain-stop flag" "$([ -f "$TMP/app-upd/.drain-stop" ] && echo yes || echo no)" "yes"
+timeout 20 "$ROOT/scripts/drain-stop-when-idle.sh" "$TMP/app-upd" 3 >/dev/null 2>&1
+check "drain-stop-when-idle waits for that worker too" "$(svc_log app-upd)" ""
+kill "$UPD_PID" 2>/dev/null
+wait "$UPD_PID" 2>/dev/null
+
+echo
 echo "drain-stop-when-idle.sh — keeps the owner of a controller drain"
 make_runner app-own testowner/app-own host-app-own
 printf 'draining\nrequested_at=1\nby=tiers\n' > "$TMP/app-own/.drain"

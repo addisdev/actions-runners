@@ -41,7 +41,7 @@ TIMEOUT="${2:-3600}"
 # report a result, so this adds no meaningful delay.
 WAITED=0
 while [ "$WAITED" -lt "$TIMEOUT" ]; do
-  if ! pgrep -f "$DIR/bin/Runner.Worker" >/dev/null 2>&1; then
+  if ! pgrep -f "$DIR/bin(\.[^/]+)?/Runner\.Worker" >/dev/null 2>&1; then
     # Re-checked after the wait for the same reason it was checked before it:
     # a resume during the wait must win.
     [ -f "$DIR/.drain-stop" ] || exit 0

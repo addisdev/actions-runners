@@ -128,7 +128,7 @@ fi
 
 # ---- drain or stop ----------------------------------------------------------
 BUSY=0
-if pgrep -f "$DIR/bin/Runner.Worker" >/dev/null 2>&1; then
+if pgrep -f "$DIR/bin(\.[^/]+)?/Runner\.Worker" >/dev/null 2>&1; then
   BUSY=1
 fi
 

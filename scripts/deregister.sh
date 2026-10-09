@@ -61,7 +61,7 @@ echo "dir:     $DIR"
 # Mid-job is the one state where this is actively destructive: the job dies, and
 # GitHub reports it as a lost runner rather than as somebody's decision, which
 # reads like an infrastructure fault to whoever finds the red build.
-if pgrep -f "$DIR/bin/Runner.Worker" >/dev/null 2>&1; then
+if pgrep -f "$DIR/bin(\.[^/]+)?/Runner\.Worker" >/dev/null 2>&1; then
   echo "REFUSING: this runner is executing a job right now." >&2
   exit 1
 fi

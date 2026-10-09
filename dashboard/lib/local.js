@@ -159,7 +159,15 @@ export async function launchdJobs() {
 // they were launched from, which is how a busy runner is detected locally with
 // no API call at all.
 export async function runnerProcesses() {
-  const out = await sh('ps', ['-axo', 'pid=,rss=,etime=,command=']);
+  return parseRunnerProcesses(await sh('ps', ['-axo', 'pid=,rss=,etime=,command=']));
+}
+
+// A runner that has updated itself starts its worker from a versioned copy of
+// bin/ (`<runner>/bin.2.337.0/Runner.Worker`) while the listener stays under
+// bin/. Matching only `/bin/` read every such runner as idle mid-job: on
+// 2026-10-09 every busy runner on the coordinator showed idle, which also made
+// a drain stop a runner in the middle of its job.
+export function parseRunnerProcesses(out) {
   const listeners = new Map();
   const workers = new Map();
   for (const line of out.split('\n')) {
@@ -167,7 +175,7 @@ export async function runnerProcesses() {
     const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/);
     if (!m) continue;
     const [, pid, rss, etime, command] = m;
-    const dirMatch = command.match(/(.*)\/bin\/Runner\.(Listener|Worker)/);
+    const dirMatch = command.match(/(.*)\/bin(?:\.[^/\s]+)?\/Runner\.(Listener|Worker)/);
     if (!dirMatch) continue;
     const rec = { pid: Number(pid), rssKb: Number(rss), etime, command };
     (dirMatch[2] === 'Listener' ? listeners : workers).set(dirMatch[1], rec);

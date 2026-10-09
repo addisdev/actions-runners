@@ -122,7 +122,7 @@ for dir in "$ROOT"/*/; do
     # Never restart a runner that is mid-job: stopping the service under a
     # running Runner.Worker kills the build, and the whole point of this change
     # is to stop breaking builds.
-    if pgrep -f "${dir}bin/Runner.Worker" >/dev/null 2>&1; then
+    if pgrep -f "${dir}bin(\.[^/]+)?/Runner\.Worker" >/dev/null 2>&1; then
       BUSY+=("$name")
     else
       (cd "$dir" && ./svc.sh stop >/dev/null 2>&1 && ./svc.sh start >/dev/null 2>&1) \
