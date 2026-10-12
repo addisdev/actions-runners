@@ -127,3 +127,47 @@ public struct GHChecksProbe: Sendable {
         return r.stdout
     }
 }
+
+/// One workflow run as GitHub has it now: `gh api repos/<repo>/actions/runs/<id>`,
+/// which always describes the run's latest attempt. A wait asks before it
+/// believes a red from cockpit's view, because a re-run keeps the run id and
+/// the view can still hold the attempt it retries: jerv-ios PR #181
+/// (2026-10-11), where `gh run rerun --failed` started attempt 3 and cockpit
+/// still showed attempt 2's failure, so `cockpit wait` returned red at once.
+public enum GHRunProbe {
+    struct Run: Decodable {
+        var id: Int
+        var status: String?
+        var conclusion: String?
+        var run_attempt: Int?
+        var run_started_at: String?
+        var updated_at: String?
+        var html_url: String?
+    }
+
+    /// `row` as GitHub has it now; nil when GitHub did not answer.
+    public static func fetch(_ row: RunRow, glance: Glance?, timeout: TimeInterval = 20) async -> RunRow? {
+        guard row.id > 0, let repo = await GHChecksProbe.fullName(row.repo, glance: glance),
+              let out = await GHChecksProbe.gh(["api", "repos/\(repo)/actions/runs/\(row.id)"], timeout: timeout)
+        else { return nil }
+        return try? update(row, with: out)
+    }
+
+    /// `row` with the run's current state from a REST run body laid over it.
+    static func update(_ row: RunRow, with data: Data, now: Double = Format.nowMs()) throws -> RunRow {
+        let run = try JSONDecoder().decode(Run.self, from: data)
+        guard run.id == row.id else { throw CocoaError(.coderValueNotFound) }
+        func ms(_ s: String?) -> Double? {
+            s.flatMap { ISO8601DateFormatter().date(from: $0) }.map { $0.timeIntervalSince1970 * 1000 }
+        }
+        var r = row
+        r.status = run.status ?? r.status
+        r.conclusion = r.status == "completed" ? run.conclusion : nil
+        r.runAttempt = run.run_attempt ?? r.runAttempt
+        r.startedAt = ms(run.run_started_at) ?? r.startedAt
+        r.updatedAt = ms(run.updated_at) ?? r.updatedAt
+        r.url = run.html_url ?? r.url
+        r.elapsedMs = r.status == "in_progress" ? r.startedAt.map { max(0, now - $0) } : nil
+        return r
+    }
+}

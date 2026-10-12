@@ -126,7 +126,7 @@ enum MCPServer {
                     c.onTermination = { _ in task.cancel() }
                 }
             }
-            let outcome = await WaitLoop(
+            var loop = WaitLoop(
                 target: target, timeout: Double(minutes) * 60, connect: poll,
                 github: target.pr.map { pr in
                     { @Sendable g in
@@ -134,7 +134,9 @@ enum MCPServer {
                         return await GHChecksProbe(repo: full, pr: pr).fetch()
                     }
                 }
-            ).run()
+            )
+            loop.latestRun = { r, g in await GHRunProbe.fetch(r, glance: g) }
+            let outcome = await loop.run()
             let last = outcome.decision
             let via = outcome.source == .github
                 ? " (from GitHub; cockpit's view was \(outcome.cockpitAgeMs.map { Format.duration(ms: $0) } ?? "missing")\(outcome.cockpitAgeMs == nil ? "" : " old"))"

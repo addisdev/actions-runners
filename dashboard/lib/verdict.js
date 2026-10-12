@@ -681,6 +681,8 @@ function compactRun(r, now) {
     sha: r.sha ? String(r.sha).slice(0, 12) : null,
     prNumber: r.prNumber ?? null,
     prHead: r.prHeadSha ? String(r.prHeadSha).slice(0, 12) : null,
+    // A re-run keeps the run id; the attempt tells its copies apart.
+    runAttempt: r.runAttempt ?? null,
     event: r.event ?? null,
     title: r.displayTitle ? String(r.displayTitle).slice(0, 120) : null,
     url: r.url ?? null,

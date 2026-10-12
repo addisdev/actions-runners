@@ -173,6 +173,18 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- **`cockpit wait` read a failed attempt under its in-progress re-run.** It
+  (and the MCP `wait_for_checks`) returned red at once while a re-run of the
+  failed run was in progress (jerv-ios PR #181, run 38163415231,
+  2026-10-11: attempt 2 failed, `gh run rerun --failed` started attempt 3, and
+  the wait printed "1 failed · 1 of 1 done" twice). A re-run keeps the run id,
+  and the daemon's view still held attempt 2. Before a red ends the wait, each
+  failed run is now asked of GitHub for its latest attempt; one running again is
+  pending, and that row is laid over cockpit's view until the view catches up.
+  The daemon merges its run pages by latest attempt (it kept whichever copy
+  arrived first) and publishes `runAttempt` on glance runs; the rollup keeps one
+  row per run id, its latest attempt.
+
 - **A runner that had updated itself read as idle mid-job.** Updated runners
   start `Runner.Worker` from a versioned `bin.<version>/` directory, and the
   daemon, `drain-runner.sh`, `drain-stop-when-idle.sh`, `deregister.sh` and

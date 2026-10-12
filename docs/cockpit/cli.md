@@ -189,6 +189,18 @@ does not end the wait. Until the head has a run, the wait keeps waiting. After a
 force-push back to an earlier commit, that commit's old result waits for the new
 run ("waiting for kit-ci to run again on this commit").
 
+### A red is checked against the run's latest attempt
+
+A re-run (`gh run rerun`, with or without `--failed`) keeps the run id, and
+cockpit's view can still hold the attempt it retries for a tick or more. So
+before a red ends the wait, each failed run is asked of GitHub
+(`gh api repos/<repo>/actions/runs/<id>`, which always describes the latest
+attempt). A run that is running again keeps the wait open ("tests is running
+again (attempt 3)"), and with `--pr` GitHub's rollup is then asked every 30
+seconds; a run that already passed ends the wait green. A failure GitHub
+confirms, or one it cannot be asked about, ends the wait red as before. This
+works for `--sha` and `--branch` too.
+
 ### `--pr` also asks GitHub
 
 Cockpit's rows are a copy of GitHub's, made by the daemon's fast loop. When that

@@ -16,7 +16,7 @@ import { execFile } from 'node:child_process';
 
 import { openDb, setMeta, getMeta, UPSERT_JOB, UPSERT_REPO } from './lib/db.js';
 import { reposToPrune, repoIsGone } from './lib/workflow-cache.js';
-import { GitHub, isActiveRunStatus } from './lib/github.js';
+import { GitHub, isActiveRunStatus, newerRun } from './lib/github.js';
 import {
   discoverRunnerDirs,
   launchdJobs,
@@ -1631,11 +1631,14 @@ async function fastTick(progress = null) {
   // A normal recent-runs page keeps the completed-history strip current while
   // status-filtered pagination guarantees that an older queued run cannot be
   // pushed out of view by newer completions. Both sources can contain the same
-  // run, so merge by repo+id before shaping the active set.
-  const allRunsByKey = new Map();
+  // run, so merge by repo+id before shaping the active set. The copy of the
+  // latest attempt wins: first-wins once kept a failed attempt from the recent
+  // page over its re-run from the in-progress page (jerv-ios #181, 10-11).
+  const rawRunsByKey = new Map();
   const rememberRun = (repo, run) => {
     const key = `${repo}:${run.id}`;
-    if (!allRunsByKey.has(key)) allRunsByKey.set(key, shapeRun(repo, run, groups));
+    const held = rawRunsByKey.get(key);
+    rawRunsByKey.set(key, { repo, run: newerRun(held?.run, run) });
   };
   // Per tick, not per client. One repo failing must not be reported as "the
   // collector is broken", and a tick where everything succeeds clears the
@@ -1677,7 +1680,7 @@ async function fastTick(progress = null) {
     })
   );
 
-  const allRuns = [...allRunsByKey.values()];
+  const allRuns = [...rawRunsByKey.values()].map(({ repo, run }) => shapeRun(repo, run, groups));
 
   // Only worth showing when it survived the retries inside gh.get().
   //
