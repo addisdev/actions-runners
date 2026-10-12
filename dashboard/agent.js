@@ -40,6 +40,7 @@ import { headroom } from './lib/capacity.js';
 import { instanceOf } from './lib/state.js';
 import { loadOffset, saveOffset, readPending, advance } from './lib/admission-ship.js';
 import { autonomyStep, AUTONOMY_DEFAULT_MS } from './lib/agent-autonomy.js';
+import { drainsToReassert, reassertArgs } from './lib/host-switch.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -90,6 +91,9 @@ const CONFIG = {
   // successful heartbeat, resume every runner the tiers controller drained.
   // 0 turns it off.
   autonomyMs: Number(process.env.FLEET_AGENT_AUTONOMY_S ?? AUTONOMY_DEFAULT_MS / 1000) * 1000,
+  // Stop a drained runner that is running anyway (lib/host-switch.js). Local
+  // markers enforced locally, so not gated on FLEET_AGENT_ALLOW_COMMANDS.
+  holdDrains: process.env.FLEET_HOLD_DRAINS !== '0',
   // Spelled exactly as headroom() reads them, because it merges this object over
   // CAPACITY_DEFAULTS and silently ignores anything it does not recognise. The
   // earlier names — maxRunners, maxLoadPerCore — were therefore dropped on the
@@ -140,6 +144,9 @@ const ALLOWED_COMMANDS = {
   'fleet.healthRepair': { script: 'health.sh', args: () => ['--repair'] },
   'host.drain': { script: 'scripts/host-drain.sh', args: () => ['--drain'] },
   'host.resume': { script: 'scripts/host-drain.sh', args: () => ['--resume'] },
+  // One drain-runner.sh per runner on the host, so longer than the default.
+  'host.off': { script: 'scripts/host-drain.sh', args: () => ['--off'], timeout: 600_000 },
+  'host.on': { script: 'scripts/host-drain.sh', args: () => ['--on'], timeout: 600_000 },
 };
 
 // The standby-tiers controller's batch actions (dashboard/lib/tiers.js): one
@@ -293,6 +300,7 @@ async function collect() {
     // "take this Mac out of rotation" was a state the fleet could display and
     // never reach.
     drained: Boolean(hostDrainState(CONFIG.root)),
+    off: hostDrainState(CONFIG.root) === 'off',
     runners,
     repos: [...new Set(runners.map((r) => r.repo))],
     host,
@@ -330,6 +338,9 @@ async function runRegister(cmd) {
     return { id: cmd.id, ok: false, error: 'malformed label' };
   }
   if (!token) return { id: cmd.id, ok: false, error: 'registration token is required' };
+  if (hostDrainState(CONFIG.root) === 'off') {
+    return { id: cmd.id, ok: false, error: 'this host is switched off — switch it on before adding runners' };
+  }
 
   const registerScript = join(CONFIG.root, 'register.sh');
   if (!existsSync(registerScript)) {
@@ -436,6 +447,33 @@ function drainRunner(dirName, flag) {
   });
 }
 
+let drainHoldSeen = new Map();
+let holdingDrains = false;
+
+async function holdDrains(runners) {
+  if (!CONFIG.holdDrains || holdingDrains) return;
+  holdingDrains = true;
+  try {
+    const { due, seen } = drainsToReassert({ runners, now: Date.now(), seen: drainHoldSeen });
+    drainHoldSeen = seen;
+    for (const d of due) {
+      const r = await new Promise((resolve) => {
+        execFile(join(CONFIG.root, 'scripts', 'drain-runner.sh'), reassertArgs(d),
+          { cwd: CONFIG.root, timeout: 60_000, maxBuffer: 256 * 1024 },
+          (err, stdout, stderr) => resolve({
+            ok: !err,
+            output: `${String(stdout ?? '').trim()}${stderr ? ` ${String(stderr).trim()}` : ''}`.slice(-400),
+          }));
+      });
+      log(`drain held: ${d.dirName} is drained but was running — ${r.ok ? 'drained again' : 'failed'}: ${r.output}`);
+    }
+  } catch (err) {
+    warn('drain hold:', err.message);
+  } finally {
+    holdingDrains = false;
+  }
+}
+
 async function runTiersCommand(cmd) {
   if (!CONFIG.allowCommands) {
     return { id: cmd.id, ok: false, error: 'this agent is report-only (set FLEET_AGENT_ALLOW_COMMANDS=1 to enable)' };
@@ -520,7 +558,7 @@ async function runCommand(cmd) {
   }
 
   return new Promise((resolve) => {
-    execFile(script, args, { cwd: CONFIG.root, timeout: 120_000, maxBuffer: 1024 * 1024 },
+    execFile(script, args, { cwd: CONFIG.root, timeout: spec.timeout ?? 120_000, maxBuffer: 1024 * 1024 },
       (err, stdout, stderr) => {
         resolve({
           id: cmd.id,
@@ -551,6 +589,7 @@ async function applyAutonomy() {
       autonomous,
       afterMs: CONFIG.autonomyMs,
       runners: discoverRunnerDirs(CONFIG.root),
+      hostOff: hostDrainState(CONFIG.root) === 'off',
     });
     if (step.left) log('coordinator reachable again — following the tiers controller');
     if (step.entered) {
@@ -602,6 +641,7 @@ async function heartbeat() {
     await applyAutonomy();
     return;
   }
+  holdDrains(payload.runners);
 
   // New admission decisions ride along; see lib/admission-ship.js.
   let pending = null;

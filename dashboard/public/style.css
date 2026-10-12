@@ -519,6 +519,29 @@ button.kpi {
 .headroom-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
 .headroom-head h3 { font-size: 13px; font-weight: 600; margin: 0; }
 
+/* The host on/off switch (host-switch.js). Off is muted rather than red: a
+   host somebody switched off is a decision, not a fault. */
+.host-switch { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; }
+.host-switch .switch {
+  position: relative; width: 30px; height: 17px; padding: 0; flex: none;
+  border: 1px solid var(--hairline); border-radius: 999px;
+  background: var(--hairline); cursor: pointer; transition: background 0.15s;
+}
+.host-switch .switch[aria-checked="true"] { background: var(--good); border-color: var(--good); }
+.host-switch .switch:disabled { cursor: not-allowed; opacity: 0.55; }
+.host-switch .switch:focus-visible { outline: 2px solid var(--busy); outline-offset: 2px; }
+.host-switch .switch-knob {
+  position: absolute; top: 1px; left: 1px; width: 13px; height: 13px;
+  border-radius: 50%; background: var(--surface); transition: transform 0.15s;
+}
+.host-switch .switch[aria-checked="true"] .switch-knob { transform: translateX(13px); }
+.host-switch .switch-label { color: var(--ink); }
+.host-switch.mode-off .switch-label { color: var(--muted); }
+.host-switch.mode-turning-off .switch-label,
+.host-switch.mode-paused .switch-label,
+.host-switch.is-pending .switch-label { color: var(--warning); }
+.host-block-head.this-machine { margin-top: 2px; }
+
 .host-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--hairline); }
 
 .host-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }

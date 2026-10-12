@@ -221,7 +221,12 @@ export function mergeHostSnapshots({ hosts = [], now = Date.now() } = {}) {
       host: host.host ?? {},
       repos: host.repos ?? [],
       labels: host.labels ?? [],
-      drained: Boolean(host.drained),
+      drained: Boolean(host.drained || host.off),
+      off: Boolean(host.off),
+      // What the on/off switch reports while a host is turning off: runners
+      // still finishing a job, and runners not drained at all.
+      drainingCount: (host.runners ?? []).filter((r) => r.drainState === 'draining').length,
+      activeCount: (host.runners ?? []).filter((r) => !r.drainState).length,
       version: host.version ?? null,
       local: Boolean(host.local),
     });

@@ -135,6 +135,34 @@ describe('federation hosts UI contract', () => {
   });
 });
 
+describe('host on/off switch UI contract', () => {
+  const sw = readFileSync(join(HERE, '..', 'public', 'host-switch.js'), 'utf8');
+  const worker = readFileSync(join(HERE, '..', 'public', 'sw.js'), 'utf8');
+
+  test('is an accessible switch that runs host.off with its impact and host.on', () => {
+    assert.match(sw, /role: 'switch'/);
+    assert.match(sw, /'aria-checked'/);
+    assert.match(sw, /confirmAct\('host\.off', args, \{ detail: offImpactText\(impact\)/);
+    assert.match(sw, /confirmAct\('host\.on'/);
+    assert.match(sw, /Turning off/);
+    assert.match(sw, /impact\.stranded/);
+    assert.match(sw, /impact\.busy/);
+  });
+
+  test('is on the Fleet tab, for each host and for a single machine, and on the Hosts tab', () => {
+    assert.match(app, /import \{ hostSwitch \} from '\.\/host-switch\.js'/);
+    assert.match(app, /hostSwitch\(summary, \{ impact: s\.hostImpact/);
+    assert.match(app, /const thisMachine = !federated && localSummary/);
+    assert.match(hosts, /hostSwitch\(host, \{ impact: host\.impact/);
+    assert.match(worker, /'\/host-switch\.js'/);
+  });
+
+  test('pausing new runners stays available, and is hidden on an off host', () => {
+    assert.match(hosts, /Pause new runners/);
+    assert.match(hosts, /host\.off\s*\? null/);
+  });
+});
+
 describe('multi-host fleet UI contract', () => {
   test('Hosts tile and header use snapshot.federation', () => {
     assert.doesNotMatch(html, /id="federation-summary"/);

@@ -170,8 +170,10 @@ export function primaryRungs(verdict, runnerStates, { primaryId, primaryIsLocal,
  * @param {object} input.config     - tiersConfigFromEnv()
  * @param {number} input.now
  * @param {object|null} input.state - the previous step's `state`, or null at start
- * @param {object} input.primary    - { id, lastHeartbeat, memPressure, rungs: [] }
- * @param {object[]} input.standby  - [{ id, name, lastHeartbeat, memPressure }]
+ * @param {object} input.primary    - { id, lastHeartbeat, memPressure, rungs: [], off }
+ * @param {object[]} input.standby  - [{ id, name, lastHeartbeat, memPressure, off }]
+ *   `off`: the host is switched off (host-drain.sh --off). It takes no jobs,
+ *   so it is never sent an action, and an off primary wakes the overflow tier.
  * @param {object[]} input.runners  - fleet runners: { name, dirName, repo, hostId,
  *   local, labels, ghStatus, ghUnknown, workingLocally, ghBusy, drainState,
  *   drainBy, ephemeral }
@@ -236,12 +238,13 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
       name: h.name ?? h.id,
       reachable: age <= cfg.commandStaleMs,
       critical: h.memPressure === 'critical',
+      off: Boolean(h.off),
       heartbeatAgeMs: Number.isFinite(age) ? age : null,
     }];
   }));
   const usableHost = (id) => {
     const h = hostInfo.get(id);
-    return Boolean(h && h.reachable && !h.critical);
+    return Boolean(h && h.reachable && !h.critical && !h.off);
   };
 
   // ---- queue -----------------------------------------------------------------
@@ -261,6 +264,7 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
   if (primaryAge > cfg.primaryStaleMs) {
     triggers.push({ id: 'primary-down', detail: Number.isFinite(primaryAge) ? `no heartbeat for ${secs(primaryAge)}` : 'never reported' });
   }
+  if (primary.off) triggers.push({ id: 'primary-off', detail: 'the primary is switched off' });
   for (const rung of primary.rungs ?? []) {
     if (UNFIT_RUNGS.includes(rung)) triggers.push({ id: `primary-${rung}`, detail: `verdict rung ${rung} on the primary` });
   }
@@ -382,9 +386,16 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
     want(p, 'drain', 'primary', `${lanes.build?.atCap ? 'build' : 'simulator'} lane at cap`);
   }
 
-  // Commands only reach a host whose agent is reporting.
+  // Commands only reach a host whose agent is reporting, and never one that is
+  // switched off: resuming even the controller's own drain there would put an
+  // off host back to work.
   const issued = [];
   for (const a of actions) {
+    const hostOff = a.hostId === primary.id ? Boolean(primary.off) : Boolean(hostInfo.get(a.hostId)?.off);
+    if (hostOff) {
+      deferred.push({ name: a.name, reason: `${hostInfo.get(a.hostId)?.name ?? a.hostId} is switched off` });
+      continue;
+    }
     if (a.hostId !== primary.id && !hostInfo.get(a.hostId)?.reachable) {
       deferred.push({ name: a.name, reason: `${hostInfo.get(a.hostId)?.name ?? a.hostId} is not reporting` });
       continue;

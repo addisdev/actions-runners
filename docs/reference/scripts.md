@@ -31,7 +31,7 @@ without `--repair` — have no `--apply` because there is nothing to guard.
 | `scripts/deregister.sh` | Remove one named runner completely | **yes** |
 | `scripts/drain-runner.sh` | Stop a runner gracefully, or resume it | no — every state it writes is reversible |
 | `scripts/restart-runner.sh` | Restart one runner service by directory name | no |
-| `scripts/host-drain.sh` | Remove or return a host from new-runner placement | no — reversible |
+| `scripts/host-drain.sh` | Switch a host off or on (`--off`/`--on`: every runner stops taking jobs, busy ones finish first), or pause new-runner placement (`--drain`/`--resume`) | no — reversible |
 | `scripts/drain-stop-when-idle.sh` | Stop a drained runner once its job ends | internal; called by the completion hook |
 | `scripts/ephemeral-runner.sh` | One job in a fresh directory, then delete it | **yes** |
 | `scripts/reap-ephemeral.sh` | Remove ephemeral directories a crash left behind | **yes** |

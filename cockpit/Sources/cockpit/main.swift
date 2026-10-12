@@ -256,7 +256,7 @@ case "pair":
     } catch { fail("pairing failed: \(error)") }
     src.transport?.close()
 case "run":
-    guard let action = opts.positional.first else { fail("usage: cockpit run <action> [--name <runner>] [--yes]", code: 64) }
+    guard let action = opts.positional.first else { fail("usage: cockpit run <action> [--name <runner>] [--host <host id>] [--yes]", code: 64) }
     var src = await obtain(Options(command: "status", fresh: true, positional: [], flags: [:]).with(via: opts.via, url: opts.url))
     guard var client = src.client, let g = src.glance else { fail("cannot reach the dashboard") }
     let account = "cli:" + (g.hosts.first { $0.local == true }?.id ?? "fleet")
@@ -272,6 +272,8 @@ case "run":
     }
     var args: [String: Any] = [:]
     if let n = opts.flags["name"] { args["name"] = n }
+    // Host actions without --host act on the dashboard's own host.
+    if let h = opts.flags["host"] { args["hostId"] = h }
     let r = await (try? client.perform(action, args: args)) ?? ActionResult(ok: false, error: "request failed")
     if opts.json { printJSON(r) } else { print(r.ok ? "✔ \(def.label)" : "✖ \(def.label)"); if !r.summary.isEmpty { print(r.summary) } }
     src.transport?.close()

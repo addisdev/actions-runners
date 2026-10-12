@@ -253,6 +253,46 @@ describe('overflow tier', () => {
     });
   }
 
+  // A host switched off has every runner drained --by=host, which the
+  // controller reads as somebody else's drain.
+  const hostOff = () => ({ drainState: 'drained', drainBy: 'host', ghStatus: 'offline' });
+
+  test('an off primary wakes the overflow tier and is sent nothing itself', () => {
+    const runners = fleet({
+      ...resting(),
+      'laptop-app-web': hostOff(), 'laptop-app-web-2': hostOff(), 'laptop-app-api': hostOff(),
+      'laptop-app-ios': hostOff(), 'laptop-app-ios-2': owned(), 'laptop-app-db': hostOff(),
+    });
+    // Lanes free for five minutes: the self-drained primary runner is due back.
+    const state = { ...STANDBY_STATE, freeSince: { build: NOW - 5 * MIN, simulator: NOW - 5 * MIN } };
+    const r = decideTiers(input({ runners, state, primary: { id: 'laptop', lastHeartbeat: NOW, rungs: [], off: true } }));
+    assert.equal(r.decision.overflow, 'active');
+    assert.equal(r.decision.triggers[0].id, 'primary-off');
+    assert.deepEqual(names(r.decision.actions, 'resume'), ['studio-app-api', 'studio-app-web', 'studio-app-web-2']);
+    assert.ok(r.decision.actions.every((a) => a.hostId === 'studio'));
+    assert.ok(r.decision.deferred.some((d) => d.name === 'laptop-app-ios-2' && /switched off/.test(d.reason)));
+  });
+
+  test('a standby host that is off is not woken and gets no resume, even of its own drains', () => {
+    const r = decideTiers(input({
+      runners: fleet(resting()),
+      state: STANDBY_STATE,
+      primary: { id: 'laptop', lastHeartbeat: NOW, rungs: ['saturated'] },
+      standby: [{ id: 'studio', name: 'studio', lastHeartbeat: NOW - 10 * SEC, memPressure: 'normal', off: true }],
+    }));
+    assert.equal(r.decision.overflow, 'standby');
+    assert.deepEqual(r.decision.actions, []);
+
+    const active = decideTiers(input({
+      runners: fleet(resting()),
+      state: { overflow: 'active', since: NOW - MIN, reason: 'busy', pending: {} },
+      standby: [{ id: 'studio', name: 'studio', lastHeartbeat: NOW - 10 * SEC, memPressure: 'normal', off: true }],
+    }));
+    assert.deepEqual(active.decision.actions, []);
+    assert.deepEqual(active.decision.deferred.map((d) => d.name).sort(), ['studio-app-api', 'studio-app-web', 'studio-app-web-2']);
+    assert.ok(active.decision.deferred.every((d) => /studio is switched off/.test(d.reason)));
+  });
+
   test('resumes when the primary stops reporting or its memory pressure is critical', () => {
     let r = decideTiers(input({ runners: fleet(resting()), state: STANDBY_STATE, primary: { id: 'laptop', lastHeartbeat: NOW - 4 * MIN } }));
     assert.equal(r.decision.triggers[0].id, 'primary-down');

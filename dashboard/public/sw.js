@@ -27,6 +27,7 @@ const SHELL_URLS = [
   '/alerts.js',
   '/capacity.js',
   '/hosts.js',
+  '/host-switch.js',
   '/lint.js',
   '/analytics.js',
   '/vendor/qrcodegen.js',

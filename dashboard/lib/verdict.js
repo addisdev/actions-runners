@@ -250,7 +250,7 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
       detail = d?.detail ?? 'sibling runners carry different labels';
     } else if (r.drainState) {
       state = 'draining';
-      detail = `drain ${r.drainState}`;
+      detail = r.hostOff ? `host switched off (${r.drainState})` : `drain ${r.drainState}`;
     } else if (r.ghUnknown) {
       state = 'unknown';
       detail = 'GitHub state not read this tick';
@@ -522,6 +522,7 @@ export function buildGlance(snapshot, result, opts = {}) {
       staleForMs: h.staleForMs ?? 0,
       ghOnly: false,
       drained: Boolean(h.drained),
+      off: Boolean(h.off),
       vitals: {
         cores: v.cores ?? null,
         load1: round(v.load1, 2),
@@ -553,6 +554,7 @@ export function buildGlance(snapshot, result, opts = {}) {
         staleForMs: 0,
         ghOnly: true,
         drained: false,
+        off: false,
         vitals: null,
       });
     }

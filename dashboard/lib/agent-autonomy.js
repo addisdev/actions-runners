@@ -23,14 +23,17 @@ const OWNER = 'tiers';
  * @param {boolean} p.autonomous  - whether the previous step was autonomous
  * @param {number} p.afterMs      - silence before acting alone; 0 disables the rule
  * @param {object[]} p.runners    - { dirName, drainState, drainBy }
+ * @param {boolean} [p.hostOff]   - the host is switched off (host-drain.sh --off)
  * @returns {{ autonomous: boolean, entered: boolean, left: boolean, silentMs: number, release: string[] }}
  */
-export function autonomyStep({ now, lastOkAt, autonomous = false, afterMs = AUTONOMY_DEFAULT_MS, runners = [] }) {
+export function autonomyStep({ now, lastOkAt, autonomous = false, afterMs = AUTONOMY_DEFAULT_MS, runners = [], hostOff = false }) {
   const silentMs = Math.max(0, now - (lastOkAt ?? now));
   if (!afterMs || silentMs < afterMs) {
     return { autonomous: false, entered: false, left: Boolean(autonomous), silentMs, release: [] };
   }
-  const release = runners
+  // A host that is switched off takes no jobs, whoever drained its runners:
+  // releasing the controller's drains would put it back to work.
+  const release = hostOff ? [] : runners
     .filter((r) => r.drainState && r.drainBy === OWNER)
     .map((r) => r.dirName);
   return { autonomous: true, entered: !autonomous, left: false, silentMs, release };

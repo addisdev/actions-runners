@@ -103,6 +103,7 @@ that `fleetctl.sh install` writes. To change after install:
 | `FLEET_DATABASE_SSL_INSECURE` | `0` | Disable PostgreSQL certificate verification. Use only for a private test database. | Yes |
 | `FLEET_HOST_LABELS` | (empty) | Comma-separated capability labels for the coordinator host (e.g. `xcode-16,macos-15`). Used by placement to match jobs to eligible hosts. **Leaving it empty means the host advertises nothing, so placement refuses every scale-up that needs a label** — see the note below. | Yes |
 | `FLEET_READ_ONLY` | `0` | Set to `1` to disable the control plane entirely. | Yes |
+| `FLEET_HOLD_DRAINS` | `1` | Stop a drained runner that launchd started again (login, reboot) within a tick, keeping its drain owner. `0` leaves it running. Also read by the agent. | Yes |
 | `FLEET_FAST_MS` | `15000` | Fast-loop interval while busy, ms. | No |
 | `FLEET_IDLE_MS` | `45000` | Fast-loop interval at rest, ms. | No |
 | `FLEET_SLOW_MS` | `900000` (15 min) | Slow-loop interval, ms. | No |
@@ -367,6 +368,7 @@ host and referenced from the LaunchAgent plist written by `agentctl.sh install`.
 | `FLEET_AGENT_ALLOW_REGISTER` | `0` | Set to `1` to allow remote runner registration (requires `FLEET_AGENT_ALLOW_COMMANDS=1`). The agent re-checks local headroom and the per-repo cap before invoking `register.sh`. |
 | `FLEET_AGENT_ALLOW_DEREGISTER` | `0` | Separate destructive opt-in for remote removal and scale-down. |
 | `FLEET_AGENT_COMMANDS` | (empty) | Optional allowlist on top of `FLEET_AGENT_ALLOW_COMMANDS`, comma-separated action names. `runner.drain,runner.resume,tiers.drain,tiers.resume` grants drain and resume and nothing else (no restarts, no health repair). Empty: every remote action the agent knows. |
+| `FLEET_HOLD_DRAINS` | `1` | Stop a drained runner that launchd started again (login, reboot) within a heartbeat. `0` leaves it running. |
 | `FLEET_AGENT_AUTONOMY_S` | `180` | Standby tiers: after this long without a successful heartbeat, resume every runner on this host the tiers controller drained (`.drain` marker `by=tiers`), never an operator's. Control returns to the coordinator when heartbeats succeed again. `0` turns it off. |
 | `FLEET_MAX_INSTANCES_PER_REPO` | `4` | Agent-side per-repository cap; keep aligned with the Capacity setting. |
 | `FLEET_MIRROR_SKIP_REPOS` | (empty) | Repos `scripts/mirror-runners.sh` never copies to this host, for jobs whose needs no label states (an iOS lane on a plain `ci` runner, a suite that expects a local database). Bare names or `owner/repo`, space- or comma-separated. |

@@ -31,7 +31,8 @@ public struct ActionCatalog: Codable, Sendable, Equatable {
     /// action allowed, and only as the second step after a preview.
     public static let offered: Set<String> = [
         "fleet.health", "fleet.healthRepair", "fleet.status", "fleet.cleanupPreview", "fleet.cleanupApply",
-        "runner.restart", "runner.drain", "runner.resume", "host.drain", "host.resume", "run.rerun", "run.cancel",
+        "runner.restart", "runner.drain", "runner.resume", "host.drain", "host.resume", "host.off", "host.on",
+        "run.rerun", "run.cancel",
     ]
 
     /// Used before the catalogue has loaded, for the verdict's own next move.

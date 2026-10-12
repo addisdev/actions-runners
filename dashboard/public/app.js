@@ -7,6 +7,7 @@ import * as alerts from './alerts.js';
 import * as lint from './lint.js';
 import * as capacity from './capacity.js';
 import * as hosts from './hosts.js';
+import { hostSwitch } from './host-switch.js';
 import { barChart, fmtMs } from './charts.js';
 import './tip.js';
 
@@ -774,7 +775,7 @@ function hostSection(s, hostId, hostInfo, runners, summaries) {
     summary?.stale
       ? h('span', { class: 'flag critical', text: `stale · last heard ${ago(summary.lastHeartbeat)}` })
       : h('span', { class: 'flag good', text: 'live' }),
-    summary?.drained ? h('span', { class: 'flag warning', text: 'drained' }) : null,
+    summary ? hostSwitch(summary, { impact: s.hostImpact?.[hostId], onChange: render }) : null,
     h('span', { class: 'host-block-meta muted', text:
       `${runners.length} runner${runners.length === 1 ? '' : 's'}${busy ? ` · ${busy} building` : ''}`
       + (vitals.load1 != null && vitals.cores
@@ -947,6 +948,15 @@ function renderFleet(s) {
     ? (s.elsewhere ?? []).filter((e) => !e.ephemeral && !fleetNames.has(e.name))
     : (s.elsewhere ?? []).filter((e) => !e.ephemeral);
 
+  // One machine has no host headers to carry the switch, so it gets its own
+  // line: switching this Mac off should not need a trip to the Hosts tab.
+  const localSummary = summaries.get(localHostId(s));
+  const thisMachine = !federated && localSummary
+    ? h('div', { class: 'host-block-head this-machine' },
+        h('h3', { class: 'host-block-name', text: localSummary.name ?? 'This machine' }),
+        hostSwitch(localSummary, { impact: s.hostImpact?.[localSummary.id], onChange: render }))
+    : null;
+
   mount($('#fleet'),
     h('div', { class: 'section-head' },
       h('h2', { text: 'Runners' }),
@@ -954,6 +964,7 @@ function renderFleet(s) {
         ? `${fleetRunners.length} fleet-wide on ${s.federation?.totalHosts ?? summaries.size} host(s)`
         : `${localRunners.length} on this host` })
     ),
+    thisMachine,
     ...runnerMount,
     // Ephemeral runners are split out from "registered elsewhere". They are on
     // this machine, under .ephemeral where disk discovery does not look, so

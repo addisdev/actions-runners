@@ -80,6 +80,7 @@ import { checkPosture } from './lib/posture.js';
 import { timeline } from './lib/timeline.js';
 import { TickGuard, stage } from './lib/tick-guard.js';
 import { decideTiers, tiersConfigFromEnv, primaryRungs, DRAIN_OWNER } from './lib/tiers.js';
+import { switchOffImpact, drainsToReassert, reassertArgs } from './lib/host-switch.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(HERE, 'public');
@@ -137,6 +138,9 @@ const CONFIG = {
   // Read-only mode disables the control plane entirely, for a deployment that
   // should only ever look.
   readOnly: process.env.FLEET_READ_ONLY === '1',
+  // Stop a drained runner on this host that is running anyway, which is what
+  // every drained runner does after a reboot (lib/host-switch.js).
+  holdDrains: process.env.FLEET_HOLD_DRAINS !== '0',
   // Capability labels for the coordinator host itself. Placement uses these to
   // determine which jobs this host can serve — Xcode version, OS release, etc.
   // Set FLEET_HOST_LABELS=xcode-16,macos-15 in fleet.env on the coordinator.
@@ -604,6 +608,8 @@ const REMOTE_ACTIONS = new Set([
   'fleet.healthRepair',
   'host.drain',
   'host.resume',
+  'host.off',
+  'host.on',
 ]);
 
 function remoteTargetFor(action, args) {
@@ -684,6 +690,7 @@ function hostRecordFromPayload(hostId, lastSeen, payload) {
     runnerCount: runners.length,
     version: payload.version ?? 1,
     drained: Boolean(payload.drained),
+    off: Boolean(payload.off),
   };
 }
 
@@ -740,6 +747,9 @@ async function reportSelfToHa() {
     labels: CONFIG.hostLabels,
     limits: settings.limits(),
   });
+  // The leader holds its drains in fastTick; a standby replica has no fast
+  // tick, and its runners need the same.
+  if (!ha.isLeader) holdLocalDrains(report.runners, report.reportedAt);
   await ha.upsertHost(CONFIG.replicaId, report, report.reportedAt);
 }
 
@@ -1171,6 +1181,7 @@ async function autoscaleTick(forcedPlan = null) {
   // all connected agents. Stale hosts are included so choosePlacement can name
   // them explicitly as the reason they were skipped.
   const coordinatorDrained = Boolean(hostDrainState(CONFIG.root));
+  const coordinatorOff = hostDrainState(CONFIG.root) === 'off';
   // choosePlacement returns host.name (not .id) as the chosen value. Store the
   // coordinator's name separately so the local vs. remote branch below can
   // compare against it without re-deriving it.
@@ -1181,6 +1192,7 @@ async function autoscaleTick(forcedPlan = null) {
     {
       coordinatorLabels: CONFIG.hostLabels,
       coordinatorDrained,
+      coordinatorOff,
       coordinatorName,
       coordinatorId: CONFIG.replicaId,
     }
@@ -1718,6 +1730,8 @@ async function fastTick(progress = null) {
   lastSwapCounters = { at: started, swapins: vitals.swapins, swapouts: vitals.swapouts };
 
   const { runners, elsewhere } = buildRunners({ dirs: dirsCache, ghRunnersByRepo, launchd, processes, runnersKnownFor, groups });
+  holdLocalDrains(runners, started);
+  const localDrain = hostDrainState(CONFIG.root);
 
   // Fleet-wide runner list: local runners plus runners on agent hosts, enriched
   // with agent heartbeat data (workingLocally, drainState, launchdState).
@@ -1731,6 +1745,7 @@ async function fastTick(progress = null) {
       hostName: localHostName,
       hostStale: false,
       staleForMs: 0,
+      hostOff: localDrain === 'off',
     }
   );
 
@@ -1821,7 +1836,8 @@ async function fastTick(progress = null) {
     hostState,
     {
       coordinatorLabels: CONFIG.hostLabels,
-      coordinatorDrained: Boolean(hostDrainState(CONFIG.root)),
+      coordinatorDrained: Boolean(localDrain),
+      coordinatorOff: localDrain === 'off',
       coordinatorName: localHostName,
       coordinatorId: CONFIG.replicaId,
     },
@@ -1951,6 +1967,11 @@ async function fastTick(progress = null) {
     elsewhere,
     fleetRunners,
     hosts: mergedFleet.hosts,
+    // Per host, what its off switch would cost: the busy jobs that finish
+    // first and the repos left with no runner online anywhere else. The
+    // confirmation names them, so nobody switches off the only Mac a repo has
+    // without being told.
+    hostImpact: Object.fromEntries(mergedFleet.hosts.map((h) => [h.id, switchOffImpact(h.id, fleetRunners)])),
     federation,
     active,
     recent,
@@ -2131,8 +2152,8 @@ async function runTiers(snap, localRunners, now) {
   const standby = TIERS.standbyHosts.map((id) => {
     const h = findHost(id);
     return h
-      ? { id: h.id, name: h.name, lastHeartbeat: h.lastHeartbeat, memPressure: h.host?.memPressure ?? null }
-      : { id, name: id, lastHeartbeat: null, memPressure: null };
+      ? { id: h.id, name: h.name, lastHeartbeat: h.lastHeartbeat, memPressure: h.host?.memPressure ?? null, off: Boolean(h.off) }
+      : { id, name: id, lastHeartbeat: null, memPressure: null, off: false };
   });
 
   const { state, decision } = decideTiers({
@@ -2143,6 +2164,7 @@ async function runTiers(snap, localRunners, now) {
       id: primaryId,
       lastHeartbeat: primaryIsLocal ? now : primaryHost?.lastHeartbeat ?? null,
       memPressure: primaryIsLocal ? snap.host?.memPressure ?? null : primaryHost?.host?.memPressure ?? null,
+      off: primaryIsLocal ? hostDrainState(CONFIG.root) === 'off' : Boolean(primaryHost?.off),
       rungs: primaryRungs(lastVerdict?.verdict, lastVerdict?.runners?.values?.() ?? [], {
         primaryId, primaryIsLocal, staleHostIds,
       }),
@@ -2248,6 +2270,38 @@ function tiersLocal(a) {
         resolve();
       });
   });
+}
+
+// A drained runner on this host whose service is running anyway is drained
+// again, under the owner its marker already names (lib/host-switch.js). One at
+// a time and off the tick: each is a launchctl call, and the next tick sees
+// the result.
+let drainHoldSeen = new Map();
+let drainHoldChain = Promise.resolve();
+let drainHoldBusy = false;
+function holdLocalDrains(runners, now) {
+  if (!CONFIG.holdDrains || CONFIG.readOnly || drainHoldBusy) return;
+  const { due, seen } = drainsToReassert({ runners, now, seen: drainHoldSeen });
+  drainHoldSeen = seen;
+  if (!due.length) return;
+  drainHoldBusy = true;
+  drainHoldChain = drainHoldChain.then(async () => {
+    for (const d of due) {
+      await new Promise((resolve) => {
+        execFile('./scripts/drain-runner.sh', reassertArgs(d),
+          { cwd: CONFIG.root, timeout: 60_000, maxBuffer: 256 * 1024 },
+          (err, stdout, stderr) => {
+            const out = String(stdout || stderr || err?.message || '').trim().split('\n').pop()?.slice(0, 300) ?? '';
+            if (err) warn(`drain hold: ${d.name} is drained but running; re-drain failed:`, out);
+            else log(`drain hold: ${d.name} is drained but was running — drained again${d.by ? ` (by=${d.by})` : ''}`);
+            try {
+              stmt.insertEvent.run(Date.now(), d.name, null, 'drain', `held: drained but running, ${err ? 're-drain failed' : 'drained again'}`);
+            } catch { /* event log is best-effort */ }
+            resolve();
+          });
+      });
+    }
+  }).catch((err) => warn('drain hold:', err.message)).finally(() => { drainHoldBusy = false; });
 }
 
 // Poll hard while anything is happening, back off when the fleet is asleep. The
@@ -3228,6 +3282,7 @@ const server = http.createServer(async (req, res) => {
           // deliberately drained host back into rotation the moment it comes up,
           // before that host's next heartbeat has had a chance to say otherwise.
           drained: Boolean(body.drained),
+          off: Boolean(body.off),
         })
       );
       stmt.insertHeartbeat.run(
@@ -3248,6 +3303,7 @@ const server = http.createServer(async (req, res) => {
         runnerCount: body.runners.length,
         version: body.version ?? 1,
         drained: Boolean(body.drained),
+        off: Boolean(body.off),
       });
       if (CONFIG.databaseUrl) await ha.upsertHost(hostId, body, now);
     } catch (err) {
@@ -3400,8 +3456,10 @@ const server = http.createServer(async (req, res) => {
       // file somebody just created by hand, and the point of it is to take effect
       // now rather than on the next tick.
       drained: Boolean(hostDrainState(CONFIG.root)),
+      off: hostDrainState(CONFIG.root) === 'off',
     };
     const merged = mergeHostSnapshots({ hosts: [local, ...hostState.values()] });
+    for (const h of merged.hosts) h.impact = snapshot.hostImpact?.[h.id] ?? null;
 
     // Recent placement decisions for the Hosts tab. Operators need to see why
     // a host was chosen or refused, and which commands are in-flight.
@@ -3811,6 +3869,7 @@ async function main() {
           runnerCount: (payload.runners ?? []).length,
           version: row.agent_version ?? 1,
           drained: Boolean(payload.drained),
+          off: Boolean(payload.off),
         });
       } catch { /* one unreadable row must not cost the others */ }
     }

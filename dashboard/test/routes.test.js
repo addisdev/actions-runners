@@ -473,6 +473,39 @@ describe('federation: heartbeat and host registration', () => {
     );
   });
 
+  test('a host that reports off shows as off, and host.off is queued for its agent', async () => {
+    const host = 'off-host';
+    await beat({
+      name: host,
+      id: host,
+      version: 1,
+      reportedAt: Date.now(),
+      runners: [{ name: 'off-host-web', repo: 'o/web', dirName: 'web', drainState: 'draining', drainBy: 'host' }],
+      repos: ['o/web'],
+      host: {},
+      capacity: { ok: true, reasons: [], busy: 0, ceiling: 3, maxTotalRunners: 8 },
+      labels: [],
+      drained: true,
+      off: true,
+    });
+    const hosts = await (await fetch(at('/api/hosts'))).json();
+    const reported = hosts.hosts.find((h) => h.id === host);
+    assert.equal(reported.off, true);
+    assert.equal(reported.drained, true);
+    assert.equal(reported.drainingCount, 1);
+    assert.ok('impact' in reported);
+
+    const res = await fetch(at('/api/action'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${d.token}` },
+      body: JSON.stringify({ action: 'host.on', args: { hostId: host } }),
+    });
+    const queued = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(queued.queued, true);
+    assert.equal(queued.command, 'host.on');
+  });
+
   test('/api/hosts includes recentPlacements and pendingCommands arrays', async () => {
     const r = await fetch(at('/api/hosts'));
     assert.equal(r.status, 200);

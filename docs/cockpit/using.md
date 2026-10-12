@@ -193,6 +193,7 @@ dashboard offers:
 | `fleet.cleanupPreview`, then `fleet.cleanupApply` | The disk-floor next move and **What is using disk?**; **Apply cleanup** appears only after a preview and is confirmed inline | preview: yes; apply: with `--yes` |
 | `runner.restart`, `runner.drain`, `runner.resume` | A runner's panel | with `--name` and `--yes` |
 | `fleet.health`, `fleet.status` | — | yes (reads) |
+| `host.off`, `host.on` — Switch host off/on | — | with `--yes`; `--host <id>` for another host |
 | `host.drain`, `host.resume`, `run.rerun`, `run.cancel` | — | with `--yes` |
 
 `fleet.cleanupApply` is the only high-danger action the cockpit accepts, and in

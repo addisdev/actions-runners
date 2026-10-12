@@ -21,6 +21,7 @@
 import { execFile } from 'node:child_process';
 import { headroom } from './capacity.js';
 import { roleLabel } from './state.js';
+import { hostDrainState } from './local.js';
 
 const REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 const LABEL_RE = /^[A-Za-z0-9._-]{1,40}$/;
@@ -87,6 +88,15 @@ export function buildActions({ root, gh, getSnapshot, getLimits = () => ({}) }) 
       (snap.repos ?? []).some((r) => r.fullName === repo);
     if (!known) throw new ActionError(`repo not known to this daemon: ${repo}`, 404);
     return repo;
+  };
+
+  // A runner added to a host that is switched off would take jobs the moment
+  // it registered, which is the one thing off promises will not happen. Not
+  // overridable by force: switching the host on is the override.
+  const refuseIfOff = () => {
+    if (hostDrainState(root) === 'off') {
+      throw new ActionError('refusing: this host is switched off — switch it on before adding runners', 409);
+    }
   };
 
   const intArg = (v, name) => {
@@ -181,16 +191,37 @@ export function buildActions({ root, gh, getSnapshot, getLimits = () => ({}) }) 
       exec: () => run('./health.sh', ['--repair'], { cwd: root, timeout: 300000, okCodes: [0, 1] }),
     },
 
-    'host.drain': {
-      label: 'Drain host',
+    // The host's on/off switch. Off drains every runner on the host (busy ones
+    // finish their job first); on resumes exactly the runners off drained.
+    // One drain-runner.sh per runner, each a launchctl call, so a large host
+    // takes a minute or two.
+    'host.off': {
+      label: 'Switch host off',
       danger: 'medium',
-      confirm: 'This prevents new runner placement on this host. Existing jobs continue.',
+      confirm:
+        'Every runner on this host stops taking CI jobs. Busy runners finish their current job first. ' +
+        'Nothing is deregistered, and switching it back on resumes the same runners.',
+      summary: () => './scripts/host-drain.sh --off',
+      exec: () => run('./scripts/host-drain.sh', ['--off'], { cwd: root, timeout: 600000 }),
+    },
+
+    'host.on': {
+      label: 'Switch host on',
+      danger: 'medium',
+      summary: () => './scripts/host-drain.sh --on',
+      exec: () => run('./scripts/host-drain.sh', ['--on'], { cwd: root, timeout: 600000 }),
+    },
+
+    'host.drain': {
+      label: 'Pause new runners',
+      danger: 'medium',
+      confirm: 'Autoscale stops adding runners to this host. Its existing runners keep taking jobs.',
       summary: () => './scripts/host-drain.sh --drain',
       exec: () => run('./scripts/host-drain.sh', ['--drain'], { cwd: root }),
     },
 
     'host.resume': {
-      label: 'Resume host',
+      label: 'Allow new runners',
       danger: 'medium',
       summary: () => './scripts/host-drain.sh --resume',
       exec: () => run('./scripts/host-drain.sh', ['--resume'], { cwd: root }),
@@ -238,6 +269,7 @@ export function buildActions({ root, gh, getSnapshot, getLimits = () => ({}) }) 
       },
       async exec({ repo, label, instance, force }) {
         knownRepo(repo);
+        refuseIfOff();
         const labels = parseLabels(label);
         for (const l of labels) {
           if (!LABEL_RE.test(l)) throw new ActionError('malformed label');
@@ -308,6 +340,7 @@ export function buildActions({ root, gh, getSnapshot, getLimits = () => ({}) }) 
       },
       async exec({ name, force }) {
         const { repo, next, labels } = duplicatePlan(name);
+        refuseIfOff();
         const limits = getLimits();
         const cap = limits.maxInstancesPerRepo ?? 4;
         if (next > cap) {

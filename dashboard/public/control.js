@@ -74,9 +74,14 @@ export async function act(action, args = {}) {
 
 // Confirmation is the UI's job, not the daemon's — but the daemon still refuses
 // anything it considers unsafe regardless of what the UI sent.
-export async function confirmAct(action, args = {}) {
+// `detail` adds what this particular click would do to the action's standing
+// confirmation text, e.g. which jobs will finish first. `onStart` runs once
+// confirmed, before an action that may take a while to answer.
+export async function confirmAct(action, args = {}, { detail = null, onStart = null } = {}) {
   const def = catalogue?.actions?.find((a) => a.id === action);
-  if (def?.confirm && !window.confirm(`${def.label}\n\n${def.confirm}\n\nProceed?`)) return null;
+  const text = [def?.confirm, detail].filter(Boolean).join('\n\n');
+  if (text && !window.confirm(`${def?.label ?? action}\n\n${text}\n\nProceed?`)) return null;
+  onStart?.();
   return act(action, args);
 }
 
