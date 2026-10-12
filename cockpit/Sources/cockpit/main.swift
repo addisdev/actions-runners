@@ -386,6 +386,7 @@ case "wait":
             }
         }
     )
+    loop.latestRun = { r, g in await GHRunProbe.fetch(r, glance: g) }
     loop.onDrop = { routes.invalidate() }
     if !opts.json { loop.progress = { FileHandle.standardError.write(Data(($0 + "\n").utf8)) } }
     report(await loop.run())

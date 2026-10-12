@@ -451,3 +451,185 @@ struct CollectorStalenessTests {
         #expect(v.sentence?.contains(Format.duration(ms: 27 * 60_000)) == true)
     }
 }
+
+// 2026-10-11, jerv-ios PR #181, run 38163415231 (workflow "tests"): attempt 2
+// failed at 21:32:14Z; `gh run rerun --failed` started attempt 3 at 21:46:33Z
+// and it passed at 21:47:02Z. In between, `cockpit wait jerv-ios --pr 181`
+// returned "✖ jerv-ios PR #181: 1 failed · 1 of 1 done" at once, twice: the
+// daemon's view still held attempt 2, and a re-run keeps the run id.
+
+private let jerv = "addisdev/jerv-ios"
+private let jervRun = 38163415231
+
+/// The run as cockpit's view had it, or as GitHub had it at some moment.
+private func jervTests(attempt: Int, status: String = "completed", conclusion: String? = "failure",
+                       updatedAt: Double) -> RunRow {
+    var r = RunRow(id: jervRun, repo: jerv, workflow: "tests", status: status,
+                   conclusion: status == "completed" ? conclusion : nil, branch: "fix/fixture-contract",
+                   sha: "2eaa91515997", prNumber: 181, event: "pull_request", title: "Fixture contract", url: nil,
+                   startedAt: updatedAt - 30_000, updatedAt: updatedAt, elapsedMs: nil, expectedMs: 600_000,
+                   prHead: "2eaa91515997")
+    r.runAttempt = attempt
+    return r
+}
+
+/// A fresh glance (tick 5 s ago) whose only row for the PR is `row`.
+private func jervGlance(_ row: RunRow) throws -> Glance {
+    var g = try Fixtures.glance("quiet")
+    let now = Format.nowMs()
+    g.ts = now - 5_000; g.generatedAt = now - 5_000; g.ageMs = 0; g.stale = false
+    if row.isActive { g.runs = [row]; g.recent = [] } else { g.runs = []; g.recent = [row] }
+    g.queue = []
+    return g
+}
+
+/// `gh pr view 181 --json headRefOid,statusCheckRollup` mid-re-run, then done.
+private let jerv181Running = #"""
+{"headRefOid":"2eaa915159977f541d29466ee83a2924984a02e5","statusCheckRollup":[{"__typename":"CheckRun","conclusion":"SUCCESS","name":"Release has no sandbox","status":"COMPLETED","workflowName":"sandbox guard"},{"__typename":"CheckRun","conclusion":"SUCCESS","name":"ci / test","status":"COMPLETED","workflowName":"tests"},{"__typename":"CheckRun","conclusion":"SUCCESS","name":"The watch suite","status":"COMPLETED","workflowName":"tests"},{"__typename":"CheckRun","conclusion":"","name":"Committed fixtures still match the encoders","status":"IN_PROGRESS","workflowName":"tests"}]}
+"""#
+private let jerv181Green = #"""
+{"headRefOid":"2eaa915159977f541d29466ee83a2924984a02e5","statusCheckRollup":[{"__typename":"CheckRun","completedAt":"2026-10-11T18:22:18Z","conclusion":"SUCCESS","name":"Release has no sandbox","status":"COMPLETED","workflowName":"sandbox guard"},{"__typename":"CheckRun","conclusion":"SUCCESS","name":"ci / test","status":"COMPLETED","workflowName":"tests"},{"__typename":"CheckRun","conclusion":"SUCCESS","name":"The watch suite","status":"COMPLETED","workflowName":"tests"},{"__typename":"CheckRun","completedAt":"2026-10-11T21:47:02Z","conclusion":"SUCCESS","name":"Committed fixtures still match the encoders","status":"COMPLETED","workflowName":"tests"}]}
+"""#
+
+/// A stream that sends each glance in turn, `gap` seconds apart, then keepalives.
+private func glances(_ gs: [Glance], gap: TimeInterval) -> WaitLoop.Connect {
+    {
+        AsyncThrowingStream { c in
+            let task = Task {
+                for (i, g) in gs.enumerated() {
+                    if i > 0 { try? await Task.sleep(nanoseconds: UInt64(gap * 1e9)) }
+                    c.yield(.glance(g))
+                }
+                while !Task.isCancelled {
+                    c.yield(.keepalive)
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                }
+                c.finish()
+            }
+            c.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
+private final class Lines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    func add(_ l: String) { lock.withLock { lines.append(l) } }
+    var all: [String] { lock.withLock { lines } }
+}
+
+@Suite("cockpit wait across a re-run", .serialized)
+struct WaitRerunTests {
+    /// The regression: cockpit's view still holds attempt 2's failure while
+    /// GitHub has attempt 3 running. The wait must not end red; it waits for
+    /// the re-run and ends green when GitHub's rollup says so.
+    @Test func aStaleFailureUnderAnInProgressRerunWaits() async throws {
+        let now = Format.nowMs()
+        let failed = jervTests(attempt: 2, updatedAt: now - 14 * 60_000)
+        let running = jervTests(attempt: 3, status: "in_progress", updatedAt: now - 2_000)
+        let rollups = [try checks(jerv181Running), try checks(jerv181Running), try checks(jerv181Green)]
+        let asked = Counter(), probed = Counter(), said = Lines()
+        var loop = fast(WaitLoop(
+            target: WaitTarget(repo: "jerv-ios", pr: 181), timeout: 5,
+            connect: keepalivesAfter(try jervGlance(failed)),
+            github: { _ in asked.bump(); return rollups[min(asked.value - 1, rollups.count - 1)] }
+        ))
+        loop.latestRun = { r, _ in
+            probed.bump()
+            #expect(r.id == jervRun && r.runAttempt == 2)
+            return running
+        }
+        loop.crossCheckFresh = 30 // only the re-run may pull GitHub forward
+        loop.progress = { said.add($0) }
+        let out = await loop.run()
+        guard case .green(let s) = out.decision else { Issue.record("expected green, got \(out.decision)"); return }
+        #expect(out.source == .github)
+        #expect(s.progress == "4 of 4 green")
+        #expect(probed.value == 1) // asked once; the fresher row then stands
+        #expect(asked.value == 3)
+        #expect(said.all.contains { $0.contains("tests is running again (attempt 3)") })
+        #expect(!said.all.contains { $0.contains("failed") })
+    }
+
+    /// The same, for a wait GitHub's rollup cannot answer (a sha): the re-run
+    /// holds the wait open until cockpit's own view catches up with attempt 3.
+    @Test func withoutARollupTheViewCatchesUp() async throws {
+        let now = Format.nowMs()
+        let failed = jervTests(attempt: 2, updatedAt: now - 14 * 60_000)
+        let running = jervTests(attempt: 3, status: "in_progress", updatedAt: now - 2_000)
+        let passed = jervTests(attempt: 3, conclusion: "success", updatedAt: now + 1_000)
+        let probed = Counter()
+        var loop = fast(WaitLoop(
+            target: WaitTarget(repo: "jerv-ios", sha: "2eaa915159977f541d29466ee83a2924984a02e5"), timeout: 5,
+            // The stale failure twice (as twice on 10-11), then the pass.
+            connect: glances([try jervGlance(failed), try jervGlance(failed), try jervGlance(passed)], gap: 0.3),
+            github: nil
+        ))
+        loop.latestRun = { _, _ in probed.bump(); return running }
+        let started = Date()
+        let out = await loop.run()
+        guard case .green(let s) = out.decision else { Issue.record("expected green, got \(out.decision)"); return }
+        #expect(out.source == .cockpit)
+        #expect(s.runs.first?.runAttempt == 3)
+        #expect(probed.value == 1)
+        #expect(Date().timeIntervalSince(started) >= 0.5) // waited for the third glance
+    }
+
+    /// A re-run that finished green before the wait looked: GitHub's word on
+    /// the run ends the wait green, and says what cockpit still read.
+    @Test func aRerunThatAlreadyPassedEndsGreen() async throws {
+        let now = Format.nowMs()
+        var loop = fast(WaitLoop(
+            target: WaitTarget(repo: "jerv-ios", pr: 181), timeout: 5,
+            connect: keepalivesAfter(try jervGlance(jervTests(attempt: 2, updatedAt: now - 14 * 60_000))),
+            github: nil
+        ))
+        loop.latestRun = { _, _ in jervTests(attempt: 3, conclusion: "success", updatedAt: now - 1_000) }
+        let out = await loop.run()
+        guard case .green = out.decision else { Issue.record("expected green, got \(out.decision)"); return }
+        #expect(out.source == .github)
+        #expect(out.cockpitSaid == "1 failed · 1 of 1 done")
+    }
+
+    /// A failure GitHub confirms (same attempt, still failed) is a real red,
+    /// and so is one GitHub cannot be asked about: no re-run, no waiting.
+    @Test func aConfirmedOrUnaskableFailureIsStillRed() async throws {
+        let now = Format.nowMs()
+        let failed = jervTests(attempt: 2, updatedAt: now - 14 * 60_000)
+        for answer in [failed, nil] as [RunRow?] {
+            let probed = Counter()
+            var loop = fast(WaitLoop(
+                target: WaitTarget(repo: "jerv-ios", pr: 181), timeout: 5,
+                connect: keepalivesAfter(try jervGlance(failed)), github: nil
+            ))
+            loop.latestRun = { _, _ in probed.bump(); return answer }
+            let started = Date()
+            let out = await loop.run()
+            guard case .red(let s) = out.decision else { Issue.record("expected red, got \(out.decision)"); continue }
+            #expect(out.source == .cockpit)
+            #expect(s.progress == "1 failed · 1 of 1 done")
+            #expect(probed.value == 1)
+            #expect(Date().timeIntervalSince(started) < 2)
+        }
+    }
+
+    /// `gh api repos/addisdev/jerv-ios/actions/runs/38163415231` mid-re-run,
+    /// laid over cockpit's attempt-2 row.
+    @Test func aRestRunBodyUpdatesTheRow() throws {
+        let body = #"{"id":38163415231,"name":"tests","status":"in_progress","conclusion":null,"run_attempt":3,"run_started_at":"2026-10-11T21:46:33Z","updated_at":"2026-10-11T21:46:40Z","html_url":"https://github.com/addisdev/jerv-ios/actions/runs/38163415231"}"#
+        let old = jervTests(attempt: 2, updatedAt: 1_000)
+        let started = ISO8601DateFormatter().date(from: "2026-10-11T21:46:33Z")!.timeIntervalSince1970 * 1000
+        let r = try GHRunProbe.update(old, with: Data(body.utf8), now: started + 20_000)
+        #expect(r.status == "in_progress" && r.conclusion == nil && r.isActive)
+        #expect(r.runAttempt == 3)
+        #expect(r.startedAt == started && r.elapsedMs == 20_000)
+        #expect(r.workflow == "tests" && r.prNumber == 181 && r.prHead == "2eaa91515997")
+        #expect(RunRow.latest(old, r) == r)
+        // Another run's body is not this run.
+        #expect(throws: (any Error).self) { try GHRunProbe.update(jervTests(attempt: 1, updatedAt: 0).with(id: 1), with: Data(body.utf8)) }
+    }
+}
+
+private extension RunRow {
+    func with(id: Int) -> RunRow { var r = self; r.id = id; return r }
+}

@@ -41,6 +41,26 @@ struct RollupTests {
         #expect(Rollup.checkSets(g).first?.state == .green)
     }
 
+    /// jerv-ios PR #181, 2026-10-11: a re-run keeps the run id. Attempt 2's
+    /// failure and attempt 3, running, are one run; the rollup is pending,
+    /// whichever list each copy arrives in.
+    @Test func anInProgressRerunOfAFailedAttemptIsPending() throws {
+        var failed = run(38163415231, "tests", conclusion: "failure", updated: 1_000)
+        failed.runAttempt = 2
+        var rerun = run(38163415231, "tests", status: "in_progress", updated: 2_000)
+        rerun.runAttempt = 3
+        for g in [try glance(runs: [rerun], recent: [failed]), try glance(recent: [failed, rerun]),
+                  try glance(recent: [rerun, failed])] {
+            let s = try #require(Rollup.checkSets(g).first)
+            #expect(s.state == .pending && s.total == 1 && s.done == 0)
+            #expect(s.runs.first?.runAttempt == 3)
+        }
+        // The attempt decides, not the clock: a later-stamped copy of the
+        // older attempt does not win.
+        failed.updatedAt = 3_000
+        #expect(Rollup.checkSets(try glance(runs: [rerun], recent: [failed])).first?.state == .pending)
+    }
+
     @Test func redWhenAnyLatestCheckFailed() throws {
         let g = try glance(recent: [run(1, "ci"), run(2, "e2e", conclusion: "failure")])
         let s = try #require(Rollup.checkSets(g).first)

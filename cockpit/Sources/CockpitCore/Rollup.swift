@@ -54,7 +54,10 @@ public enum Rollup {
     /// id, which GitHub only ever increases: by `updatedAt`, a run cancelled
     /// by concurrency after its replacement was created beat the replacement.
     public static func checkSets(_ g: Glance) -> [CheckSet] {
-        let all = ((g.runs ?? []) + (g.recent ?? [])).sorted { $0.id < $1.id }
+        // One row per run, its latest attempt: a re-run keeps the run id.
+        var byId: [Int: RunRow] = [:]
+        for r in (g.runs ?? []) + (g.recent ?? []) { byId[r.id] = byId[r.id].map { RunRow.latest($0, r) } ?? r }
+        let all = byId.values.sorted { $0.id < $1.id }
         var groups: [String: [RunRow]] = [:]
         for r in all {
             let key = "\(r.repo)@\(r.sha ?? r.branch ?? String(r.id))"

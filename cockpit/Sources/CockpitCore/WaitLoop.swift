@@ -42,6 +42,16 @@ public struct WaitOutcome: Sendable, Equatable {
 ///    `onDrop` lets the caller reopen its route (a dead tunnel).
 /// 5. A view that has no runs for the target at all (finished long ago, or
 ///    rows missing) asks GitHub at the stale cadence, from the start.
+///
+/// 2026-10-11 (jerv-ios PR #181): `gh run rerun --failed` started attempt 3
+/// of a run whose attempt 2 had failed, and `cockpit wait` returned red at
+/// once, twice. A re-run keeps the run id, and the daemon's view lagged the
+/// 29 s re-run by a tick, so the wait read the failure it was retrying. So:
+/// 6. Before a red from cockpit ends the wait, each failed run is asked of
+///    GitHub (`latestRun`, its latest attempt). A run that is running again
+///    is pending, and that fresher row stays laid over cockpit's view until
+///    the view catches up; GitHub's PR rollup is then asked at the stale
+///    cadence. A run GitHub cannot answer for keeps cockpit's red.
 public struct WaitLoop: Sendable {
     public typealias Connect = @Sendable () async throws -> AsyncThrowingStream<FleetClient.StreamEvent, Error>
 
@@ -49,6 +59,9 @@ public struct WaitLoop: Sendable {
     public var timeout: TimeInterval
     public var connect: Connect
     public var github: (@Sendable (Glance?) async -> GitHubChecks?)?
+    /// One run's latest attempt as GitHub has it now (`GHRunProbe`), asked
+    /// about each failed run before a red from cockpit ends the wait.
+    public var latestRun: (@Sendable (RunRow, Glance?) async -> RunRow?)?
     public var crossCheckFresh: TimeInterval = 120
     public var crossCheckStale: TimeInterval = 30
     /// The most one GitHub ask may take (it is also capped by the time left).
@@ -123,6 +136,10 @@ public struct WaitLoop: Sendable {
         var announced = ""
         var staleAnnounced = false
         var restartedAt = start
+        // Runs asked of GitHub since (step 6), laid over every later glance.
+        var fresh: [Int: RunRow] = [:]
+        // Cockpit's view still holds an older attempt of one of those runs.
+        var behind = false
 
         func say(_ line: String) {
             if line != announced { progress(line); announced = line }
@@ -150,10 +167,31 @@ public struct WaitLoop: Sendable {
 
             if let g, version != seenVersion {
                 seenVersion = version
-                let d = Waiter.decide(g, verdict: g.verdict, target: target)
+                var d = Waiter.decide(g.overlaying(Array(fresh.values)), verdict: g.verdict, target: target)
+                var redSaid: String?
+                if case .red(let s) = d, let ask = latestRun {
+                    redSaid = s.progress
+                    for r in s.failed where r.id > 0 {
+                        let left = max(0.1, (deadline - now()) / 1000)
+                        if let f = await Deadline.race(seconds: min(askTimeout, left), { await ask(r, g) }, onTimeout: { nil }) {
+                            fresh[r.id] = f
+                        }
+                    }
+                    d = Waiter.decide(g.overlaying(Array(fresh.values)), verdict: g.verdict, target: target)
+                }
+                let held = Dictionary(((g.runs ?? []) + (g.recent ?? [])).map { ($0.id, $0) }, uniquingKeysWith: RunRow.latest)
+                let wasBehind = behind
+                behind = fresh.values.contains { f in held[f.id].map { RunRow.latest($0, f) != $0 } ?? true }
+                if behind, !wasBehind, let r = fresh.values.first(where: { $0.isActive }) {
+                    let attempt = r.runAttempt.map { " (attempt \($0))" } ?? ""
+                    progress("… \(target.label): \(r.workflow ?? "a check") is running again\(attempt); cockpit's view still has the failure it retries")
+                }
                 switch d {
                 case .green, .red:
-                    return WaitOutcome(decision: d, source: .cockpit, cockpitAgeMs: age, cockpitSaid: nil)
+                    // Green here, after a red, is GitHub's word on a re-run.
+                    let byGitHub = redSaid != nil && d.exitCode == 0
+                    return WaitOutcome(decision: d, source: byGitHub ? .github : .cockpit, cockpitAgeMs: age,
+                                       cockpitSaid: byGitHub ? redSaid : nil)
                 case .pointless where !stale:
                     // A verdict from a view that is not current is not a reason to stop.
                     return WaitOutcome(decision: d, source: .cockpit, cockpitAgeMs: age, cockpitSaid: nil)
@@ -180,10 +218,10 @@ public struct WaitLoop: Sendable {
                 staleAnnounced = false
             }
 
-            let eager = stale || blind
+            let eager = stale || blind || behind
             // Do not pull GitHub forward while the SSE stream is open but the
             // first glance has not arrived yet (grace is from stream open).
-            let accelerate = collectorStale || silent || blind || (missing && !snap.streamOpen)
+            let accelerate = collectorStale || silent || blind || behind || (missing && !snap.streamOpen)
             if accelerate { nextCross = min(nextCross, askedAt.map { $0 + crossCheckStale * 1000 } ?? t) }
             if let ask = self.github, t >= nextCross {
                 askedAt = t

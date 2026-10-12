@@ -51,7 +51,26 @@ export function filterActiveRuns(runs) {
 }
 
 /**
- * Merge paginated workflow-run pages, deduping by run id.
+ * Of two copies of one workflow run, the one describing its latest attempt.
+ * A re-run keeps the run id, so two pages fetched in one tick can disagree:
+ * on jerv-ios PR #181 (2026-10-11) a failed attempt and its in-progress re-run
+ * were the same id. Higher `run_attempt` wins, then the later `updated_at`;
+ * on a tie, `a` (the copy already held).
+ *
+ * @param {object} a
+ * @param {object} b
+ * @returns {object}
+ */
+export function newerRun(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  const aa = a.run_attempt ?? 0, ba = b.run_attempt ?? 0;
+  if (aa !== ba) return ba > aa ? b : a;
+  return (Date.parse(b.updated_at) || 0) > (Date.parse(a.updated_at) || 0) ? b : a;
+}
+
+/**
+ * Merge paginated workflow-run pages, deduping by run id (latest attempt wins).
  *
  * @param {object[][]} pages
  * @returns {object[]}
@@ -60,7 +79,7 @@ export function mergeRunPages(pages) {
   const byId = new Map();
   for (const page of pages ?? []) {
     for (const run of page ?? []) {
-      if (run?.id != null) byId.set(run.id, run);
+      if (run?.id != null) byId.set(run.id, newerRun(byId.get(run.id), run));
     }
   }
   return [...byId.values()];

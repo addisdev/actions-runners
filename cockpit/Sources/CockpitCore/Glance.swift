@@ -259,6 +259,10 @@ public struct RunRow: Codable, Sendable, Equatable, Identifiable {
     /// The head commit of `prNumber` when the daemon last fetched this run
     /// (every tick). Nil for push runs, and from a daemon older than 10-06.
     public var prHead: String? = nil
+    /// Which attempt of the run this row describes. A re-run keeps the run
+    /// id, so this is what tells a failed attempt from its retry. Nil from a
+    /// daemon older than 2026-10-11.
+    public var runAttempt: Int? = nil
 
     public var isActive: Bool { status != "completed" }
     /// A pass. Only these three: a finished run with any other conclusion
@@ -271,6 +275,15 @@ public struct RunRow: Codable, Sendable, Equatable, Identifiable {
     /// conclusion GitHub adds later land here too.
     public var failed: Bool { !isActive && !passed }
     public var cancelled: Bool { conclusion == "cancelled" }
+
+    /// Of two rows for one run, the one describing its latest attempt: the
+    /// higher `runAttempt`, else the later `updatedAt`; a tie keeps `a`.
+    /// jerv-ios PR #181 (2026-10-11): attempt 2 had failed and attempt 3 was
+    /// running under the same id, and a wait read attempt 2.
+    public static func latest(_ a: RunRow, _ b: RunRow) -> RunRow {
+        if let x = a.runAttempt, let y = b.runAttempt, x != y { return y > x ? b : a }
+        return (b.updatedAt ?? 0) > (a.updatedAt ?? 0) ? b : a
+    }
 }
 
 public struct Incident: Codable, Sendable, Equatable, Identifiable {
@@ -383,6 +396,23 @@ public extension Glance {
     static func decode(_ data: Data) throws -> Glance {
         let g = try JSONDecoder().decode(Glance.self, from: data)
         guard g.schema == Glance.supportedSchema else { throw GlanceError.unsupportedSchema(g.schema) }
+        return g
+    }
+
+    /// This view with `fresh` rows (asked of GitHub since) laid over it:
+    /// each run keeps whichever copy is its latest attempt, filed under
+    /// `runs` while active and `recent` once finished.
+    func overlaying(_ fresh: [RunRow]) -> Glance {
+        guard !fresh.isEmpty else { return self }
+        var g = self
+        var runs = g.runs ?? [], recent = g.recent ?? []
+        for f in fresh {
+            let held = (runs + recent).first { $0.id == f.id }
+            let row = held.map { RunRow.latest($0, f) } ?? f
+            runs.removeAll { $0.id == f.id }; recent.removeAll { $0.id == f.id }
+            if row.isActive { runs.append(row) } else { recent.insert(row, at: 0) }
+        }
+        g.runs = runs; g.recent = recent
         return g
     }
 }
