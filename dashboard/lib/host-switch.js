@@ -75,6 +75,23 @@ export function drainsToReassert({ runners = [], now, seen = new Map(), graceMs 
   return { due, seen: next };
 }
 
+/**
+ * Whether a runner's .drain marker, read again just before acting, still says
+ * what `drainsToReassert` saw. The runner list is a tick old by then, and the
+ * tiers controller may have resumed the runner since; re-draining it would
+ * undo that.
+ *
+ * @param {string|null} text - the marker file's contents, null when absent
+ * @param {string|null} by   - the owner `drainsToReassert` reported
+ */
+export function markerStillHeld(text, by) {
+  if (!text) return false;
+  const lines = text.split('\n').map((l) => l.trim());
+  if (lines[0] !== 'drained' && lines[0] !== 'draining') return false;
+  const owner = lines.find((l) => l.startsWith('by='))?.slice(3) || null;
+  return owner === (by ?? null);
+}
+
 // drain-runner.sh arguments that re-apply a drain under the owner it already
 // has: an operator drain stays an operator drain, a tiers drain stays the
 // controller's, so whoever drained it is still the one who can resume it.

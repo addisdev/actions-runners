@@ -80,7 +80,7 @@ import { checkPosture } from './lib/posture.js';
 import { timeline } from './lib/timeline.js';
 import { TickGuard, stage } from './lib/tick-guard.js';
 import { decideTiers, tiersConfigFromEnv, primaryRungs, DRAIN_OWNER } from './lib/tiers.js';
-import { switchOffImpact, drainsToReassert, reassertArgs } from './lib/host-switch.js';
+import { switchOffImpact, drainsToReassert, reassertArgs, markerStillHeld } from './lib/host-switch.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(HERE, 'public');
@@ -2275,9 +2275,9 @@ function tiersLocal(a) {
 // A drained runner on this host whose service is running anyway is drained
 // again, under the owner its marker already names (lib/host-switch.js). One at
 // a time and off the tick: each is a launchctl call, and the next tick sees
-// the result.
+// the result. It queues behind the controller's own drains and resumes, and
+// rereads each marker first, so it never re-drains a runner tiers just resumed.
 let drainHoldSeen = new Map();
-let drainHoldChain = Promise.resolve();
 let drainHoldBusy = false;
 function holdLocalDrains(runners, now) {
   if (!CONFIG.holdDrains || CONFIG.readOnly || drainHoldBusy) return;
@@ -2285,8 +2285,11 @@ function holdLocalDrains(runners, now) {
   drainHoldSeen = seen;
   if (!due.length) return;
   drainHoldBusy = true;
-  drainHoldChain = drainHoldChain.then(async () => {
+  tiersLocalChain = tiersLocalChain.then(async () => {
     for (const d of due) {
+      let marker = null;
+      try { marker = readFileSync(join(CONFIG.root, d.dirName, '.drain'), 'utf8'); } catch { /* gone */ }
+      if (!markerStillHeld(marker, d.by)) continue;
       await new Promise((resolve) => {
         execFile('./scripts/drain-runner.sh', reassertArgs(d),
           { cwd: CONFIG.root, timeout: 60_000, maxBuffer: 256 * 1024 },

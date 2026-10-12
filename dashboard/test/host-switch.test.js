@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { switchOffImpact, drainsToReassert, reassertArgs, HOST_OWNER } from '../lib/host-switch.js';
+import { switchOffImpact, drainsToReassert, reassertArgs, markerStillHeld, HOST_OWNER } from '../lib/host-switch.js';
 import { hostDrainState } from '../lib/local.js';
 import { buildHostList } from '../lib/fleet.js';
 import { mergeHostSnapshots, choosePlacement } from '../lib/placement.js';
@@ -119,6 +119,29 @@ describe('drainsToReassert', () => {
       ['b', '--drain', '--by=tiers'],
       ['c', '--drain'],
     ]);
+  });
+});
+
+describe('markerStillHeld', () => {
+  test('a runner tiers resumed since the tick is not re-drained', () => {
+    assert.equal(markerStillHeld(null, 'tiers'), false);
+  });
+
+  test('the same owner still holds it', () => {
+    assert.equal(markerStillHeld('drained\nrequested_at=1\nby=tiers\n', 'tiers'), true);
+    assert.equal(markerStillHeld('draining\nby=host\n', 'host'), true);
+    assert.equal(markerStillHeld('drained\nrequested_at=1\n', null), true);
+  });
+
+  test('a marker that changed hands is left to its new owner', () => {
+    assert.equal(markerStillHeld('drained\nby=host\n', 'tiers'), false);
+    assert.equal(markerStillHeld('drained\nrequested_at=1\n', 'tiers'), false);
+    assert.equal(markerStillHeld('drained\nby=tiers\n', null), false);
+  });
+
+  test('anything but drained or draining is not a drain', () => {
+    assert.equal(markerStillHeld('', null), false);
+    assert.equal(markerStillHeld('resumed\n', null), false);
   });
 });
 

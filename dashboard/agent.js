@@ -40,7 +40,7 @@ import { headroom } from './lib/capacity.js';
 import { instanceOf } from './lib/state.js';
 import { loadOffset, saveOffset, readPending, advance } from './lib/admission-ship.js';
 import { autonomyStep, AUTONOMY_DEFAULT_MS } from './lib/agent-autonomy.js';
-import { drainsToReassert, reassertArgs } from './lib/host-switch.js';
+import { drainsToReassert, reassertArgs, markerStillHeld } from './lib/host-switch.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -457,6 +457,9 @@ async function holdDrains(runners) {
     const { due, seen } = drainsToReassert({ runners, now: Date.now(), seen: drainHoldSeen });
     drainHoldSeen = seen;
     for (const d of due) {
+      let marker = null;
+      try { marker = readFileSync(join(CONFIG.root, d.dirName, '.drain'), 'utf8'); } catch { /* gone */ }
+      if (!markerStillHeld(marker, d.by)) continue;
       const r = await new Promise((resolve) => {
         execFile(join(CONFIG.root, 'scripts', 'drain-runner.sh'), reassertArgs(d),
           { cwd: CONFIG.root, timeout: 60_000, maxBuffer: 256 * 1024 },
