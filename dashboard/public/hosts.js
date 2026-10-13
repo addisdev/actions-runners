@@ -9,6 +9,7 @@
 
 import { chartEl as h } from './charts.js';
 import * as control from './control.js';
+import { hostSwitch } from './host-switch.js';
 
 const mount = (el, ...kids) =>
   el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
@@ -98,7 +99,8 @@ function fleetCapacityPanel(data) {
       hosts.map((host) => {
         const cap = host.capacity ?? {};
         const state = host.stale ? 'stale — unknown'
-          : host.drained ? 'drained'
+          : host.off ? 'switched off'
+          : host.drained ? 'new runners paused'
             : cap.ok ? 'room for another runner'
               : (cap.reasons ?? ['at ceiling']).join('; ');
         return h('li', {},
@@ -168,7 +170,7 @@ function pendingCommandsPanel(commands) {
 function hostActions(host) {
   const canAct = control.hasToken() && !host.stale;
   if (!canAct && !control.hasToken()) {
-    return h('p', { class: 'note muted', text: 'Unlock the Control tab to drain, resume, or repair hosts.' });
+    return h('p', { class: 'note muted', text: 'Unlock the Control tab to switch, pause, or repair hosts.' });
   }
   return h('div', { class: 'host-actions', role: 'group', 'aria-label': `Actions for ${host.name}` },
     h('button', {
@@ -182,29 +184,33 @@ function hostActions(host) {
             if (active) loadHosts();
           },
         }),
-    host.drained
-      ? h('button', {
-          class: 'btn tiny warn',
-          text: 'Resume host',
-          'aria-label': `Resume runner placement on ${host.name}`,
-          disabled: canAct ? null : 'disabled',
-          onclick: async () => {
-            const res = await control.confirmAct('host.resume', { hostId: host.id });
-            if (res) alert(res.ok ? (res.output || 'Resume queued.') : `Failed: ${res.error || res.output}`);
-            if (active) loadHosts();
-          },
-        })
-      : h('button', {
-          class: 'btn tiny warn',
-          text: 'Drain host',
-          'aria-label': `Stop new runner placement on ${host.name}`,
-          disabled: canAct ? null : 'disabled',
-          onclick: async () => {
-            const res = await control.confirmAct('host.drain', { hostId: host.id });
-            if (res) alert(res.ok ? (res.output || 'Drain queued.') : `Failed: ${res.error || res.output}`);
-            if (active) loadHosts();
-          },
-        })
+    // The lighter lever, under the on/off switch: stop autoscale adding runners
+    // here while the existing ones keep working. Meaningless on an off host.
+    host.off
+      ? null
+      : host.drained
+        ? h('button', {
+            class: 'btn tiny',
+            text: 'Allow new runners',
+            'aria-label': `Let autoscale add runners to ${host.name} again`,
+            disabled: canAct ? null : 'disabled',
+            onclick: async () => {
+              const res = await control.confirmAct('host.resume', { hostId: host.id });
+              if (res) alert(res.ok ? (res.output || 'Resume queued.') : `Failed: ${res.error || res.output}`);
+              if (active) loadHosts();
+            },
+          })
+        : h('button', {
+            class: 'btn tiny',
+            text: 'Pause new runners',
+            'aria-label': `Stop autoscale adding runners to ${host.name}; existing runners keep taking jobs`,
+            disabled: canAct ? null : 'disabled',
+            onclick: async () => {
+              const res = await control.confirmAct('host.drain', { hostId: host.id });
+              if (res) alert(res.ok ? (res.output || 'Drain queued.') : `Failed: ${res.error || res.output}`);
+              if (active) loadHosts();
+            },
+          })
   );
 }
 
@@ -242,7 +248,7 @@ function hostCard(host) {
       host.stale
         ? h('span', { class: 'flag critical', text: `stale — last heard ${ago(host.lastHeartbeat)}` })
         : h('span', { class: 'flag good', text: `live · ${ago(host.lastHeartbeat)}` }),
-      host.drained ? h('span', { class: 'flag warning', text: 'drained' }) : null
+      hostSwitch(host, { impact: host.impact, onChange: () => (active ? loadHosts() : render()) })
     ),
     host.stale
       ? h('div', { class: 'note warn' },

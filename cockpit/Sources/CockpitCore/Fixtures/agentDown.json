@@ -49,6 +49,7 @@
    "staleForMs": 0,
    "ghOnly": false,
    "drained": false,
+   "off": false,
    "vitals": {
     "cores": 12,
     "load1": 20.77,
@@ -77,6 +78,7 @@
    "staleForMs": 540000,
    "ghOnly": false,
    "drained": false,
+   "off": false,
    "vitals": {
     "cores": null,
     "load1": null,
@@ -105,6 +107,7 @@
    "staleForMs": 0,
    "ghOnly": true,
    "drained": false,
+   "off": false,
    "vitals": null
   }
  ],

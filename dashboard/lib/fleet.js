@@ -69,6 +69,7 @@ export function adaptRemoteRunner(r, agentData = null) {
     hostId: agentData?.hostId ?? null,
     hostStale: Boolean(agentData?.hostStale),
     staleForMs: agentData?.staleForMs ?? 0,
+    hostOff: Boolean(agentData?.hostOff),
   };
 }
 
@@ -100,6 +101,7 @@ export function buildFleetRunners(localRunners, elsewhere, hostState, now = Date
         hostId: h.id,
         hostStale,
         staleForMs,
+        hostOff: Boolean(h.off),
       });
     }
   }
@@ -150,12 +152,14 @@ export function buildFleetRunners(localRunners, elsewhere, hostState, now = Date
  * @param {object}   [opts]
  * @param {string[]} [opts.coordinatorLabels]   - Capability labels for the coordinator host
  * @param {boolean}  [opts.coordinatorDrained]  - Whether the coordinator host is drained
+ * @param {boolean}  [opts.coordinatorOff]      - Whether the coordinator host is switched off
  * @param {string}   [opts.coordinatorName]     - Display name for the coordinator
  * @param {string}   [opts.coordinatorId]       - Stable id for the coordinator replica
  */
 export function buildHostList(localSnapshot, hostState, {
   coordinatorLabels = [],
   coordinatorDrained = false,
+  coordinatorOff = false,
   coordinatorName = LOCAL_HOST_ID,
   coordinatorId = LOCAL_HOST_ID,
 } = {}) {
@@ -169,7 +173,8 @@ export function buildHostList(localSnapshot, hostState, {
     host: localSnapshot.host ?? {},
     capacity: localSnapshot.capacity ?? null,
     runnerCount: (localSnapshot.runners ?? []).length,
-    drained: coordinatorDrained,
+    drained: coordinatorDrained || coordinatorOff,
+    off: coordinatorOff,
     local: true,
   };
 
@@ -188,7 +193,8 @@ export function buildHostList(localSnapshot, hostState, {
     host: h.host ?? {},
     capacity: h.capacity ?? null,
     runnerCount: h.runnerCount ?? (h.runners ?? []).length,
-    drained: Boolean(h.drained),
+    drained: Boolean(h.drained || h.off),
+    off: Boolean(h.off),
   }));
 
   return [local, ...remotes];

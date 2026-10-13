@@ -180,7 +180,9 @@ export function classifyQueueCause({ run, runners, capacity, api = {}, collector
 
   if (onlineRunners.length === 0 && downRunners.length > 0) {
     for (const r of downRunners) {
-      if (r.drainState) {
+      if (r.drainState && r.hostOff) {
+        evidence.push(`${r.name} is ${r.drainState}: host ${r.hostName ?? r.hostId} is switched off`);
+      } else if (r.drainState) {
         evidence.push(`${r.name} is ${r.drainState}`);
       } else if (r.launchdState !== 'running') {
         evidence.push(`${r.name} launchd state: ${r.launchdState}`);

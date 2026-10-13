@@ -105,8 +105,17 @@ export function readDrainOwner(dir) {
 //
 // It cannot collide with a runner's own flag — runners live in subdirectories,
 // and discoverRunnerDirs skips dotfiles at the root.
+//
+// Returns null (on), 'drained' (new runners paused), or 'off' (switched off:
+// scripts/host-drain.sh --off drained every runner too). Both non-null values
+// keep placement away, so callers that only ask "drained?" need no change.
 export function hostDrainState(root) {
-  return readDrainState(root);
+  const p = join(root, '.drain');
+  if (!existsSync(p)) return null;
+  try {
+    if (readFileSync(p, 'utf8').split('\n')[0].trim() === 'off') return 'off';
+  } catch { /* ignore */ }
+  return 'drained';
 }
 
 export function discoverRunnerDirs(root) {

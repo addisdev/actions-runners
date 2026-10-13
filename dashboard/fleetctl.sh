@@ -140,6 +140,7 @@ cmd_install() {
     <key>FLEET_HOST_NAME</key><string>${FLEET_HOST_NAME:-$(scutil --get LocalHostName 2>/dev/null || hostname -s)}</string>
     <key>FLEET_HOST_LABELS</key><string>${FLEET_HOST_LABELS:-}</string>
     <key>FLEET_READ_ONLY</key><string>${FLEET_READ_ONLY:-0}</string>
+    <key>FLEET_HOLD_DRAINS</key><string>${FLEET_HOLD_DRAINS:-1}</string>
   </dict>
   <!-- Unlike the runner plists, this one sets KeepAlive. health.sh exists
        precisely because theirs do not, and a monitoring daemon that dies

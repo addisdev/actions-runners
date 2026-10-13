@@ -197,6 +197,73 @@ else
 fi
 
 echo
+echo "host-drain.sh --off / --on — the whole host"
+HOST_TMP="$(mktemp -d)"
+make_host_runner() {
+  local dir="$HOST_TMP/$1"
+  mkdir -p "$dir"
+  cat > "$dir/.runner" <<JSON
+{"agentName":"$2","gitHubUrl":"https://github.com/testowner/$1","workFolder":"_work"}
+JSON
+  cat > "$dir/svc.sh" <<'SVC'
+#!/usr/bin/env bash
+echo "$1" >> "$(dirname "$0")/svc.log"
+exit 0
+SVC
+  chmod +x "$dir/svc.sh"
+}
+host_log() { cat "$HOST_TMP/$1/svc.log" 2>/dev/null | tr '\n' ',' ; }
+make_host_runner h-idle host-h-idle
+make_host_runner h-busy host-h-busy
+make_host_runner h-op host-h-op
+printf 'drained\nrequested_at=1\n' > "$HOST_TMP/h-op/.drain"
+(
+  exec -a "$HOST_TMP/h-busy/bin/Runner.Worker spawnclient 1 2" sleep 20
+) &
+HOST_BUSY_PID=$!
+sleep 0.5
+
+FLEET_ROOT="$HOST_TMP" "$ROOT/scripts/host-drain.sh" --off >/dev/null 2>&1
+check "--off marks the host off" "$(head -1 "$HOST_TMP/.drain" 2>/dev/null)" "off"
+check "an idle runner is drained by the host" "$(sed -n 's/^by=//p' "$HOST_TMP/h-idle/.drain")" "host"
+check "and stopped now" "$(host_log h-idle)" "stop,"
+check "a busy runner is draining, not stopped" "$(head -1 "$HOST_TMP/h-busy/.drain")" "draining"
+check "its job is not interrupted" "$(host_log h-busy)" ""
+check "it gets the drain-stop flag" "$([ -f "$HOST_TMP/h-busy/.drain-stop" ] && echo yes || echo no)" "yes"
+check "an operator's drain is left alone" "$(grep -c '^by=' "$HOST_TMP/h-op/.drain")" "0"
+OUT="$(FLEET_ROOT="$HOST_TMP" "$ROOT/scripts/host-drain.sh" --status 2>&1)"
+case "$OUT" in "host is off"*) ok "--status reports off" ;; *) bad "--status reports off (got: $OUT)" ;; esac
+kill "$HOST_BUSY_PID" 2>/dev/null
+wait "$HOST_BUSY_PID" 2>/dev/null
+
+if FLEET_ROOT="$HOST_TMP" "$ROOT/scripts/host-drain.sh" --resume >/dev/null 2>&1; then
+  bad "--resume refuses a host that is off"
+else
+  ok "--resume refuses a host that is off"
+fi
+check "and leaves it off" "$(head -1 "$HOST_TMP/.drain" 2>/dev/null)" "off"
+FLEET_ROOT="$HOST_TMP" "$ROOT/scripts/host-drain.sh" --drain >/dev/null 2>&1
+check "--drain does not downgrade off to paused" "$(head -1 "$HOST_TMP/.drain" 2>/dev/null)" "off"
+
+FLEET_ROOT="$HOST_TMP" "$ROOT/scripts/host-drain.sh" --on >/dev/null 2>&1
+check "--on removes the host marker" "$([ -f "$HOST_TMP/.drain" ] && echo yes || echo no)" "no"
+check "the host's idle runner is resumed" "$([ -f "$HOST_TMP/h-idle/.drain" ] && echo yes || echo no)" "no"
+check "and started" "$(host_log h-idle)" "stop,start,"
+check "the busy one is resumed too" "$([ -f "$HOST_TMP/h-busy/.drain" ] && echo yes || echo no)" "no"
+check "and its pending stop is cancelled" "$([ -f "$HOST_TMP/h-busy/.drain-stop" ] && echo yes || echo no)" "no"
+check "the operator's runner stays drained" "$(head -1 "$HOST_TMP/h-op/.drain")" "drained"
+check "and is not started" "$(host_log h-op)" ""
+
+FLEET_ROOT="$HOST_TMP" "$ROOT/scripts/host-drain.sh" --drain >/dev/null 2>&1
+check "--drain still pauses placement only" "$(head -1 "$HOST_TMP/.drain")" "drained"
+check "and touches no runner" "$(host_log h-idle)" "stop,start,"
+OUT="$(FLEET_ROOT="$HOST_TMP" "$ROOT/scripts/host-drain.sh" --status 2>&1)"
+case "$OUT" in *"new runners paused"*) ok "--status reports paused" ;; *) bad "--status reports paused (got: $OUT)" ;; esac
+FLEET_ROOT="$HOST_TMP" "$ROOT/scripts/host-drain.sh" --resume >/dev/null 2>&1
+check "--resume clears a pause" "$([ -f "$HOST_TMP/.drain" ] && echo yes || echo no)" "no"
+rm -rf "$HOST_TMP"
+
+echo
 echo "health.sh — a drained runner is not a fault"
 HEALTH_TMP="$(mktemp -d)"
 make_health_runner() {

@@ -56,6 +56,7 @@
    "staleForMs": 0,
    "ghOnly": false,
    "drained": false,
+   "off": false,
    "vitals": {
     "cores": 12,
     "load1": 20.77,
@@ -84,6 +85,7 @@
    "staleForMs": 0,
    "ghOnly": true,
    "drained": false,
+   "off": false,
    "vitals": null
   }
  ],

@@ -245,14 +245,38 @@ FLEET_MIN_FREE_DISK_GB=50    # do not add below this free disk threshold
 
 ## Taking a host out of rotation
 
+There are two levels, and both are reversible:
+
+| | Existing runners | New runners | How |
+|---|---|---|---|
+| **Switch off** | Stop taking jobs; a busy one finishes its job first, then stops | None placed here | The switch beside the host's name (Fleet and Hosts tabs), or `scripts/host-drain.sh --off` |
+| **Pause new runners** | Keep taking jobs | None placed here | **Pause new runners** on the host's card, or `scripts/host-drain.sh --drain` |
+
+Switching off drains every runner on the host with owner `host`. Nothing is
+deregistered, so GitHub still lists them (offline), and switching back on
+(`--on`) resumes exactly those runners — a runner you drained yourself stays
+drained. Before it asks, the switch names the jobs that will finish first and
+any repo that no other host serves, whose jobs would queue until the host is
+back on.
+
 ```bash
 # On any host (coordinator or agent):
-echo drained > ~/actions-runners/.drain     # placement skips this host
-rm ~/actions-runners/.drain                 # back in rotation
-
-# The agent reports drain state on its next heartbeat.
-# Existing runners keep working — only new placement is affected.
+scripts/host-drain.sh --off      # stop taking CI jobs; busy runners finish first
+scripts/host-drain.sh --on       # take CI jobs again
+scripts/host-drain.sh --drain    # pause new runners only
+scripts/host-drain.sh --resume   # allow new runners again
+scripts/host-drain.sh --status   # on, paused, or off — and runners still finishing
 ```
+
+The host marker is `~/actions-runners/.drain`: first line `drained` (paused)
+or `off`. The agent reports it on its next heartbeat. While a host is off the
+standby tiers controller treats it as unusable (an off primary wakes the
+standby; an off standby is never woken), autoscale places nothing there, the
+agent refuses `runner.register`, and agent autonomy resumes nothing.
+
+A drained runner's LaunchAgent still starts it at login or after a reboot.
+fleetd and the agent stop it again within a heartbeat ("drain held" in the
+log), unless `FLEET_HOLD_DRAINS=0`.
 
 ## Token rotation
 

@@ -71,6 +71,7 @@ export async function collectHostReport({
     reportedAt: now,
     fleetRoot: root,
     drained: Boolean(hostDrainState(root)),
+    off: hostDrainState(root) === 'off',
     runners,
     repos: [...new Set(runners.map((r) => r.repo))],
     host,

@@ -41,6 +41,12 @@ describe('agent autonomy rule', () => {
     assert.deepEqual(s.release, []);
   });
 
+  test('a host that is switched off releases nothing, even the controller\'s drains', () => {
+    const s = autonomyStep({ now: NOW, lastOkAt: NOW - 600_000, runners, hostOff: true });
+    assert.equal(s.autonomous, true);
+    assert.deepEqual(s.release, []);
+  });
+
   test('0 disables the rule', () => {
     const s = autonomyStep({ now: NOW, lastOkAt: NOW - 3_600_000, afterMs: 0, runners });
     assert.equal(s.autonomous, false);

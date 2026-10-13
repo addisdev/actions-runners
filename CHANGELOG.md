@@ -12,6 +12,19 @@ Portable, mobile-first dashboard.
 
 ### Added
 
+- **Host on/off switch.** A switch beside each host's name in the Fleet and
+  Hosts tabs (on a single host, above the runner grid) takes the whole host
+  out of CI: every runner drains with owner `host`, busy ones after their
+  current job, and switching back on resumes only those. The confirm names the
+  jobs still finishing and any repo no other host serves. `host.off`/`host.on`
+  actions (agents too; `cockpit run --host`), `scripts/host-drain.sh --off/--on/--status`,
+  host marker first line `off`. An off host is unusable to tiers and
+  placement, refuses registration, and gets nothing from agent autonomy.
+  `/api/hosts` gains `off`, `drainingCount`, `activeCount` and `impact`;
+  `/api/state` gains `hostImpact`. The old host drain is now the secondary
+  **Pause new runners**. See
+  [Taking a host out of rotation](docs/federation.md#taking-a-host-out-of-rotation).
+
 - **A full shared memory table is now a verdict, not a mystery red test.**
   `hooks/shm-reap.sh` logged orphan sweeps and `low` events to
   `dashboard/logs/shm.ndjson`, and nothing read it; the shmget error lives in
@@ -186,6 +199,11 @@ Portable, mobile-first dashboard.
   from 1,284 offline alerts (264 notifications) to 21 (41).
 
 ### Fixed
+
+- Drained runners came back after a reboot or login, because their
+  LaunchAgents run at load and `svc.sh stop` only unloads. fleetd and the agent
+  now stop a running drained runner again within a tick, keeping its drain
+  owner (`FLEET_HOLD_DRAINS`, default on).
 
 - **Killed Postgres clusters exhausted the host's shared memory table.** A
   cancelled or timed-out job kills its throwaway cluster without a clean

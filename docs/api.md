@@ -223,7 +223,12 @@ workflow schedules.
 ### `GET /api/hosts`
 
 Merged view of all federation hosts (coordinator + agents). Includes each
-host's runners, capacity, load, and heartbeat age.
+host's runners, capacity, load, and heartbeat age. `drained` is true when the
+host takes no new runners (paused or off), `off` when it is switched off, and
+`drainingCount`/`activeCount` count its runners still finishing a job and still
+taking jobs. `impact` is what switching it off would do:
+`{ runners, active, busy: [runner names], stranded: [repos no other host serves] }`.
+The same object per host ID is `hostImpact` on `/api/state`.
 
 ### `GET /api/health`
 
@@ -330,6 +335,9 @@ Execute a control-plane action.
 | `runner.drain` | Mark a runner draining |
 | `runner.resume` | Resume a drained runner |
 | `runner.deregister` | Remove a runner |
+| `host.off` | Switch a host off: every runner drains, busy ones after their job (`args.hostId` for an agent) |
+| `host.on` | Switch it back on: resumes the runners `host.off` drained |
+| `host.drain` / `host.resume` | Pause or allow new-runner placement on a host |
 | `health.check` | Run `health.sh` |
 
 ### `GET /api/runner/bundle?name=<runner-name>` (requires token)

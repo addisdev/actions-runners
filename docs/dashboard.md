@@ -153,7 +153,8 @@ Federated host view (when agents are configured). Shows every Mac's runners,
 load, memory, disk, shared memory (free System V segments, orphans the next job
 hook will remove, and how many the hooks reaped in the last 24 hours: the leak
 rate of killed Postgres clusters), labels, headroom, drain state, and
-host-level repair/drain controls. A host whose heartbeat is stale (>2 minutes old) is flagged in
+host-level controls: the on/off switch and **Pause new runners** (see
+[Taking a host out of rotation](federation.md#taking-a-host-out-of-rotation)). A host whose heartbeat is stale (>2 minutes old) is flagged in
 orange. While the tab is open it refreshes every 30 seconds.
 
 Above the host cards, a **fleet-wide capacity** summary names which hosts
@@ -164,7 +165,8 @@ waiting for a host. In PostgreSQL HA mode the global strip also names this
 replica's leader/standby role.
 
 When more than one host is connected, the Fleet tab becomes host-first: runners
-are grouped by Mac and then by project. Capacity separates **this host** from
+are grouped by Mac and then by project, with each Mac's on/off switch beside its
+name. On a single host the switch sits above the runner grid. Capacity separates **this host** from
 **fleet-wide** headroom, and Runs attributes assigned runners to their host.
 
 ## Queue diagnosis causes
@@ -206,6 +208,9 @@ browser stores this token in `localStorage` after you paste it once.
 | Duplicate runner | `register.sh` with same labels + `RUNNER_INSTANCE=N+1` | Yes |
 | Drain runner | `scripts/drain-runner.sh --drain` | Yes |
 | Resume runner | `scripts/drain-runner.sh --resume` | Yes |
+| Switch host off | `scripts/host-drain.sh --off`; names busy jobs and repos no other host serves | Yes |
+| Switch host on | `scripts/host-drain.sh --on` | No |
+| Pause / allow new runners | `scripts/host-drain.sh --drain` / `--resume` | Pause only |
 | Deregister runner | `scripts/deregister.sh --apply` | Yes |
 | Health check | `./health.sh` | No |
 | Download diagnostics | Redacted bundle (token-gated) | No |
