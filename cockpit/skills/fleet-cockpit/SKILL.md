@@ -24,6 +24,7 @@ meaningless:
 | `host-down` / `blind` | host asleep, rebooted with nobody logged in, or this Mac offline | stop; tell the user — only a person can wake the host |
 | `disk-floor` | jobs held at "Set up runner" because disk is under the floor; looks like load | tell the user; cleanup is theirs to approve |
 | `dead-service` | a runner service died; launchd will not revive it | `cockpit run fleet.healthRepair --yes` only if the user allowed repairs |
+| `shm-low` | the host's System V shared memory table is (nearly) full; Postgres suites fail with `could not create shared memory segment: No space left on device` | not the code; do not "fix" the test; tell the user, and re-run once the table has room |
 | `saturated` | jobs lost contact mid-step: host starvation, not code | do not re-run or "fix" the test; wait or tell the user |
 | `account-blocked` | GitHub refused jobs (billing) or a storage quota is full | not the code; tell the user |
 | `config-drift` | labels match no runner / repo unserved | fix `runs-on:` or ask for a runner |

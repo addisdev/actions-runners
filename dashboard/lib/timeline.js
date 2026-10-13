@@ -26,6 +26,8 @@ export function rungOf(rule, key = '') {
       return key === 'admission:disk-floor' ? 'disk-floor' : 'waiting';
     case 'host-stale': case 'offline-host':
       return 'host-down';
+    case 'shm-low':
+      return 'shm-low';
     case 'swap-thrashing': case 'memory-pressure': case 'host-saturated':
       return 'saturated';
     case 'account-blocked': case 'account-blocked-recurring': case 'account-quota':

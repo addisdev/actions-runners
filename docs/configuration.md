@@ -364,7 +364,18 @@ touched.
 |---|---|---|
 | `FLEET_SHM_REAP` | `1` | Set to `0` to turn the sweep off. |
 | `FLEET_SHM_LOG` | `dashboard/logs/shm.ndjson` | NDJSON log: one `reaped` line per sweep that removed something (with the count and segment ids), and a `low` line whenever fewer than `FLEET_SHM_LOW_FREE` segments are left free. A clean sweep writes nothing. |
-| `FLEET_SHM_LOW_FREE` | `4` | Free-segment count below which the sweep logs `low` and warns in the job log, even when nothing could be removed. |
+| `FLEET_SHM_LOW_FREE` | `4` | Free-segment count below which the sweep logs `low` and warns in the job log, even when nothing could be removed. The dashboard opens the `shm-low` verdict below the same count. |
+
+The dashboard reads the same table. `fleetd.js` and `agent.js` sample
+`ipcs -m -o -p` every tick, counting orphans by the hook's rules as free, and
+summarise the tail of `FLEET_SHM_LOG`: segments reaped in the last 24 hours (the
+leak rate, shown on the host card) and the newest `low` event. Both ride on the
+host vitals, so an agent host's table reaches the coordinator in its heartbeat.
+The verdict's [`shm-low` rung](cockpit/verdict.md) opens when the live sample is
+under `FLEET_SHM_LOW_FREE`, or a `low` event is under 30 minutes old; the alert
+of the same name opens with it. `fleetctl.sh install` and `agentctl.sh install`
+pass `FLEET_SHM_LOG` and `FLEET_SHM_LOW_FREE` from `fleet.env` into the
+LaunchAgent, so the daemon and the hooks agree on both.
 
 ## Agent variables
 

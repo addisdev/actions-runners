@@ -15,7 +15,7 @@
    "label": "Nothing to do",
    "kind": "none"
   },
-  "rung": 8,
+  "rung": 9,
   "open": [
    {
     "id": "clear",
@@ -57,7 +57,12 @@
     "diskFloorGb": 40,
     "diskFloorEtaMs": null,
     "diskRateGbPerHour": null,
-    "uptimeSec": 781840
+    "uptimeSec": 781840,
+    "shmLimit": null,
+    "shmUsed": null,
+    "shmOrphaned": null,
+    "shmLowFree": null,
+    "shmReaped24h": null
    }
   },
   {

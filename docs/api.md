@@ -86,7 +86,11 @@ every tick.
 Fields that would be `null` are omitted from runners, queue entries, failures
 and incidents. Host vitals carry `diskFloorEtaMs` (when free disk reaches the admission
 floor at the current rate: the nearer of a 6-hour and a 72-hour linear fit, or
-absent when the line is flat or rising) and `diskRateGbPerHour`. `runs` carries the active runs and `recent` the runs finished in the last two
+absent when the line is flat or rising) and `diskRateGbPerHour`, and the System
+V shared memory table: `shmLimit`, `shmUsed`, `shmOrphaned` (segments the next
+job hook will remove), `shmLowFree` and `shmReaped24h` (orphans the hooks
+removed in the last 24 hours, the leak rate); null where the host could not
+sample it. `runs` carries the active runs and `recent` the runs finished in the last two
 hours, compact (id, repo, workflow, status, conclusion, branch, sha, prNumber,
 url, timing), which is enough to roll a commit's checks into one row. Queue
 entries carry `etaStartMs` and `etaDoneMs` as `[p50, p90]` ranges and
@@ -105,11 +109,12 @@ any time and decoders should ignore what they do not know.
 | 1 | `host-down` | critical | a federated agent host has stopped heartbeating |
 | 2 | `disk-floor` | critical | a job is held by the admission disk floor, or disk is under the floor while admission enforces |
 | 3 | `dead-service` | critical | a runner service is dead or missing, or a runner has been offline for 5 min, or work is queued behind a down runner |
-| 4 | `saturated` | warning | two or more `runner-lost` jobs in an hour, sustained paging, or critical memory pressure. A run queued because the headroom gate is at capacity is `waiting`, not this |
-| 5 | `account-blocked` | warning | an `account-blocked` or `account-quota` job in the last 6 hours |
-| 6 | `config-drift` | warning | an orphan or label mismatch, or a queue cause that waiting cannot fix (`unserved`, `role-unserved`, `label-mismatch`, `github-hosted`) |
-| 7 | `waiting` | ok | runs are queued or held for an admission slot, and nothing above explains them |
-| 8 | `clear` | ok | none of the above |
+| 4 | `shm-low` | warning | fewer than `FLEET_SHM_LOW_FREE` System V shared memory segments are free on a reporting host, counting orphans the next job hook will remove as free, or that host's `hooks/shm-reap.sh` logged a `low` event in the last 30 min. Critical, titled "full", when none are free |
+| 5 | `saturated` | warning | two or more `runner-lost` jobs in an hour, sustained paging, or critical memory pressure. A run queued because the headroom gate is at capacity is `waiting`, not this |
+| 6 | `account-blocked` | warning | an `account-blocked` or `account-quota` job in the last 6 hours |
+| 7 | `config-drift` | warning | an orphan or label mismatch, or a queue cause that waiting cannot fix (`unserved`, `role-unserved`, `label-mismatch`, `github-hosted`) |
+| 8 | `waiting` | ok | runs are queued or held for an admission slot, and nothing above explains them |
+| 9 | `clear` | ok | none of the above |
 
 `verdict.open` lists every rung that is currently true, in ladder order.
 `verdict.next.kind` is `action` (an id from `GET /api/actions`), `url`,

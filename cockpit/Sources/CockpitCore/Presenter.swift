@@ -218,6 +218,11 @@ public enum Presenter {
         if let s = v.swapinsPerSec {
             out.append(VitalModel(label: "swap-ins", value: "\(Int(s.rounded()))/s", tone: s >= 50 ? .warning : .ok))
         }
+        if let free = v.shmFree, let limit = v.shmLimit {
+            let low = v.shmLowFree ?? 4
+            out.append(VitalModel(label: "shared mem", value: "\(free)/\(limit) free",
+                                  tone: free == 0 ? .critical : free < low ? .warning : .ok))
+        }
         return out
     }
 
@@ -364,6 +369,7 @@ public enum Presenter {
         case "blind": return "wifi.slash"
         case "host-down": return "bolt.horizontal.circle"
         case "disk-floor": return "externaldrive.badge.exclamationmark"
+        case "shm-low": return "memorychip"
         default: break
         }
         switch tone {

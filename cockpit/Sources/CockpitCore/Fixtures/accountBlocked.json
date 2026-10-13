@@ -20,7 +20,7 @@
    "kind": "url",
    "url": "https://github.com/settings/billing"
   },
-  "rung": 5,
+  "rung": 6,
   "open": [
    {
     "id": "account-blocked",
@@ -68,7 +68,12 @@
     "diskFloorGb": 40,
     "diskFloorEtaMs": null,
     "diskRateGbPerHour": null,
-    "uptimeSec": 781840
+    "uptimeSec": 781840,
+    "shmLimit": null,
+    "shmUsed": null,
+    "shmOrphaned": null,
+    "shmLowFree": null,
+    "shmReaped24h": null
    }
   },
   {
