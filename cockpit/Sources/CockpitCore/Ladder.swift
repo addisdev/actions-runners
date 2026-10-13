@@ -23,6 +23,7 @@ public enum Ladder {
          .unknown, ["unreachable", "dashboard-down", "off-network", "connecting"]),
         ("disk-floor", "Disk floor held", "Jobs held at Set up runner because free disk is under the admission floor.", .critical, []),
         ("dead-service", "Dead service", "A runner service died; launchd will not revive it.", .critical, []),
+        ("shm-low", "Shared memory", "The System V shared memory table is nearly full; new Postgres clusters fail in shmget.", .warning, []),
         ("saturated", "Saturated", "Jobs lose contact mid-step because the host is starved.", .warning, []),
         ("account-blocked", "Account blocked", "GitHub refuses or caps work. Nothing on the fleet is wrong.", .warning, []),
         ("config-drift", "Config drift", "Labels, orphans or unserved repos: work that can never be picked up.", .warning, []),

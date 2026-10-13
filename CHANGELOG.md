@@ -12,6 +12,20 @@ Portable, mobile-first dashboard.
 
 ### Added
 
+- **A full shared memory table is now a verdict, not a mystery red test.**
+  `hooks/shm-reap.sh` logged orphan sweeps and `low` events to
+  `dashboard/logs/shm.ndjson`, and nothing read it; the shmget error lives in
+  step logs, which no failure class reads, so `cockpit why` called those
+  failures ordinary. `fleetd.js` and `agent.js` now sample `ipcs -m -o -p` each
+  tick (orphans the next hook will remove count as free) and summarise the log
+  tail into the host vitals (`host.shm`, glance `shm*` vitals). A new `shm-low`
+  rung, between `dead-service` and `saturated`, opens when fewer than
+  `FLEET_SHM_LOW_FREE` segments are free on any reporting host or a `low` event
+  is under 30 minutes old (critical when the table is full), with an alert of
+  the same name. Host cards show free segments and orphans reaped in 24 h, the
+  leak rate. The cockpit decodes the rung, the vitals and the history lane, and
+  `cockpit why` flags it beside a repo's failures. `dashboard/lib/shm.js`.
+
 - **Standby tiers.** Run CI on a primary host first and bring a standby
   host's runners online only when the primary is at its admission cap for 60 s,
   has a run queued over 2 min with no idle matching runner, or is unfit

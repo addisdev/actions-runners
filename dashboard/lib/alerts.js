@@ -28,6 +28,7 @@
 import { execFile } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { FAILURE_CLASSES } from './failures.js';
+import { shmPressure } from './shm.js';
 import { parseDiskHold } from './verdict.js';
 import {
   annotateActiveFromDb,
@@ -336,6 +337,35 @@ export class Alerts {
       }
     } else {
       this.sustained('mempressure', false, c.pressureSustainMs, now);
+    }
+
+    // The System V shared memory table (lib/shm.js). When it fills, every new
+    // Postgres cluster fails in shmget and the job reads as a broken test; the
+    // error is in the step log, which lib/failures.js never sees. Every host,
+    // because Postgres suites run wherever a runner picks them up. Not
+    // sustained: the hook's `low` event already records a moment that has
+    // usually passed by the next tick, and its window is the debounce.
+    const tables = [];
+    const localIds = new Set((snapshot.hosts ?? []).filter((h) => h.local).map((h) => h.id));
+    for (const h of snapshot.hosts ?? []) {
+      if (h.stale || h.hostStale || (!h.local && localIds.has(h.id))) continue;
+      tables.push({ id: h.local ? 'local' : h.id, name: h.name ?? h.id, shm: (h.host ?? (h.local ? host : null))?.shm });
+    }
+    if (!localIds.size) tables.push({ id: 'local', name: host.hostname ?? 'this host', shm: host.shm });
+    for (const t of tables) {
+      const p = shmPressure(t.shm, now);
+      if (!p?.low) continue;
+      const where = t.id === 'local' ? '' : ` on ${t.name}`;
+      const freeNow = p.free != null ? `${p.free} of ${p.limit} segments free now` : 'no live sample';
+      const event = p.recentLow
+        ? `; ${p.recentLow.free ?? '?'} free after reaping at ${new Date(p.recentLow.at).toISOString().slice(11, 16)}Z`
+        : '';
+      add(t.id === 'local' ? 'host:shm-low' : `host:shm-low:${t.id}`, 'shm-low', p.full ? 'critical' : 'warning',
+        p.full ? `Shared memory table is full${where}` : `Shared memory table nearly full${where}`,
+        `${freeNow}${event}. ${p.reaped24h} orphaned segment${p.reaped24h === 1 ? '' : 's'} reaped in the last 24 h. ` +
+          'Postgres clusters fail in shmget with "No space left on device" when it fills; that red suite is the host, ' +
+          'not the code. The job hooks remove only their own orphans, so what is left is live clusters or another ' +
+          "user's segments: `ipcs -m -o -p` lists them.");
     }
 
     // Admission holds. The hook's disk floor freezes every runner at once and

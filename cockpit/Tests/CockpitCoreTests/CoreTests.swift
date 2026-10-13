@@ -13,6 +13,7 @@ let expectedVerdicts: [String: String] = [
     "diskHold": "disk-floor",
     "diskBelowIdle": "disk-floor",
     "saturated": "saturated",
+    "shmLow": "shm-low",
     "accountBlocked": "account-blocked",
     "drift": "config-drift",
     "agentDown": "host-down",

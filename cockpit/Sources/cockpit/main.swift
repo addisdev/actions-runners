@@ -314,6 +314,11 @@ case "why":
         if !failures.isEmpty {
             print("\nFailed in the last 2 hours:")
             for f in failures { print("  \(f.workflow ?? "?"): \(f.label)\(f.notYourCode == true ? "  [not your code]" : "")") }
+            // The shmget error is in the step log, which no failure class reads.
+            if let shm = src.verdict.open.first(where: { $0.id == "shm-low" }) {
+                print("  ! \(shm.title): a Postgres suite that failed in shmget is the host, not the code")
+                for e in (shm.evidence ?? []).prefix(2) { print("    · \(e)") }
+            }
         }
         if !incidents.isEmpty {
             print("\nOpen alerts:")

@@ -18,11 +18,12 @@ runner for this repo is busy" is a misreading.
 | 1 | `host-down` | critical | Host is not reporting | A federated agent host stopped heartbeating (the cockpit also uses this id for the coordinator itself — [below](#when-the-dashboard-does-not-answer)) | Check the agent process and network on that host |
 | 2 | `disk-floor` | critical | Disk floor is holding jobs | A job is held by the admission disk floor, or free disk is under the floor while admission enforces | **Preview cleanup** → **Apply cleanup** |
 | 3 | `dead-service` | critical | Runner service is down | A runner service is dead or missing, a runner has been offline for 5 minutes, or work is queued behind a down runner | **Health check and repair** |
-| 4 | `saturated` | warning | Host is saturated | Two or more `runner-lost` jobs in an hour, sustained paging, or critical memory pressure | Show top CPU on the host |
-| 5 | `account-blocked` | warning | GitHub is refusing jobs | An `account-blocked` or `account-quota` failure in the last 6 hours | **Open billing** |
-| 6 | `config-drift` | warning | Configuration drift | An orphan runner or label mismatch, or a queue cause that waiting cannot fix | Open the Lint tab |
-| 7 | `waiting` | ok | Working | Runs are queued or held for an admission slot, and nothing above explains them | Nothing to do |
-| 8 | `clear` | ok | All clear | None of the above | Nothing to do |
+| 4 | `shm-low` | warning (critical when full) | Shared memory table nearly full | Fewer than `FLEET_SHM_LOW_FREE` (4) System V segments free on a host, or a `low` event from `hooks/shm-reap.sh` in the last 30 minutes. Every new Postgres cluster fails in shmget when the table fills, which reads as a broken test | List the segments: `ipcs -m -o -p` |
+| 5 | `saturated` | warning | Host is saturated | Two or more `runner-lost` jobs in an hour, sustained paging, or critical memory pressure | Show top CPU on the host |
+| 6 | `account-blocked` | warning | GitHub is refusing jobs | An `account-blocked` or `account-quota` failure in the last 6 hours | **Open billing** |
+| 7 | `config-drift` | warning | Configuration drift | An orphan runner or label mismatch, or a queue cause that waiting cannot fix | Open the Lint tab |
+| 8 | `waiting` | ok | Working | Runs are queued or held for an admission slot, and nothing above explains them | Nothing to do |
+| 9 | `clear` | ok | All clear | None of the above | Nothing to do |
 
 `verdict.open` lists every rung that is true right now, in ladder order; the
 popover shows the first as the verdict and the rest as *also open*.
@@ -34,6 +35,10 @@ These were each read as an incident at least once, and are deliberately not:
 - **A disk-floor hold whose disk has since recovered.** A held job's reason is
   logged once, when the hold starts. `disk-floor` needs free disk to actually be
   under the floor now, not a stale reason saying it was.
+- **Orphaned shared memory segments.** A segment a killed Postgres cluster
+  left behind is removed by the next job's hook before that job's steps run,
+  so `shm-low` counts it as free. What opens the rung is the table filling
+  with live clusters or another user's segments, which no hook will remove.
 - **Memory pressure "warning" on its own.** On a busy build host that is normal.
   `saturated` needs lost jobs, sustained paging or *critical* pressure.
 - **A run queued because the headroom gate is at capacity.** That is the gate

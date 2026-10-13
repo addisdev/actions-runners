@@ -543,3 +543,42 @@ describe('disk heading for the floor', () => {
     assert.equal(alerts.open.has('host:disk-floor-soon'), false);
   });
 });
+
+describe('shared memory table', () => {
+  const table = (patch) => ({ limit: 32, used: 10, orphaned: 0, lowFree: 4, reaped24h: 5, lastLow: null, ...patch });
+
+  test('nearly full opens a warning, drained closes it, full opens critical', () => {
+    const alerts = makeAlerts();
+    const t0 = Date.now();
+    alerts.evaluate({ host: { shm: table({ used: 29 }) } }, t0);
+    assert.equal(alerts.open.get('host:shm-low')?.severity, 'warning');
+    assert.match(alerts.open.get('host:shm-low').body, /3 of 32 segments free now/);
+    assert.match(alerts.open.get('host:shm-low').body, /5 orphaned segments reaped/);
+    alerts.evaluate({ host: { shm: table({ used: 10 }) } }, t0 + 15000);
+    assert.equal(alerts.open.has('host:shm-low'), false);
+    alerts.evaluate({ host: { shm: table({ used: 32 }) } }, t0 + 30000);
+    assert.equal(alerts.open.get('host:shm-low')?.severity, 'critical');
+    assert.match(alerts.open.get('host:shm-low').title, /is full/);
+  });
+
+  test('orphans the next hook will remove are not a finding', () => {
+    const alerts = makeAlerts();
+    alerts.evaluate({ host: { shm: table({ used: 31, orphaned: 20 }) } });
+    assert.equal(alerts.open.has('host:shm-low'), false);
+  });
+
+  test('an agent host gets its own key; a stale one is host-down\'s', () => {
+    const alerts = makeAlerts();
+    alerts.evaluate({
+      host: { shm: table() },
+      hosts: [
+        { id: 'build-host', local: true, host: { shm: table() } },
+        { id: 'studio', name: 'studio', host: { shm: table({ used: 31 }) } },
+        { id: 'attic', name: 'attic', stale: true, host: { shm: table({ used: 32 }) } },
+      ],
+    });
+    assert.match(alerts.open.get('host:shm-low:studio')?.title ?? '', /on studio$/);
+    assert.equal(alerts.open.has('host:shm-low'), false);
+    assert.equal(alerts.open.has('host:shm-low:attic'), false);
+  });
+});
