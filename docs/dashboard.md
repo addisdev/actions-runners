@@ -79,11 +79,6 @@ duration hints (`expectedDurationMs`, `p95DurationMs`, or a `longRunning`
 flag), the Runs tab shows an orange chip once elapsed time exceeds the
 expected duration.
 
-**Remediation panel**: the Fleet and Runs tabs list recent failure candidates
-from `GET /api/remediation-candidates` — what the autofix bridge may rerun or
-escalate. An empty list means nothing is pending; a fetch failure hides the
-panel gracefully.
-
 **Live connection**: the header dot reads `Live` only while the collector is
 fresh. Once the snapshot age exceeds the collector staleness threshold (four
 minutes by default, same as `GET /api/health`), the dot turns amber and the

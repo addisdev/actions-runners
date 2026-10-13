@@ -21,21 +21,15 @@
 //
 // What it does to the fleet, in order, and undoes afterwards:
 //
-//   1. stops the auto-remediation bridge. dashboard/autofix/bridge.js answers
-//      a fleetd alert by running health.sh --repair, which is the right
-//      behaviour and the wrong recording: it would reach the runner seconds
-//      after the alert and turn fifteen seconds of an operator repairing a
-//      runner into fifteen seconds of the bridge doing it first;
-//   2. SIGKILLs the chosen runner's service, leaving the launchd job loaded.
+//   1. SIGKILLs the chosen runner's service, leaving the launchd job loaded.
 //      Not `launchctl unload` — an unloaded job reads as `not-loaded`, which is
 //      `launchd-missing`, a different finding with a different fix. `dead` is a
 //      loaded job with no process, which is the OOM kill health.sh was written
 //      for and the one no runner plist's KeepAlive will undo, because none of
 //      them sets it;
-//   3. runs ./health.sh --repair once the drift row and the alert are both
+//   2. runs ./health.sh --repair once the drift row and the alert are both
 //      open, streaming its output into a terminal strip over the dashboard;
-//   4. waits for the runner to come back online and the drift row to close;
-//   5. starts the bridge again, whatever happened above.
+//   3. waits for the runner to come back online and the drift row to close.
 //
 // Fifteen seconds is the length of the GIF, not of the take. fleetd polls
 // launchd every 15s while the fleet is busy and every 45s while it is idle, and
@@ -93,7 +87,6 @@ const opt = (name, fallback = null) => {
 const SSH_HOST = opt('host', process.env.MOTION_SSH_HOST ?? 'runner-host');
 const RUNNER_DIR = opt('runner', process.env.MOTION_RUNNER ?? null);
 const FLEET_PORT = Number(opt('fleet-port', process.env.MOTION_FLEET_PORT ?? 7878));
-const AUTOFIX_LABEL = opt('autofix-label', process.env.MOTION_AUTOFIX ?? 'com.addisdev.fleet-autofix');
 const SERVE_ONLY = flag('serve');
 const DRY_RUN = flag('dry-run');
 const KEEP_FRAMES = flag('keep-frames');
@@ -631,7 +624,6 @@ async function run() {
   const captured = [];
   const observed = { last: null };
   let recording = true;
-  let bridgeStopped = false;
 
   const waitFor = async (predicate, what, timeoutMs) => {
     const deadline = Date.now() + timeoutMs;
@@ -693,10 +685,6 @@ async function run() {
       log('dry run — not killing anything');
       await sleep(6000);
     } else {
-      await ssh(`launchctl bootout gui/${uid}/${AUTOFIX_LABEL}`).catch(() => {});
-      bridgeStopped = true;
-      log('auto-remediation bridge stopped for the take');
-
       await ssh(`launchctl kill 9 gui/${uid}/${label}`);
       log('service killed — launchd job still loaded, no process behind it');
 
@@ -731,14 +719,6 @@ async function run() {
   } finally {
     recording = false;
     await recorder.catch(() => {});
-    if (bridgeStopped) {
-      try {
-        await ssh(`launchctl bootstrap gui/${uid} ~/Library/LaunchAgents/${AUTOFIX_LABEL}.plist`);
-        log('auto-remediation bridge started again');
-      } catch (err) {
-        warn(`COULD NOT RESTART THE BRIDGE — do it by hand: ${err.message}`);
-      }
-    }
     await browser.close();
     server.close();
     tunnel?.kill();

@@ -57,9 +57,6 @@ async function startDaemon(extraEnv = {}) {
       FLEET_BACKFILL_MS: '999999999',
       FLEET_FAST_MS: '999999999',
       FLEET_SLOW_MS: '999999999',
-      // Never depend on whether the developer's real bridge happens to be
-      // running on 7879 while this isolated route daemon is tested.
-      FLEET_AUTOFIX_STATUS_URL: 'http://127.0.0.1:1/status',
       ...extraEnv,
     },
     stdio: 'ignore',
@@ -197,19 +194,6 @@ test('GET /metrics exposes queue and collector gauges', async () => {
   assert.match(body, /fleet_collector_age_seconds/);
   assert.match(body, /fleet_queue_runs\{cause="/);
   assert.match(body, /fleet_autoscale_deficit/);
-});
-
-test('GET /api/remediation-candidates returns an array', async () => {
-  const r = await fetch(url('/api/remediation-candidates'));
-  assert.equal(r.status, 200);
-  assert.ok(Array.isArray(await r.json()));
-});
-
-test('GET /api/autofix/status degrades explicitly when bridge is absent', async () => {
-  const r = await fetch(url('/api/autofix/status'));
-  assert.equal(r.status, 503);
-  const body = await r.json();
-  assert.equal(body.available, false);
 });
 
 test('GET /api/queue-history validates run ids and returns bounded rows', async () => {

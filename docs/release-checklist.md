@@ -19,7 +19,6 @@ Use this checklist before tagging any release on the public repository.
 - [ ] `scripts/release-check.sh` (full, not `--offline`) — clean
 - [ ] Full-history secret scan (e.g. `trufflehog git file://. --only-verified`) — clean
 - [ ] `git archive HEAD | tar t` — no `fleet.db`, no `.credentials`, no `fleet.env`
-- [ ] Dependency audit: `cd dashboard/autofix/escalate && npm audit`
 
 ### Documentation
 - [ ] `CHANGELOG.md` updated with release notes

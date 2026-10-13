@@ -24,25 +24,12 @@ outage still happened and still lasted as long as it lasted.
 ## It does not hide the alert from `/api/alerts`
 
 The second obvious implementation is to filter dismissed alerts out of the API.
-That one silently changes what an unattended process is allowed to do.
-
-The autofix bridge prunes its per-alert state for any key it stops seeing open:
-
-```js
-for (const key of Object.keys(state)) {
-  if (key.startsWith('#')) continue;             // bookkeeping, not an alert
-  if (!openKeys.has(key)) { delete state[key]; dropped++; }
-}
-```
-
-Hiding a dismissed alert would therefore stop the bridge repairing it *and* reset
-its `maxAttempts` budget, so a dismissed-then-restored `offline` would quietly
-get a fresh set of restart attempts. A button on the Alerts tab would have
-changed the fleet's remediation policy.
+That would make every consumer's view of the fleet depend on what one operator
+chose to stop hearing about.
 
 Dismissed alerts stay in `open` carrying a `dismissed_at`, and each consumer
-decides. The bridge ignores the field entirely: **muting your own pager is a
-statement about your attention, not an instruction to stop fixing runners.**
+decides. **Muting your own pager is a statement about your attention, not about
+the fleet.**
 
 ## It does not dismiss one run of something
 
@@ -57,10 +44,7 @@ Alert keys name their condition, except one:
 Dismissing a failing workflow by key would silence exactly one push and start
 talking again on the next, which is precisely the alert most worth dismissing.
 So a dismissal is stored against a *scope* — the key with the run id collapsed
-away. `bridge.js` and `autofix/escalate/run.mjs` already do this for their
-cooldowns, having hit the same problem first; `alertScope()` in `lib/alerts.js`
-is the third copy, which is the price of those two being separate processes that
-import nothing from the dashboard core.
+away, by `alertScope()` in `lib/alerts.js`.
 
 ## Why there is no expiry
 
@@ -100,11 +84,9 @@ The Alerts tab's all-clear line had to change with it. It used to say:
 That is now only true when nothing is dismissed, and a page that looks clear
 while four conditions are hidden is the lie this whole design exists to avoid.
 
-Three counts elsewhere would have drifted if missed, all of which report what is
-*speaking* rather than what is *true*: the SSE badge in `fleetd.js`, the fault
-signature in `watch/fleet-watch.mjs`, and the autofix bridge's storm threshold.
-The last matters most — four permanently dismissed conditions would otherwise sit
-at four of the bridge's six, so two real failures would disable all remediation.
+Two counts elsewhere would have drifted if missed, both of which report what is
+*speaking* rather than what is *true*: the SSE badge in `fleetd.js` and the fault
+signature in `watch/fleet-watch.mjs`.
 
 ## It does not ask for the control token
 

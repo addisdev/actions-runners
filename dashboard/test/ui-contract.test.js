@@ -1,8 +1,8 @@
 // UI contract tests for operator-facing dashboard rendering.
 //
 // Static source checks — same approach as kpi-nav.test.js. Verifies that the
-// client wires queue diagnosis, staleness, federation panels, and remediation
-// without needing a browser or build step.
+// client wires queue diagnosis, staleness, and federation panels without
+// needing a browser or build step.
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -98,15 +98,6 @@ describe('partially running workflow contract', () => {
 describe('queued KPI navigation contract', () => {
   test('Queued tile navigates to fleet queue section', () => {
     assert.match(app, /label: 'Queued'[\s\S]*?onclick: kpiNav\('fleet', '#fleet-queue'\)/);
-  });
-});
-
-describe('remediation panel contract', () => {
-  test('fetches remediation candidates and degrades gracefully', () => {
-    assert.match(app, /function loadRemediation\(\)/);
-    assert.match(app, /\/api\/remediation-candidates/);
-    assert.match(app, /function remediationSection\(\)/);
-    assert.match(app, /nothing pending/);
   });
 });
 

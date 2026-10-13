@@ -237,50 +237,6 @@ For private repos with trusted code owners, this is an acceptable risk.
 For public repos or repos with external contributors, it is not — use
 GitHub-hosted runners.
 
-## Autofix and escalation
-
-`autofix/` modifies job hook behavior. `autofix/escalate/` and `autofix/fix/`
-are opt-in third-party subtrees that wrap an external agent binary.
-
-**Accepted risk for `autofix/escalate/` and `autofix/fix/`:**
-- The third-party binary has not been independently audited for telemetry
-  or network behaviour outside of what it advertises
-- Both are disabled by default (escalation until a credential is installed;
-  AI fixes until `AUTOFIX_FIX_REPOS` is set)
-- CI never exercises either subtree
-- See `THIRD_PARTY_NOTICES.md` for declared network and telemetry behaviour
-
-Do not enable either subtree without reviewing `THIRD_PARTY_NOTICES.md`
-and the lockfile.
-
-## AI fix PRs — data and permission boundary
-
-When `AUTOFIX_FIX_REPOS` is set, the bridge launches a Cursor cloud agent for
-code or config failures. The following data leaves the host and is sent to
-Cursor's infrastructure:
-
-- Repository name and the failing SHA
-- Workflow file path and name
-- Failure class labels from the local database (`job-failed`, `no-runner`)
-- Truncated failure detail strings from GitHub annotations (≤500 chars each)
-
-The cloud agent is given a fresh clone of the repository and the `gh` CLI
-authenticated as the Cursor GitHub App (or the API key owner). It can:
-- Read all repository contents at the given SHA
-- Create branches and push commits
-- Open pull requests
-
-It **cannot**:
-- Merge pull requests (merge is gated by branch protection and human approval)
-- Access the local fleet dashboard or runner infrastructure
-- Touch any repo not in the cloud agent's `repos` list
-
-**Prompt injection risk:** branch names, commit messages, and workflow step
-output may contain adversarial text. The bridge never includes raw step logs in
-the prompt. Only structured fields from the local database (failure class,
-truncated annotation text) are included. The cloud VM is isolated; even a
-successful injection attack can only affect the target repository's code.
-
 ## localStorage risk
 
 The control token—or an individually revokable paired-device token—is stored in `localStorage`

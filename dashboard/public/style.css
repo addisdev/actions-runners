@@ -652,9 +652,6 @@ button.kpi {
 .queue-evidence summary { cursor: pointer; color: var(--muted); font-weight: 600; }
 .queue-evidence ul { margin: 4px 0 0; padding-left: 16px; }
 .chip.long-running { color: var(--serious); background: var(--serious-wash); border-color: color-mix(in srgb, var(--serious) 25%, transparent); }
-.strategy.infra-rerun { color: var(--good); }
-.strategy.ai-fix { color: var(--busy); }
-.strategy.diagnose { color: var(--warning); }
 .fleet-cap-list { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12.5px; }
 .fleet-cap-list li { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-top: 1px solid var(--hairline); }
 .fleet-cap-list li:first-child { border-top: 0; }

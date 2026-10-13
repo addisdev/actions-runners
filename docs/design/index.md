@@ -43,11 +43,11 @@ screens, the [API reference](../api.md).
 
     Parse the YAML rather than grep it, and check the branches that actually run.
 
--   __[Alerts and auto-remediation](alerts.md)__
+-   __[Alerts](alerts.md)__
 
     ---
 
-    Alerts fire on transitions, only three faults have a deterministic repair, and the rest get explained rather than fixed.
+    Alerts fire on transitions, and nothing acts on one unattended.
 
 -   __[Dismissing alerts](dismissing.md)__
 

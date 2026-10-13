@@ -46,10 +46,6 @@ of the daemon's variables are in
 [Dashboard daemon variables](../configuration.md#dashboard-daemon-variables); the
 endpoints the tab calls are in the [API reference](../api.md).
 
-The unattended half of the same problem — what an automated process may ever do
-to the fleet, as opposed to what a person with the token may — is covered in
-[Why the blast radius stays small](alerts.md#why-the-blast-radius-stays-small).
-
 ## Diagnostic bundles
 
 The **Diagnostics** button in the runner drawer downloads a text bundle that is

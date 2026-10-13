@@ -138,7 +138,7 @@ export function render() {
         h('div', { class: 'panel-head' }, h('h3', { text: 'Dismissed' }),
           h('span', { class: 'count', text: `${dismissed.length} still open` })),
         h('div', { class: 'panel-sub', text:
-          'Not notifying, but still open and still being repaired by autofix. Each one comes back on its own '
+          'Not notifying, but still open. Each one comes back on its own '
           + 'if the condition clears and then happens again.' }),
         h('div', { class: 'drift-list' },
           dismissed.map((a) =>
