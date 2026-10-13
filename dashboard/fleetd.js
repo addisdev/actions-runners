@@ -73,6 +73,7 @@ import { renderPrometheusMetrics } from './lib/metrics.js';
 import { classifyAnnotations } from './lib/failures.js';
 import { HaCoordinator } from './lib/ha.js';
 import { collectHostReport } from './lib/host-report.js';
+import { createShmSampler, lowFreeFromEnv } from './lib/shm.js';
 import { createVerdictTracker, computeVerdict, buildGlance, loadFailureFacts } from './lib/verdict.js';
 import { createEtaBaselines, estimateQueue } from './lib/eta.js';
 import { createDiskForecaster } from './lib/disk-forecast.js';
@@ -153,6 +154,8 @@ const CONFIG = {
   // a second daemon run for testing must not ingest into the real database from
   // the real log.
   admissionLog: process.env.FLEET_ADMISSION_LOG ?? join(HERE, 'logs', 'admission.ndjson'),
+  // hooks/shm-reap.sh's log of orphaned shared memory it removed (lib/shm.js).
+  shmLog: process.env.FLEET_SHM_LOG ?? join(HERE, 'logs', 'shm.ndjson'),
   testOutcomesSpool: process.env.FLEET_TEST_OUTCOMES_SPOOL ?? join(HERE, '..', '.playwright-outcomes.ndjson'),
   // The autofix bridge remains a separate process and privilege boundary. The
   // dashboard proxies only its read-only status so operators can see when
@@ -274,6 +277,7 @@ let alertRun = Promise.resolve();
 // append to. This process never makes an admission decision itself — a job's
 // ability to start must not depend on the dashboard being alive.
 const admission = createAdmission({ db, logPath: CONFIG.admissionLog, warn, hostId: CONFIG.replicaId });
+const sampleShm = createShmSampler({ logPath: CONFIG.shmLog, lowFree: lowFreeFromEnv() });
 // host_samples rows from before host_id existed are this host's own vitals.
 try {
   db.prepare('UPDATE host_samples SET host_id = ? WHERE host_id IS NULL').run(CONFIG.replicaId);
@@ -1632,10 +1636,11 @@ async function fastTick(progress = null) {
   refreshGroups();
 
   stage(progress, 'local probes');
-  const [launchd, processes, vitals] = await Promise.all([
+  const [launchd, processes, vitals, shm] = await Promise.all([
     launchdJobs(),
     runnerProcesses(),
     hostVitals(),
+    sampleShm().catch((err) => { warn('shm sample:', err.message); return null; }),
   ]);
 
   const repos = reposToPoll();
@@ -1818,6 +1823,7 @@ async function fastTick(progress = null) {
     workers: processes.workers.size,
     runnerCount: runners.length,
     totalRssMb: [...processes.listeners.values()].reduce((s, p) => s + p.rssKb, 0) / 1024,
+    shm,
   };
 
   // Where free disk is heading, against the admission floor.

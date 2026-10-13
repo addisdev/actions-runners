@@ -7,7 +7,7 @@ import Foundation
 public enum Fixtures {
     public static let names = [
         "live", "quiet", "waiting", "dead", "diskHold", "diskBelowIdle",
-        "saturated", "accountBlocked", "drift", "agentDown", "blind",
+        "saturated", "shmLow", "accountBlocked", "drift", "agentDown", "blind",
     ]
 
     public static func data(_ name: String) throws -> Data {

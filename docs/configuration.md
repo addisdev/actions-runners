@@ -350,6 +350,34 @@ interactive Xcode sessions on hosts that are also developer workstations.
 | `FLEET_SIMULATOR_CLEANUP` | `0` | Set to `1` to enable job-scoped simulator shutdown. |
 | `FLEET_SIMULATOR_RUNNERS` | empty | Space- or comma-separated runner-name shell patterns whose jobs use Apple simulators. After the final overlapping selected job ends, devices created since the first job began are shut down; devices already booted beforehand are preserved. A guardian also cleans up if the worker exits without its completed hook. |
 
+## Shared memory variables
+
+Used by both job hooks through `hooks/shm-reap.sh`. A Postgres cluster that a
+cancelled or timed-out job kills keeps its System V shared memory segment, and
+macOS caps the host at `kern.sysv.shmmni` = 32 of them, so after about thirty
+such jobs every new cluster fails with `could not create shared memory segment:
+No space left on device`. The sweep removes only segments owned by the runner
+user with no process attached (`NATTCH 0`) whose creator PID is no longer
+running; anything attached, such as a Homebrew Postgres service, is never
+touched.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `FLEET_SHM_REAP` | `1` | Set to `0` to turn the sweep off. |
+| `FLEET_SHM_LOG` | `dashboard/logs/shm.ndjson` | NDJSON log: one `reaped` line per sweep that removed something (with the count and segment ids), and a `low` line whenever fewer than `FLEET_SHM_LOW_FREE` segments are left free. A clean sweep writes nothing. |
+| `FLEET_SHM_LOW_FREE` | `4` | Free-segment count below which the sweep logs `low` and warns in the job log, even when nothing could be removed. The dashboard opens the `shm-low` verdict below the same count. |
+
+The dashboard reads the same table. `fleetd.js` and `agent.js` sample
+`ipcs -m -o -p` every tick, counting orphans by the hook's rules as free, and
+summarise the tail of `FLEET_SHM_LOG`: segments reaped in the last 24 hours (the
+leak rate, shown on the host card) and the newest `low` event. Both ride on the
+host vitals, so an agent host's table reaches the coordinator in its heartbeat.
+The verdict's [`shm-low` rung](cockpit/verdict.md) opens when the live sample is
+under `FLEET_SHM_LOW_FREE`, or a `low` event is under 30 minutes old; the alert
+of the same name opens with it. `fleetctl.sh install` and `agentctl.sh install`
+pass `FLEET_SHM_LOG` and `FLEET_SHM_LOW_FREE` from `fleet.env` into the
+LaunchAgent, so the daemon and the hooks agree on both.
+
 ## Agent variables
 
 Used by `dashboard/agent.js` on agent Macs. Set in `fleet.env` on the agent

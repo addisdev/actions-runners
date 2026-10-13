@@ -28,6 +28,7 @@
 #   FLEET_LOAD_PER_CORE        — load/core threshold (default 2)
 #   FLEET_MIN_FREE_DISK_GB     — minimum free disk space in GB (default 50)
 #   FLEET_HEARTBEAT_MS         — heartbeat interval in ms (default 30000)
+#   FLEET_SHM_LOG, FLEET_SHM_LOW_FREE — the job hooks' shared memory log and warning level
 #   FLEET_LABEL_PREFIX         — LaunchAgent label prefix (default com.runner-fleet)
 set -euo pipefail
 
@@ -117,6 +118,8 @@ cmd_install() {
     <key>FLEET_MIN_FREE_DISK_GB</key><string>${FLEET_MIN_FREE_DISK_GB:-50}</string>
     <key>FLEET_MAX_INSTANCES_PER_REPO</key><string>${FLEET_MAX_INSTANCES_PER_REPO:-4}</string>
     <key>FLEET_HEARTBEAT_MS</key><string>${FLEET_HEARTBEAT_MS:-30000}</string>
+    <key>FLEET_SHM_LOG</key><string>${FLEET_SHM_LOG:-${ROOT}/dashboard/logs/shm.ndjson}</string>
+    <key>FLEET_SHM_LOW_FREE</key><string>${FLEET_SHM_LOW_FREE:-4}</string>
   </dict>
   <key>KeepAlive</key><true/>
   <key>RunAtLoad</key><true/>

@@ -143,6 +143,21 @@ export const SCENARIOS = {
     };
   },
 
+  // 2026-10-13: 31 orphaned segments removed by hand to unblock one PR, four
+  // more leaked within half an hour. Here the hook has reaped them, but live
+  // clusters hold 29 of the 32 entries, so the next burst fails in shmget.
+  shmLow: () => {
+    const snapshot = SCENARIOS.quiet().snapshot;
+    const shm = {
+      limit: 32, used: 29, orphaned: 0, lowFree: 4, sampledAt: LIVE_TS,
+      reaped24h: 4, reapEvents24h: 3, lastReapedAt: LIVE_TS - 12 * MIN,
+      lastLow: { at: LIVE_TS - 3 * MIN, used: 29, limit: 32, free: 3, runner: 'build-host-delta-web', repo: 'acme/delta-web' },
+    };
+    snapshot.host.shm = shm;
+    snapshot.hosts[0].host.shm = structuredClone(shm);
+    return { snapshot, facts: noFacts(), now: LIVE_TS, expect: 'shm-low' };
+  },
+
   // A billing block: jobs refused before they reach any runner.
   accountBlocked: () => ({
     snapshot: SCENARIOS.quiet().snapshot,

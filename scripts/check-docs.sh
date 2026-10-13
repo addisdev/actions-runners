@@ -66,6 +66,7 @@ not_entry_points=(
   hooks/free-disk.sh
   hooks/tests/audio.sh
   hooks/tests/install.sh
+  hooks/tests/shm.sh
   hooks/tests/simulator.sh
   dashboard/autofix/escalate/run.mjs
 )

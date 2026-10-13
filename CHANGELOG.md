@@ -24,6 +24,21 @@ Portable, mobile-first dashboard.
   `/api/state` gains `hostImpact`. The old host drain is now the secondary
   **Pause new runners**. See
   [Taking a host out of rotation](docs/federation.md#taking-a-host-out-of-rotation).
+
+- **A full shared memory table is now a verdict, not a mystery red test.**
+  `hooks/shm-reap.sh` logged orphan sweeps and `low` events to
+  `dashboard/logs/shm.ndjson`, and nothing read it; the shmget error lives in
+  step logs, which no failure class reads, so `cockpit why` called those
+  failures ordinary. `fleetd.js` and `agent.js` now sample `ipcs -m -o -p` each
+  tick (orphans the next hook will remove count as free) and summarise the log
+  tail into the host vitals (`host.shm`, glance `shm*` vitals). A new `shm-low`
+  rung, between `dead-service` and `saturated`, opens when fewer than
+  `FLEET_SHM_LOW_FREE` segments are free on any reporting host or a `low` event
+  is under 30 minutes old (critical when the table is full), with an alert of
+  the same name. Host cards show free segments and orphans reaped in 24 h, the
+  leak rate. The cockpit decodes the rung, the vitals and the history lane, and
+  `cockpit why` flags it beside a repo's failures. `dashboard/lib/shm.js`.
+
 - **Standby tiers.** Run CI on a primary host first and bring a standby
   host's runners online only when the primary is at its admission cap for 60 s,
   has a run queued over 2 min with no idle matching runner, or is unfit
@@ -190,6 +205,15 @@ Portable, mobile-first dashboard.
   now stop a running drained runner again within a tick, keeping its drain
   owner (`FLEET_HOLD_DRAINS`, default on).
 
+- **Killed Postgres clusters exhausted the host's shared memory table.** A
+  cancelled or timed-out job kills its throwaway cluster without a clean
+  shutdown, and the cluster's System V segment stays. macOS allows 32, so after
+  about thirty such jobs every Postgres suite on the host failed with
+  `could not create shared memory segment: No space left on device`
+  (2026-10-13: 31 orphans removed by hand; four more within half an hour). Both
+  job hooks now run `hooks/shm-reap.sh`, which removes only segments owned by
+  the runner user with `NATTCH 0` and a dead creator PID, and logs to
+  `dashboard/logs/shm.ndjson`. `FLEET_SHM_*`.
 - **`cockpit wait` read a failed attempt under its in-progress re-run.** It
   (and the MCP `wait_for_checks`) returned red at once while a re-run of the
   failed run was in progress (jerv-ios PR #181, run 38163415231,

@@ -150,8 +150,10 @@ action.
 ![The Hosts tab: this machine live, and a second Mac marked stale after six minutes without a heartbeat, its runners greyed rather than removed](img/hosts-tab.png)
 
 Federated host view (when agents are configured). Shows every Mac's runners,
-load, memory, disk, labels, headroom, drain state, and host-level controls:
-the on/off switch and **Pause new runners** (see
+load, memory, disk, shared memory (free System V segments, orphans the next job
+hook will remove, and how many the hooks reaped in the last 24 hours: the leak
+rate of killed Postgres clusters), labels, headroom, drain state, and
+host-level controls: the on/off switch and **Pause new runners** (see
 [Taking a host out of rotation](federation.md#taking-a-host-out-of-rotation)). A host whose heartbeat is stale (>2 minutes old) is flagged in
 orange. While the tab is open it refreshes every 30 seconds.
 

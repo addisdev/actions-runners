@@ -95,6 +95,8 @@ cmd_install() {
     <key>FLEET_COLLECTOR_STALE_MS</key><string>${FLEET_COLLECTOR_STALE_MS:-240000}</string>
     <key>FLEET_AUTOFIX_STATUS_URL</key><string>${FLEET_AUTOFIX_STATUS_URL:-http://127.0.0.1:7879/status}</string>
     <key>FLEET_ADMISSION_LOG</key><string>${FLEET_ADMISSION_LOG:-$HERE/logs/admission.ndjson}</string>
+    <key>FLEET_SHM_LOG</key><string>${FLEET_SHM_LOG:-$HERE/logs/shm.ndjson}</string>
+    <key>FLEET_SHM_LOW_FREE</key><string>${FLEET_SHM_LOW_FREE:-4}</string>
     <key>FLEET_PROJECTS</key><string>${FLEET_PROJECTS:-}</string>
     <key>FLEET_GROUP_IGNORE</key><string>${FLEET_GROUP_IGNORE:-}</string>
     <key>FLEET_GROUP_MIN</key><string>${FLEET_GROUP_MIN:-2}</string>

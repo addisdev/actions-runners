@@ -255,8 +255,10 @@ a sibling label mismatch; a run stuck in the queue; disk low; free disk on
 course to reach the admission floor within 12 hours; a job held by
 the admission disk floor, or held for a slot past the hooks' max wait; two jobs
 losing contact with GitHub inside an hour; sustained paging or kernel-reported
-memory pressure; the collector unable to reach GitHub; and a workflow that was
-green and just went red.
+memory pressure; the System V shared memory table nearly full, which fails every
+new Postgres cluster in shmget with an error only the step log carries; the
+collector unable to reach GitHub; and a workflow that was green and just went
+red.
 
 The same conditions, in the order that makes the others meaningless, are the
 **fleet verdict** — one sentence and one next move for the whole fleet. See

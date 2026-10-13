@@ -16,6 +16,7 @@ describe('rungOf', () => {
     assert.equal(rungOf('admission-hold', 'admission:disk-floor'), 'disk-floor');
     assert.equal(rungOf('disk-floor-soon'), 'disk-floor');
     assert.equal(rungOf('host-saturated'), 'saturated');
+    assert.equal(rungOf('shm-low', 'host:shm-low:studio'), 'shm-low');
     assert.equal(rungOf('account-blocked-recurring'), 'account-blocked');
     assert.equal(rungOf('host-stale'), 'host-down');
   });

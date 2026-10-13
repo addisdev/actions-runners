@@ -732,6 +732,21 @@ lease has a detached `Runner.Worker` guardian, so cancellation and abrupt worker
 failure follow the same cleanup path.
 Source: [`hooks/simulator-control.sh`](https://github.com/addisdev/actions-runners/blob/main/hooks/simulator-control.sh).
 
+### `hooks/shm-reap.sh`
+
+Internal helper used by both job hooks. Removes System V shared memory segments
+a killed Postgres cluster left behind: owned by the runner user, attached by no
+process, creator PID gone. Columns are read from the `ipcs -m -o -p` header by
+name, and an unreadable header removes nothing. A sweep that removed something,
+or left fewer than `FLEET_SHM_LOW_FREE` of `kern.sysv.shmmni` free, writes one
+line to `dashboard/logs/shm.ndjson` and one to the job log. See
+[Shared memory variables](../configuration.md#shared-memory-variables).
+Source: [`hooks/shm-reap.sh`](https://github.com/addisdev/actions-runners/blob/main/hooks/shm-reap.sh).
+
+```bash
+hooks/tests/shm.sh   # fake ipcs/ipcrm; no real segment is touched
+```
+
 ### `hooks/job-completed.sh`
 
 Runs after a job's last step. Its main job is to give back the slot

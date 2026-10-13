@@ -23,6 +23,8 @@
 // This file is the single source of truth for the vocabulary. The web banner,
 // /api/glance, push and the macOS cockpit all read it; nothing re-derives it.
 
+import { shmPressure } from './shm.js';
+
 // The rungs this daemon can see. The cockpit adds two above these that no
 // process on the host can ever report — its own absence ("host down" for the
 // coordinator) and the viewer's own network ("blind") — and it uses the same
@@ -32,6 +34,7 @@ export const LADDER = [
   { id: 'host-down', tone: 'critical', title: 'Host is not reporting' },
   { id: 'disk-floor', tone: 'critical', title: 'Disk floor is holding jobs' },
   { id: 'dead-service', tone: 'critical', title: 'Runner service is down' },
+  { id: 'shm-low', tone: 'warning', title: 'Shared memory table nearly full' },
   { id: 'saturated', tone: 'warning', title: 'Host is saturated' },
   { id: 'account-blocked', tone: 'warning', title: 'GitHub is refusing jobs' },
   { id: 'config-drift', tone: 'warning', title: 'Configuration drift' },
@@ -63,6 +66,9 @@ export const DEFAULTS = {
   driftCauses: ['unserved', 'role-unserved', 'label-mismatch', 'github-hosted'],
   // How far back the glance lists failed runs.
   recentFailureWindowMs: 2 * 60 * 60 * 1000,
+  // How long a `low` event from hooks/shm-reap.sh keeps shm-low open after the
+  // table has drained again (lib/shm.js).
+  shmLowWindowMs: 30 * 60 * 1000,
 };
 
 // Failure classes whose first move is not reading the diff (lib/failures.js).
@@ -360,6 +366,50 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
     });
   }
 
+  // After dead-service, before saturated. Like the disk floor it is a host
+  // resource that turns a job's failure into a misleading one: a full table
+  // fails every new Postgres cluster in shmget, which reads as a broken test in
+  // whichever repo is next. It is below the criticals because it fails only the
+  // jobs that start a cluster, and above saturated because it is the more
+  // specific diagnosis when both are true: killed jobs are what leak segments.
+  const shmHosts = [];
+  for (const h of snapshot.hosts ?? []) {
+    if (h.stale || h.hostStale || (!h.local && localIds.has(h.id))) continue;
+    const p = shmPressure((h.host ?? (h.local ? host : null))?.shm, now, { lowWindowMs: o.shmLowWindowMs });
+    if (p?.low) shmHosts.push({ name: h.name ?? h.id, p });
+  }
+  if (!(snapshot.hosts ?? []).some((h) => h.local)) {
+    const p = shmPressure(host.shm, now, { lowWindowMs: o.shmLowWindowMs });
+    if (p?.low) shmHosts.push({ name: host.hostname ?? 'this host', p });
+  }
+  if (shmHosts.length) {
+    const many = shmHosts.length > 1 || (snapshot.hosts ?? []).length > 1;
+    const evidence = [];
+    for (const { name, p } of shmHosts) {
+      const at = many ? `${name}: ` : '';
+      if (p.free != null) {
+        evidence.push(`${at}${p.free} of ${p.limit} System V segments free` +
+          (p.orphaned ? ` (counting ${p.orphaned} orphaned, removed at the next job start)` : '') +
+          `; warns under ${p.lowFree}`);
+      }
+      if (p.recentLow) {
+        const l = p.recentLow;
+        evidence.push(`${at}${l.free ?? '?'} free after reaping at ${new Date(l.at).toISOString().slice(11, 16)}Z` +
+          (l.repo ? ` (${short(l.repo)})` : ''));
+      }
+      if (p.reaped24h) evidence.push(`${at}${plural(p.reaped24h, 'orphaned segment')} reaped in the last 24 h`);
+    }
+    evidence.push('Live clusters or another user\'s segments fill it; the hook removes only its own orphans');
+    push('shm-low', {
+      tone: shmHosts.some(({ p }) => p.full) ? 'critical' : 'warning',
+      title: shmHosts.some(({ p }) => p.full) ? 'Shared memory table is full' : 'Shared memory table nearly full',
+      sentence: 'When the table fills, every new Postgres cluster fails in shmget with "No space left on device". ' +
+        'A red Postgres suite on that host is the host, not the code.',
+      evidence,
+      next: { label: 'List shared memory segments on the host', kind: 'command', command: 'ipcs -m -o -p' },
+    });
+  }
+
   const recentLost = runnerLost.filter((l) => l.at && now - l.at <= o.lostWindowMs);
   const thrashing = openAlerts.find((a) => a.rule === 'swap-thrashing');
   // A run queued because the headroom gate is at capacity is NOT this rung: it
@@ -536,6 +586,13 @@ export function buildGlance(snapshot, result, opts = {}) {
         diskFloorEtaMs: h.local ? snapshot.host?.diskFloorEtaMs ?? null : null,
         diskRateGbPerHour: h.local ? snapshot.host?.diskForecast?.rate6hGbPerHour ?? null : null,
         uptimeSec: v.uptimeSec ?? null,
+        // System V shared memory (lib/shm.js). Free counts orphans as free,
+        // as the verdict does: the next job's hook removes them.
+        shmLimit: v.shm?.limit ?? null,
+        shmUsed: v.shm?.used ?? null,
+        shmOrphaned: v.shm?.orphaned ?? null,
+        shmLowFree: v.shm?.lowFree ?? null,
+        shmReaped24h: v.shm ? v.shm.reaped24h ?? 0 : null,
       },
     };
   });

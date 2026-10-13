@@ -226,6 +226,18 @@ function hostCard(host) {
   const diskLine = v.diskFreeGb != null
     ? `${gb(v.diskFreeGb)} GB free${v.diskTotalGb ? ` of ${gb(v.diskTotalGb)} GB` : ''}`
     : '–';
+  // System V shared memory (lib/shm.js). The reap count is the leak rate:
+  // each segment is a Postgres cluster a cancelled or timed-out job left behind.
+  const shm = v.shm ?? null;
+  const shmFree = shm?.limit && shm.used != null ? shm.limit - shm.used + (shm.orphaned ?? 0) : null;
+  const shmLine = shm
+    ? [
+        shmFree != null ? `${shmFree} of ${shm.limit} segments free` : 'table not sampled',
+        shm.orphaned ? `${shm.orphaned} orphaned` : null,
+        `${shm.reaped24h ?? 0} reaped in 24 h`,
+      ].filter(Boolean).join(' · ')
+    : null;
+  const shmLow = shmFree != null && shmFree < (shm.lowFree ?? 4);
 
   return h('article', {
     class: `host-card ${host.stale ? 'is-stale' : ''}`,
@@ -252,6 +264,8 @@ function hostCard(host) {
       h('dd', { text: memLine }),
       h('dt', { text: 'disk' }),
       h('dd', { text: diskLine }),
+      shmLine ? h('dt', { text: 'shared memory' }) : null,
+      shmLine ? h('dd', { class: shmLow ? 'warn' : null, text: shmLine }) : null,
       h('dt', { text: 'runners' }),
       h('dd', { text: `${host.runnerCount} (${host.busyCount} busy)` }),
       h('dt', { text: 'headroom' }),

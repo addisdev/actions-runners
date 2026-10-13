@@ -57,6 +57,7 @@
    "staleForMs": 0,
    "ghOnly": false,
    "drained": false,
+   "off": false,
    "vitals": {
     "cores": 12,
     "load1": 20.77,
@@ -69,7 +70,12 @@
     "diskFloorGb": 40,
     "diskFloorEtaMs": null,
     "diskRateGbPerHour": null,
-    "uptimeSec": 781840
+    "uptimeSec": 781840,
+    "shmLimit": null,
+    "shmUsed": null,
+    "shmOrphaned": null,
+    "shmLowFree": null,
+    "shmReaped24h": null
    }
   },
   {
@@ -80,6 +86,7 @@
    "staleForMs": 0,
    "ghOnly": true,
    "drained": false,
+   "off": false,
    "vitals": null
   }
  ],

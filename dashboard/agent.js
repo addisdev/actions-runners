@@ -39,6 +39,7 @@ import { headroom } from './lib/capacity.js';
 // Shared with buildRunners so a duplicate is numbered the same way on every host.
 import { instanceOf } from './lib/state.js';
 import { loadOffset, saveOffset, readPending, advance } from './lib/admission-ship.js';
+import { createShmSampler, lowFreeFromEnv } from './lib/shm.js';
 import { autonomyStep, AUTONOMY_DEFAULT_MS } from './lib/agent-autonomy.js';
 import { drainsToReassert, reassertArgs, markerStillHeld } from './lib/host-switch.js';
 
@@ -71,6 +72,10 @@ const CONFIG = {
     ?? join(process.env.FLEET_ROOT ?? join(os.homedir(), 'actions-runners'), 'dashboard', 'logs', 'admission.ndjson'),
   admissionOffsetFile: process.env.FLEET_AGENT_ADMISSION_OFFSET_FILE
     ?? join(HERE, '.fleet-agent-admission-offset'),
+  // hooks/shm-reap.sh's log. Summarised into the vitals (lib/shm.js), not
+  // shipped line by line: the coordinator needs counts, not rows.
+  shmLog: process.env.FLEET_SHM_LOG
+    ?? join(process.env.FLEET_ROOT ?? join(os.homedir(), 'actions-runners'), 'dashboard', 'logs', 'shm.ndjson'),
   // Commands are OPT-IN. An agent that only reports is useful on its own, and it
   // is the right default: joining a fleet should not silently grant remote
   // execution.
@@ -206,6 +211,7 @@ if (!existsSync(CONFIG.root)) fail(`FLEET_ROOT does not exist: ${CONFIG.root}`);
 // two readings. The first beat after start has nothing to compare against and
 // reports null, which headroom() treats as unknown rather than as zero.
 let lastSwapCounters = null;
+const sampleShm = createShmSampler({ logPath: CONFIG.shmLog, lowFree: lowFreeFromEnv() });
 
 // One host's state, in the same shape the coordinator's own collector produces,
 // so mergeHostSnapshots has nothing special to do for local versus remote.
@@ -214,7 +220,10 @@ async function collect() {
   // All three shell out and are async. Without the await these were Promises,
   // jobs.get() threw on the first runner, and collect() rejected on every tick —
   // an agent that started cleanly and then never reported anything.
-  const [jobs, procs, vitals] = await Promise.all([launchdJobs(), runnerProcesses(), hostVitals()]);
+  const [jobs, procs, vitals, shm] = await Promise.all([
+    launchdJobs(), runnerProcesses(), hostVitals(),
+    sampleShm().catch((err) => { warn('shm sample:', err.message); return null; }),
+  ]);
 
   const runners = dirs.map((d) => {
     const label = `actions.runner.${d.repo.replace('/', '-')}.${d.name}`;
@@ -283,6 +292,7 @@ async function collect() {
     runnerCount: runners.length,
     listeners: procs.listeners.size,
     workers: procs.workers.size,
+    shm,
   };
 
   return {

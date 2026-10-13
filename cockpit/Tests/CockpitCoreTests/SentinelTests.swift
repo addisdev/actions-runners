@@ -131,7 +131,23 @@ struct LadderTests {
         #expect(rungs.first { $0.id == "config-drift" }?.evidence == ["ion · CI: label-mismatch"])
         #expect(rungs.first { $0.id == "config-drift" }?.open == true)
         #expect(rungs.first { $0.id == "clear" }?.open == false)
-        #expect(rungs.count == 10)
+        #expect(rungs.count == 11)
+    }
+
+    @Test func aNearlyFullSharedMemoryTableIsItsOwnRungWithTheTableInTheVitals() throws {
+        let g = try Fixtures.glance("shmLow")
+        let rungs = Ladder.build(g.verdict)
+        #expect(rungs.filter(\.lit).map(\.id) == ["shm-low"])
+        let ids = rungs.map(\.id)
+        #expect(ids.firstIndex(of: "dead-service")! < ids.firstIndex(of: "shm-low")!)
+        #expect(ids.firstIndex(of: "shm-low")! < ids.firstIndex(of: "saturated")!)
+        let v = try #require(g.hosts.first { $0.local == true }?.vitals)
+        #expect(v.shmFree == 3)
+        #expect(v.shmReaped24h == 4)
+        let shm = Presenter.vitals(v).first { $0.label == "shared mem" }
+        #expect(shm?.value == "3/32 free")
+        #expect(shm?.tone == .warning)
+        #expect(Presenter.symbol(for: .warning, verdictId: "shm-low") == "memorychip")
     }
 
     @Test func cockpitOnlyVerdictsLandOnTheUnknownRung() {

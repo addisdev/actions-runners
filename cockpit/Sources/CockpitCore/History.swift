@@ -74,10 +74,10 @@ public struct TimelineLane: Identifiable, Sendable, Equatable {
 }
 
 public enum HistoryPresenter {
-    static let order = ["host-down", "unknown", "disk-floor", "dead-service", "saturated", "account-blocked", "config-drift", "waiting", "failing"]
+    static let order = ["host-down", "unknown", "disk-floor", "dead-service", "shm-low", "saturated", "account-blocked", "config-drift", "waiting", "failing"]
     static let titles = [
         "host-down": "Host down", "unknown": "Blind", "disk-floor": "Disk floor", "dead-service": "Dead service",
-        "saturated": "Saturated", "account-blocked": "Account", "config-drift": "Config drift", "waiting": "Stuck queue",
+        "shm-low": "Shared memory",        "saturated": "Saturated", "account-blocked": "Account", "config-drift": "Config drift", "waiting": "Stuck queue",
         "failing": "Red builds",
     ]
 

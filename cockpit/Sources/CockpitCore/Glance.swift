@@ -146,10 +146,24 @@ public struct Vitals: Codable, Sendable, Equatable {
     public var diskFloorEtaMs: Double?
     public var diskRateGbPerHour: Double?
     public var uptimeSec: Double?
+    /// System V shared memory (dashboard/lib/shm.js). Absent from daemons
+    /// older than the fields and from hosts that could not sample the table.
+    public var shmLimit: Int?
+    public var shmUsed: Int?
+    public var shmOrphaned: Int?
+    public var shmLowFree: Int?
+    public var shmReaped24h: Int?
 
     public var loadPerCore: Double? {
         guard let load1, let cores, cores > 0 else { return nil }
         return load1 / Double(cores)
+    }
+
+    /// Entries a new Postgres cluster can still take. Orphans count as free:
+    /// the next job's hook removes them before its steps start.
+    public var shmFree: Int? {
+        guard let shmLimit, shmLimit > 0, let shmUsed else { return nil }
+        return max(0, shmLimit - shmUsed + (shmOrphaned ?? 0))
     }
 }
 
