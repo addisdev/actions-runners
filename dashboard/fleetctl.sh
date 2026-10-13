@@ -122,7 +122,10 @@ cmd_install() {
     <key>FLEET_TIERS_DRAIN_AFTER_S</key><string>${FLEET_TIERS_DRAIN_AFTER_S:-}</string>
     <key>FLEET_TIERS_PRIMARY_STALE_S</key><string>${FLEET_TIERS_PRIMARY_STALE_S:-}</string>
     <key>FLEET_TIERS_SELF_DRAIN</key><string>${FLEET_TIERS_SELF_DRAIN:-1}</string>
+    <key>FLEET_TIERS_SELF_DRAIN_AFTER_S</key><string>${FLEET_TIERS_SELF_DRAIN_AFTER_S:-}</string>
     <key>FLEET_TIERS_SELF_RESUME_AFTER_S</key><string>${FLEET_TIERS_SELF_RESUME_AFTER_S:-}</string>
+    <key>FLEET_TIERS_SELF_MIN_HOLD_S</key><string>${FLEET_TIERS_SELF_MIN_HOLD_S:-}</string>
+    <key>FLEET_TIERS_SELF_MIN_OPEN_S</key><string>${FLEET_TIERS_SELF_MIN_OPEN_S:-}</string>
     <key>FLEET_TIERS_BUILD_CAP</key><string>${FLEET_TIERS_BUILD_CAP:-}</string>
     <key>FLEET_TIERS_SIMULATOR_CAP</key><string>${FLEET_TIERS_SIMULATOR_CAP:-}</string>
     <!-- Federation: bind address, agent token, capability labels, read-only -->
