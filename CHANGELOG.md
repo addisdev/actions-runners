@@ -173,6 +173,15 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- **Killed Postgres clusters exhausted the host's shared memory table.** A
+  cancelled or timed-out job kills its throwaway cluster without a clean
+  shutdown, and the cluster's System V segment stays. macOS allows 32, so after
+  about thirty such jobs every Postgres suite on the host failed with
+  `could not create shared memory segment: No space left on device`
+  (2026-10-13: 31 orphans removed by hand; four more within half an hour). Both
+  job hooks now run `hooks/shm-reap.sh`, which removes only segments owned by
+  the runner user with `NATTCH 0` and a dead creator PID, and logs to
+  `dashboard/logs/shm.ndjson`. `FLEET_SHM_*`.
 - **`cockpit wait` read a failed attempt under its in-progress re-run.** It
   (and the MCP `wait_for_checks`) returned red at once while a re-run of the
   failed run was in progress (jerv-ios PR #181, run 38163415231,
