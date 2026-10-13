@@ -323,7 +323,10 @@ tiers work and why the timers are what they are:
 | `FLEET_TIERS_DRAIN_AFTER_S` | `600` | Drain the overflow tier again after this long with every primary lane below cap, nothing queued and no unfit verdict rung. |
 | `FLEET_TIERS_PRIMARY_STALE_S` | `180` | The primary counts as down when its heartbeat is older than this (a remote primary only). |
 | `FLEET_TIERS_SELF_DRAIN` | `1` | `0` turns off primary self-drain (and resumes runners it drained). |
-| `FLEET_TIERS_SELF_RESUME_AFTER_S` | `30` | A self-drained primary runner comes back after its lane has had room this long. |
+| `FLEET_TIERS_SELF_DRAIN_AFTER_S` | `60` | A primary lane starts self-draining once it has been at its cap this long. |
+| `FLEET_TIERS_SELF_RESUME_AFTER_S` | `300` | Self-drained primary runners come back once their lane has had room this long... |
+| `FLEET_TIERS_SELF_MIN_HOLD_S` | `600` | ...and not before the lane has been self-draining this long. Resumes that keep a repo served (no twin, primary-only, self-drain off) never wait. |
+| `FLEET_TIERS_SELF_MIN_OPEN_S` | `300` | A lane does not start self-draining again sooner than this after its runners came back. |
 | `FLEET_TIERS_BUILD_CAP` | `FLEET_ADMIT_MAX_CONCURRENT` | The primary's build-lane cap, if it differs from the admission setting `fleetctl.sh` passes through. |
 | `FLEET_TIERS_SIMULATOR_CAP` | `FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT` | The primary's Simulator-lane cap; runners in the lane are the ones `FLEET_SIMULATOR_RUNNERS` matches. `0`: no Simulator lane. |
 
