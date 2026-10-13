@@ -9,10 +9,10 @@ import CockpitCore
 enum MCPServer {
     static var tools: [[String: Any]] { [
         tool("fleet_status", "The self-hosted runner fleet's verdict: one ordered ladder (host down, disk floor, dead service, saturated, account blocked, config drift, waiting, clear) with evidence and the next move. Call this before diagnosing any CI failure or queue.", [:], []),
-        tool("why_queued", "Everything the fleet knows about one repository: its runners and their states, queued runs with cause, confidence, evidence and ETA, check rollups, recent failures (marked notYourCode when the host or account failed them) and open alerts.",
+        tool("why_queued", "Everything the fleet knows about one repository: its runners and their states, queued runs with cause, confidence, evidence and ETA, check rollups, recent failures (marked notYourCode when the host or account failed them), jobs orphaned by a draining runner (with the commands that recover them) and open alerts.",
              ["repo": ["type": "string", "description": "Repository name or owner/name"]], ["repo"]),
         tool("fleet_queue", "Every queued run, oldest first, with its queue cause and start/finish ETA ranges.", [:], []),
-        tool("wait_for_checks", "Wait until a commit's checks finish. Returns green, red (with failed checks), pointless (waiting cannot end well: host down, disk floor, billing block, or a check that will never start — stop and report) or timeout.",
+        tool("wait_for_checks", "Wait until a commit's checks finish. Returns green, red (with failed checks), pointless (waiting cannot end well: host down, disk floor, billing block, a check that will never start, or a job orphaned by a draining runner — stop and report; the text carries the force-cancel and re-run commands) or timeout.",
              ["repo": ["type": "string"], "pr": ["type": "integer"], "sha": ["type": "string"], "branch": ["type": "string"],
               "timeout_minutes": ["type": "integer", "description": "Default 10, max 30"]], ["repo"]),
     ] }
@@ -98,13 +98,16 @@ enum MCPServer {
             let m: (String?) -> Bool = { r in guard let r else { return false }; return r == repo || r.hasSuffix("/" + repo) }
             struct Why: Encodable {
                 let verdict: Verdict; let runners: [Runner]; let queue: [QueueItem]; let checks: [String]
-                let failures: [FailureRow]; let incidents: [Incident]
+                let failures: [FailureRow]; let incidents: [Incident]; let orphaned: [OrphanedJob]
             }
             let short = repo.split(separator: "/").last.map(String.init) ?? repo
+            let longRuns = (g.runs ?? []).filter { m($0.repo) && $0.isActive && ($0.elapsedMs ?? .infinity) >= OrphanedJob.minStuckMs }
+            let orphans = longRuns.isEmpty ? [] : await GHJobsProbe.orphans(repo: longRuns[0].repo, runIds: longRuns.prefix(8).map(\.id), glance: g)
             return (json(Why(verdict: v, runners: g.runners.filter { m($0.repo) }, queue: g.queue.filter { m($0.repo) },
                              checks: Rollup.checkSets(g).filter { m($0.repo) }.map { "\($0.label): \($0.progress)" },
                              failures: (g.failures ?? []).filter { m($0.repo) },
-                             incidents: g.incidents.filter { $0.key.contains(short) || $0.title.contains(short) })), false)
+                             incidents: g.incidents.filter { $0.key.contains(short) || $0.title.contains(short) },
+                             orphaned: orphans)), false)
         case "fleet_queue":
             let (g, v, _) = await glance()
             guard let g else { return (json(v), true) }
@@ -136,6 +139,9 @@ enum MCPServer {
                 }
             )
             loop.latestRun = { r, g in await GHRunProbe.fetch(r, glance: g) }
+            // Detection only: recovery acts on GitHub and stays behind the
+            // CLI's explicit --recover.
+            loop.orphans = { ids, g in await GHJobsProbe.orphans(repo: repo, runIds: ids, glance: g) }
             let outcome = await loop.run()
             let last = outcome.decision
             let via = outcome.source == .github

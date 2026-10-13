@@ -41,8 +41,8 @@ cockpit wait <repo> --pr <n> [--timeout 45m]
 ```
 
 Exit codes: `0` green, `1` red (failed checks listed), `2` waiting is pointless (host
-down, disk floor, billing block, or a check queued with a cause that never clears) — stop
-and report the reason, `3` timed out or nothing readable. Prefer this to
+down, disk floor, billing block, a check queued with a cause that never clears, or a job
+orphaned by a draining runner) — stop and report the reason, `3` timed out or nothing readable. Prefer this to
 `gh pr checks --watch`, which waits forever on a check that will never start. `--pr`
 judges the PR's head commit only, so a red from a commit you pushed over (or force-pushed
 off) does not end the wait.
@@ -50,6 +50,12 @@ With `--pr` it also asks GitHub directly when cockpit's view is stale (a stalled
 collector), so it returns when GitHub's checks finish; a result marked `(from GitHub; …)`
 means cockpit's own view had frozen — mention it, it is a daemon problem, not your PR's.
 "Collector stalled" from `status`/`why` means the same: the rows on screen are old.
+
+**Orphaned by a draining runner — not your code**: the job passed every step, then its
+runner stopped before reporting, so GitHub keeps it in progress forever (`gh run cancel`
+does nothing). The output gives the `force-cancel` and `gh run rerun` commands. For the
+PR you are waiting on, `cockpit wait <repo> --pr <n> --recover` runs both itself (logged).
+Never force-cancel other runs or cancel fleet-wide: that kills other sessions' runs.
 
 ## When the dashboard itself does not answer
 

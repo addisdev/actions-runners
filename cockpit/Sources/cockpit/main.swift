@@ -16,8 +16,11 @@ commands:
   queue               every queued run, oldest first, with cause and ETA
   wait <repo>         block until a commit's checks finish (--pr N | --sha S | --branch B,
                       --timeout 45m). Exit 0 green, 1 red, 2 waiting is pointless (host
-                      down, disk floor, billing block, a check that will never start),
-                      3 timed out or nothing readable
+                      down, disk floor, billing block, a check that will never start, a
+                      job orphaned by a draining runner), 3 timed out or nothing readable.
+                      --recover (with --pr): force-cancel and re-run this PR's orphaned
+                      runs instead of stopping; logged to
+                      ~/Library/Logs/FleetCockpit/orphan-recover.ndjson
   top                 the host's top CPU users, naming Spotlight when it is the culprit
   sentinel            check the host out of band (SSH, GitHub, the other machine) —
                       what the app does when the dashboard does not answer
@@ -290,10 +293,16 @@ case "why":
     let failures = (g.failures ?? []).filter { match($0.repo) }
     let short = repo.split(separator: "/").last.map(String.init) ?? repo
     let incidents = g.incidents.filter { $0.key.contains(short) || $0.title.contains(short) }
+    // Jobs a draining runner left unreported (homelake PR #73): only GitHub's
+    // job steps show them, so ask about runs active past the threshold.
+    let longRuns = (g.runs ?? []).filter { match($0.repo) && $0.isActive && ($0.elapsedMs ?? .infinity) >= OrphanedJob.minStuckMs }
+    let orphans = opts.fixture != nil || longRuns.isEmpty ? []
+        : await GHJobsProbe.orphans(repo: longRuns[0].repo, runIds: longRuns.prefix(8).map(\.id), glance: g)
     if opts.json {
-        struct Why: Encodable { let verdict: Verdict; let runners: [Runner]; let queue: [QueueItem]; let failures: [FailureRow]; let incidents: [Incident]; let checks: [String] }
+        struct Why: Encodable { let verdict: Verdict; let runners: [Runner]; let queue: [QueueItem]; let failures: [FailureRow]; let incidents: [Incident]; let checks: [String]; let orphaned: [OrphanedJob] }
         printJSON(Why(verdict: src.verdict, runners: runners, queue: queue, failures: failures, incidents: incidents,
-                      checks: Rollup.checkSets(g).filter { match($0.repo) }.map { "\($0.label): \($0.progress)" }))
+                      checks: Rollup.checkSets(g).filter { match($0.repo) }.map { "\($0.label): \($0.progress)" },
+                      orphaned: orphans))
     } else {
         print("Fleet: \(mark(src.verdict.tone)) \(src.verdict.title)")
         print("\n\(short): \(runners.count) runner(s)")
@@ -312,6 +321,13 @@ case "why":
         if !sets.isEmpty {
             print("\nChecks:")
             for s in sets.prefix(5) { print("  \(s.label): \(s.progress)\(s.etaGreenMs.map { ", done in \(Presenter.range($0))" } ?? "")") }
+        }
+        if !orphans.isEmpty {
+            print("\nOrphaned by a draining runner — not your code:")
+            for o in orphans {
+                print("  \(o.summary)")
+                for c in o.recovery { print("    \(c)") }
+            }
         }
         if !failures.isEmpty {
             print("\nFailed in the last 2 hours:")
@@ -338,6 +354,11 @@ case "queue":
 case "wait":
     guard let repo = opts.positional.first else { fail("usage: cockpit wait <repo> [--pr N | --sha S | --branch B] [--timeout 45m]", code: 64) }
     let target = WaitTarget(repo: repo, pr: opts.flags["pr"].flatMap(Int.init), sha: opts.flags["sha"], branch: opts.flags["branch"])
+    // Recovery acts on GitHub, so it is opt-in and scoped to the caller's own
+    // PR: a sha or branch could be anyone's, and a fleet-wide cancel kills
+    // other sessions' runs (2026-10-04).
+    let recover = opts.flags["recover"] != nil
+    if recover, target.pr == nil { fail("--recover needs --pr: it only acts on your own PR's runs", code: 64) }
     let timeout: Double = {
         let raw = opts.flags["timeout"] ?? "45m"
         let n = Double(raw.dropLast()) ?? Double(raw) ?? 45
@@ -394,6 +415,8 @@ case "wait":
         }
     )
     loop.latestRun = { r, g in await GHRunProbe.fetch(r, glance: g) }
+    loop.orphans = { ids, g in await GHJobsProbe.orphans(repo: repo, runIds: ids, glance: g) }
+    if recover { loop.recover = { o in await OrphanRecovery.recover(o, pr: target.pr) } }
     loop.onDrop = { routes.invalidate() }
     if !opts.json { loop.progress = { FileHandle.standardError.write(Data(($0 + "\n").utf8)) } }
     report(await loop.run())

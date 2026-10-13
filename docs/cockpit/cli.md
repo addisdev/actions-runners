@@ -119,9 +119,23 @@ says so: its jobs can only queue. Each queued run shows its age, the cause in
 words with the classifier's confidence, and the ETA; under it, `·` lines are the
 classifier's evidence and `→` its recommendation.
 
-`--json` prints `{ verdict, runners, queue, checks, failures, incidents }`.
+A run active for more than three minutes has its jobs asked of GitHub, and a
+job [orphaned by a draining runner](#a-job-orphaned-by-a-draining-runner) gets
+its own section, with the commands that end it:
+
+```console
+Orphaned by a draining runner — not your code:
+  build: orphaned by a draining runner — not your code. Every step passed, then RL6P9G7WYT-homelake (draining) went away; stuck at "Complete job" for 12m.
+    gh api -X POST repos/addisdev/homelake/actions/runs/38318681067/force-cancel
+    # about a minute later, once the run shows completed:
+    gh run rerun 38318681067 -R addisdev/homelake
+```
+
+`--json` prints `{ verdict, runners, queue, checks, failures, incidents, orphaned }`.
 `runners`, `queue`, `failures` and `incidents` are the glance's own objects
-filtered to the repo; `checks` is a list of `"label: progress"` strings.
+filtered to the repo; `checks` is a list of `"label: progress"` strings;
+`orphaned` lists the orphaned jobs (`runId`, `jobId`, `job`, `runner`,
+`runnerState`, `stuckStep`, `stuckForMs`, `workPassed`).
 
 Exit code: from the **fleet** verdict's tone, so `why` in a script still fails
 when the fleet is broken; `3` when nothing could be read.
@@ -145,7 +159,7 @@ would otherwise run `gh pr checks --watch`, which waits forever on a check that
 will never start.
 
 ```
-cockpit wait <repo> [--pr N | --sha S | --branch B] [--timeout 45m]
+cockpit wait <repo> [--pr N | --sha S | --branch B] [--timeout 45m] [--recover]
 ```
 
 | Option | Meaning |
@@ -154,6 +168,7 @@ cockpit wait <repo> [--pr N | --sha S | --branch B] [--timeout 45m]
 | `--sha S` | A specific commit |
 | `--branch B` | The branch's latest commit |
 | `--timeout` | `90s`, `45m`, `2h`, or a bare number of minutes. Default `45m` |
+| `--recover` | With `--pr` only: force-cancel and re-run this PR's [orphaned](#a-job-orphaned-by-a-draining-runner) runs instead of stopping |
 
 `wait` always opens its own stream (it does not read the snapshot) and decides
 on every update. Progress goes to stderr, once per change:
@@ -169,7 +184,7 @@ $ cockpit wait comet-web --pr 96
 |---|---|---|
 | `0` | `✔` | Every check passed |
 | `1` | `✖` and each failed check, with its URL | At least one failed or was cancelled. A cancellation is often an admission hold that ran past `timeout-minutes`, and the output says so |
-| `2` | `⏹ not waiting — <reason>` | Waiting cannot end well: the host is down, the disk floor is holding jobs, GitHub is refusing jobs for billing, or one of the checks is queued with a cause that never clears. Stop and report the reason |
+| `2` | `⏹ not waiting — <reason>` | Waiting cannot end well: the host is down, the disk floor is holding jobs, GitHub is refusing jobs for billing, one of the checks is queued with a cause that never clears, or a job was orphaned by a draining runner (the reason carries the recovery commands). Stop and report the reason |
 | `3` | `…timed out` or `? dashboard unreachable` | The timeout passed, or (for `--sha` and `--branch`) the dashboard could not be reached; try `cockpit sentinel` |
 
 The deadline is a wall-clock timer of its own, so a wait always ends by
@@ -200,6 +215,45 @@ again (attempt 3)"), and with `--pr` GitHub's rollup is then asked every 30
 seconds; a run that already passed ends the wait green. A failure GitHub
 confirms, or one it cannot be asked about, ends the wait red as before. This
 works for `--sha` and `--branch` too.
+
+### A job orphaned by a draining runner
+
+A runner that is drained while it finishes a job can stop before the job's
+result reaches GitHub. The job then passed every step and still reads
+`in_progress`, with "Complete runner" cancelled or stuck and "Complete job" in
+progress, and it stays that way: `gh run cancel` does nothing, and only
+`POST repos/<repo>/actions/runs/<id>/force-cancel` completes it (addisdev/homelake
+PR #73, 2026-10-12/13). The drain bug behind it is fixed, but a runner can still
+be stopped mid-report (a host reboot, a killed service), so the wait checks.
+
+Once a minute, the target's runs that have been in progress for more than three
+minutes have their jobs asked of GitHub
+(`gh api repos/<repo>/actions/runs/<id>/jobs`). A job is orphaned when it is in
+progress, every step that is not a "Complete …" step has completed, a
+"Complete …" step has been cancelled or unfinished for three minutes, and its
+runner is draining, offline, dead or lost in cockpit's view. A cancelled
+"Complete runner" is enough on its own: the worker cancels it only when the
+listener shuts down, and a drained runner the tiers controller has since resumed
+reads busy again while GitHub still holds the orphan.
+
+Without `--recover` the wait stops with exit `2` and the commands:
+
+```console
+⏹ homelake PR #73: not waiting — build: orphaned by a draining runner — not your code. Every step passed, then RL6P9G7WYT-homelake (draining) went away; stuck at "Complete job" for 12m.
+  force-cancel: gh api -X POST repos/addisdev/homelake/actions/runs/38318681067/force-cancel
+  then, once the run shows completed (~1 min): gh run rerun 38318681067 -R addisdev/homelake
+  or let cockpit do both for this PR: cockpit wait addisdev/homelake --pr 73 --recover
+```
+
+With `--pr N --recover`, the wait does both itself: force-cancel, poll the run
+every 5 seconds until GitHub completes it (up to 3 minutes), `gh run rerun`,
+then keep waiting on the new attempt. Each run is recovered at most once per
+wait; a job whose work had already failed is never recovered (a re-run would
+repeat it), and every attempt is appended to
+`~/Library/Logs/FleetCockpit/orphan-recover.ndjson`. It is opt-in and limited to
+the PR you are waiting on because it acts on GitHub: cancelling runs across the
+fleet kills other sessions' fresh re-runs. The MCP `wait_for_checks` reports
+orphans the same way but never recovers.
 
 ### `--pr` also asks GitHub
 

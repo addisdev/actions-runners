@@ -20,6 +20,25 @@
 # what lets the hook return immediately — the runner finishes reporting, exits,
 # and this notices and stops the service cleanly.
 #
+# PGREP -a, BECAUSE THIS RUNS UNDER THE WORKER IT IS WAITING FOR
+#
+# macOS pgrep leaves the calling process and all of its ancestors out of the
+# match unless it is given -a. This script is started by the completion hook,
+# which is a child of Runner.Worker, so without -a the worker it waits for is
+# invisible: the first poll read "no worker", and svc.sh stop ran while the hook
+# was still running. The listener then cancelled the job before it could report,
+# and GitHub kept the job in_progress ("Complete runner" cancelled, "Complete
+# job" stuck) until someone force-cancelled the run: addisdev/homelake PR #73,
+# 2026-10-12/13, three jobs, 10-25 minutes each. runner-host's worker logs show
+# 40 jobs on 15+ runners shut down inside this hook from 10-10 to 10-13.
+#
+# IGNORING SIGTERM AROUND THE STOP
+#
+# This process is still in the runner's launchd job (nohup only ignores
+# SIGHUP), and unloading that job signals its whole process group. Without the
+# trap the stop killed this script before it could record the drain as done,
+# so the marker stayed "draining" and .drain-stop stayed behind.
+#
 # BOUNDED, ALWAYS. If the worker never exits — a wedged job is exactly the sort
 # of thing someone is draining a runner to deal with — this gives up and leaves
 # the drain marker in place rather than waiting forever. The dashboard keeps
@@ -41,12 +60,13 @@ TIMEOUT="${2:-3600}"
 # report a result, so this adds no meaningful delay.
 WAITED=0
 while [ "$WAITED" -lt "$TIMEOUT" ]; do
-  if ! pgrep -f "$DIR/bin(\.[^/]+)?/Runner\.Worker" >/dev/null 2>&1; then
+  if ! pgrep -a -f "$DIR/bin(\.[^/]+)?/Runner\.Worker" >/dev/null 2>&1; then
     # Re-checked after the wait for the same reason it was checked before it:
     # a resume during the wait must win.
     [ -f "$DIR/.drain-stop" ] || exit 0
 
     cd "$DIR" || exit 0
+    trap '' TERM INT HUP
     ./svc.sh stop >/dev/null 2>&1
     rm -f "$DIR/.drain-stop"
     # The marker moves from draining to drained, which is what the dashboard

@@ -496,6 +496,15 @@ from inside the hook kills the process that was about to say "this job passed",
 and the job shows on GitHub as a lost runner: a red build whose steps all
 succeeded, caused by the drain rather than by the code.
 
+Because it starts under the worker, it looks for the worker with `pgrep -a`:
+macOS `pgrep` leaves the caller's ancestors out of its match otherwise, and the
+worker is one. Without `-a` the first poll found no worker and stopped the
+service mid-hook, which left the job `in_progress` on GitHub until the run was
+force-cancelled (fixed 2026-10-13; see `cockpit why`'s
+[orphaned jobs](../cockpit/cli.md#a-job-orphaned-by-a-draining-runner)). It
+ignores SIGTERM around the stop, since unloading the LaunchAgent signals the
+runner's whole process group, this script included.
+
 What it refuses to do:
 
 - **It will not stop a runner whose drain was cancelled.** The `.drain-stop`
