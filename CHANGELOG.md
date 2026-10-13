@@ -25,6 +25,22 @@ Portable, mobile-first dashboard.
   **Pause new runners**. See
   [Taking a host out of rotation](docs/federation.md#taking-a-host-out-of-rotation).
 
+- **Jobs orphaned by a draining runner are named, not waited on.** A job that
+  passed every step but whose runner went away during "Complete runner" stays
+  `in_progress` on GitHub until someone force-cancels the run (addisdev/homelake
+  PR #73, 2026-10-12/13: three jobs, 10-25 minutes each, while `cockpit why` said
+  "0 of 1 done" and `cockpit wait` kept waiting). The cockpit now asks GitHub
+  for the jobs of runs active past three minutes; a job whose work steps have
+  all completed, stuck at a "Complete …" step for three minutes, with its runner
+  draining, offline, dead or lost (or with "Complete runner" cancelled, which
+  only a runner shutdown does) is reported as **orphaned by a draining runner —
+  not your code**, with the `force-cancel` and `gh run rerun` commands.
+  `cockpit why` lists it; `cockpit wait` and `wait_for_checks` stop with exit
+  `2`; `cockpit wait --pr N --recover` force-cancels and re-runs that PR's own
+  orphaned runs once each (never a run whose work failed), logs each to
+  `~/Library/Logs/FleetCockpit/orphan-recover.ndjson`, and keeps waiting.
+  `CockpitCore/OrphanedJob.swift`.
+
 - **A full shared memory table is now a verdict, not a mystery red test.**
   `hooks/shm-reap.sh` logged orphan sweeps and `low` events to
   `dashboard/logs/shm.ndjson`, and nothing read it; the shmget error lives in
@@ -204,6 +220,18 @@ Portable, mobile-first dashboard.
   LaunchAgents run at load and `svc.sh stop` only unloads. fleetd and the agent
   now stop a running drained runner again within a tick, keeping its drain
   owner (`FLEET_HOLD_DRAINS`, default on).
+
+- **Draining a busy runner orphaned its job.** `drain-stop-when-idle.sh` is
+  started by the completion hook, which runs under `Runner.Worker`, and macOS
+  `pgrep` leaves the caller's ancestors out of its match without `-a`. So the
+  script never saw the worker it was waiting for and stopped the service at
+  once, mid-hook; the listener cancelled the job before it could report and
+  GitHub kept it `in_progress`. runner-host's worker logs show 40 jobs on 15+
+  runners shut down inside the hook from 10-10 to 10-13, as the tiers controller
+  drained runners that had just taken a job. Both drain scripts now use
+  `pgrep -a`, and the stop ignores the SIGTERM that unloading the runner's
+  launchd job sends its process group, which used to kill the script before it
+  could mark the drain done (the marker stayed `draining`).
 
 - **Killed Postgres clusters exhausted the host's shared memory table.** A
   cancelled or timed-out job kills its throwaway cluster without a clean

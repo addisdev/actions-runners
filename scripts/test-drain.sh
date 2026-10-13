@@ -152,6 +152,40 @@ kill "$UPD_PID" 2>/dev/null
 wait "$UPD_PID" 2>/dev/null
 
 echo
+echo "drain-stop-when-idle.sh — the worker is its own ancestor"
+# The completion hook runs under Runner.Worker and starts this script, so the
+# worker it waits for is an ancestor. macOS pgrep skips ancestors without -a,
+# which stopped the service mid-hook and orphaned the job on GitHub
+# (addisdev/homelake PR #73, 2026-10-12/13). Here the "worker" is a bash whose
+# argv[0] is the worker path, running the script as its child.
+make_runner app-anc testowner/app-anc host-app-anc
+touch "$TMP/app-anc/.drain-stop"
+(
+  exec -a "$TMP/app-anc/bin.2.337.0/Runner.Worker spawnclient 1 2" bash -c '"$1" "$2" 3; :' _ \
+    "$ROOT/scripts/drain-stop-when-idle.sh" "$TMP/app-anc"
+) >/dev/null 2>&1
+check "does not stop the service under a live ancestor worker" "$(svc_log app-anc)" ""
+check "leaves the flag for the next attempt" "$([ -f "$TMP/app-anc/.drain-stop" ] && echo yes || echo no)" "yes"
+
+echo
+echo "drain-stop-when-idle.sh — survives the stop's SIGTERM"
+# Unloading the runner's launchd job signals its process group, this script
+# included. A svc.sh that SIGTERMs its caller stands in for that.
+make_runner app-term testowner/app-term host-app-term
+cat > "$TMP/app-term/svc.sh" <<'SVC'
+#!/usr/bin/env bash
+echo "$1" >> "$(dirname "$0")/svc.log"
+kill -TERM "$PPID"
+exit 0
+SVC
+printf 'draining\nrequested_at=1\nby=tiers\n' > "$TMP/app-term/.drain"
+touch "$TMP/app-term/.drain-stop"
+"$ROOT/scripts/drain-stop-when-idle.sh" "$TMP/app-term" 10 >/dev/null 2>&1
+check "stops the service" "$(svc_log app-term)" "stop,"
+check "still records the drain as done" "$(head -1 "$TMP/app-term/.drain" 2>/dev/null)" "drained"
+check "and clears the flag" "$([ -f "$TMP/app-term/.drain-stop" ] && echo yes || echo no)" "no"
+
+echo
 echo "drain-stop-when-idle.sh — keeps the owner of a controller drain"
 make_runner app-own testowner/app-own host-app-own
 printf 'draining\nrequested_at=1\nby=tiers\n' > "$TMP/app-own/.drain"

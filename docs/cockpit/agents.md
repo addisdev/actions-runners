@@ -27,7 +27,7 @@ Any MCP client that can launch a stdio server can use the same command.
 | Tool | Arguments | Returns |
 |---|---|---|
 | `fleet_status` | none | `{ verdict, counts, route, posture }`: the [verdict](verdict.md) with evidence and next move, the counts, which route answered, and the standing-risk items |
-| `why_queued` | `repo` (required): name or `owner/name` | `{ verdict, runners, queue, checks, failures, incidents }` for that repo, the same as `cockpit why --json` |
+| `why_queued` | `repo` (required): name or `owner/name` | `{ verdict, runners, queue, checks, failures, incidents, orphaned }` for that repo, the same as `cockpit why --json` |
 | `fleet_queue` | none | The glance's `queue` array: every queued run with cause, confidence, evidence and ETA ranges |
 | `wait_for_checks` | `repo` (required), one of `pr`, `sha`, `branch`; `timeout_minutes` (default 10, max 30) | A line starting `green:`, `red:` (naming the checks that did not pass), `pointless:` (with the reason) or `timeout` |
 
@@ -38,8 +38,10 @@ returns even when the daemon's view has frozen; such an answer ends with
 `(from GitHub; cockpit's view was 27m old)`, which is a daemon problem to
 mention, not the PR's. `pointless` means the same as `cockpit wait`'s
 exit `2`: the host is down, the disk floor is holding jobs, GitHub is refusing
-jobs, or a check is queued with a cause that never clears. The session should
-stop and report it, not keep waiting. The 30-minute cap keeps one tool call from
+jobs, a check is queued with a cause that never clears, or a job was
+[orphaned by a draining runner](cli.md#a-job-orphaned-by-a-draining-runner)
+(the text carries the force-cancel and re-run commands; the tool never runs
+them). The session should stop and report it, not keep waiting. The 30-minute cap keeps one tool call from
 holding a session hostage; call it again for longer waits.
 
 Every tool reads the app's snapshot when it is under 90 seconds old and

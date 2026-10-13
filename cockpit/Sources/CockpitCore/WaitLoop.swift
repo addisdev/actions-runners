@@ -52,6 +52,16 @@ public struct WaitOutcome: Sendable, Equatable {
 ///    is pending, and that fresher row stays laid over cockpit's view until
 ///    the view catches up; GitHub's PR rollup is then asked at the stale
 ///    cadence. A run GitHub cannot answer for keeps cockpit's red.
+///
+/// 2026-10-12/13 (homelake PR #73): jobs passed every step and then stayed
+/// `in_progress` for 10-25 minutes because a drain stopped their runner while
+/// the job-completed hook ran; nothing would ever report them. So:
+/// 7. Once a minute, the target's runs that have been in progress longer than
+///    `OrphanedJob.minStuckMs` have their jobs asked of GitHub (`orphans`). An
+///    orphaned job ends the wait as pointless, with the force-cancel and
+///    re-run commands; with `recover` set (`cockpit wait --pr N --recover`)
+///    each orphaned run of the target is recovered once, logged, and the wait
+///    goes on with the re-run.
 public struct WaitLoop: Sendable {
     public typealias Connect = @Sendable () async throws -> AsyncThrowingStream<FleetClient.StreamEvent, Error>
 
@@ -62,6 +72,11 @@ public struct WaitLoop: Sendable {
     /// One run's latest attempt as GitHub has it now (`GHRunProbe`), asked
     /// about each failed run before a red from cockpit ends the wait.
     public var latestRun: (@Sendable (RunRow, Glance?) async -> RunRow?)?
+    /// The orphaned jobs among these runs of the target (`GHJobsProbe.orphans`).
+    public var orphans: (@Sendable ([Int], Glance?) async -> [OrphanedJob])?
+    /// Recovers one orphaned run (`OrphanRecovery.recover`). Nil: report it and stop.
+    public var recover: (@Sendable (OrphanedJob) async -> OrphanRecovery.Result)?
+    public var orphanCheckEvery: TimeInterval = 60
     public var crossCheckFresh: TimeInterval = 120
     public var crossCheckStale: TimeInterval = 30
     /// The most one GitHub ask may take (it is also capped by the time left).
@@ -140,6 +155,9 @@ public struct WaitLoop: Sendable {
         var fresh: [Int: RunRow] = [:]
         // Cockpit's view still holds an older attempt of one of those runs.
         var behind = false
+        var nextOrphanCheck = start
+        // Runs `recover` has re-run (step 7): never twice.
+        var recovered = Set<Int>()
 
         func say(_ line: String) {
             if line != announced { progress(line); announced = line }
@@ -245,10 +263,57 @@ public struct WaitLoop: Sendable {
                 nextCross = now() + (eager ? crossCheckStale : crossCheckFresh) * 1000
             }
 
+            if let ask = orphans, now() >= nextOrphanCheck {
+                let ids = Self.orphanCandidates(seen.snapshot(), now: now()).filter { !recovered.contains($0) }
+                if !ids.isEmpty {
+                    let left = max(0.1, (deadline - now()) / 1000)
+                    let found = await Deadline.race(seconds: min(askTimeout, left), { await ask(ids, g) }, onTimeout: { [] })
+                    for o in found where !recovered.contains(o.runId) {
+                        guard let fix = recover, o.workPassed else {
+                            return WaitOutcome(decision: .pointless(o.pointless(pr: target.pr)), source: .github, cockpitAgeMs: age,
+                                               cockpitSaid: seen.snapshot().cockpitLine)
+                        }
+                        progress("… \(target.label): \(o.summary) Recovering: force-cancel, then re-run.")
+                        let r = await fix(o)
+                        guard r.ok else {
+                            return WaitOutcome(decision: .pointless("\(o.pointless(pr: target.pr))\n  --recover stopped at \(r.step): \(r.detail ?? "failed")"),
+                                               source: .github, cockpitAgeMs: age, cockpitSaid: seen.snapshot().cockpitLine)
+                        }
+                        recovered.insert(o.runId)
+                        progress("… \(target.label): re-ran run \(o.runId); waiting on the new attempt")
+                        // Cockpit's view may next show the force-cancelled
+                        // attempt as red; step 6 asks GitHub before believing it.
+                        nextCross = min(nextCross, now())
+                    }
+                    nextOrphanCheck = now() + orphanCheckEvery * 1000
+                }
+            }
+
             if now() >= deadline { return seen.timedOut(target: target) }
             try? await Task.sleep(nanoseconds: UInt64(min(tick, max(0.01, (deadline - now()) / 1000)) * 1e9))
         }
         return seen.timedOut(target: target)
+    }
+
+    /// Run ids of the target worth asking about orphaned jobs: active in
+    /// cockpit's view for longer than a job can sit in "Complete …", or in
+    /// progress in GitHub's rollup (whose check URLs carry the run id).
+    static func orphanCandidates(_ s: Seen.State, now: Double) -> [Int] {
+        var ids = Set<Int>()
+        for r in s.cockpitSet?.runs ?? [] where r.isActive && r.id > 0 {
+            if let st = r.startedAt, now - st < OrphanedJob.minStuckMs { continue }
+            ids.insert(r.id)
+        }
+        for c in s.github?.checks ?? [] where c.status != "completed" {
+            if let id = c.url.flatMap(runId(fromURL:)) { ids.insert(id) }
+        }
+        return ids.sorted()
+    }
+
+    /// `…/actions/runs/<id>/job/<job>` → `<id>`.
+    static func runId(fromURL url: String) -> Int? {
+        guard let r = url.range(of: "/actions/runs/") else { return nil }
+        return Int(url[r.upperBound...].prefix { $0.isNumber })
     }
 
     private actor Latest {

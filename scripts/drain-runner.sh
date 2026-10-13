@@ -128,7 +128,9 @@ fi
 
 # ---- drain or stop ----------------------------------------------------------
 BUSY=0
-if pgrep -f "$DIR/bin(\.[^/]+)?/Runner\.Worker" >/dev/null 2>&1; then
+# -a: macOS pgrep skips its own ancestors otherwise, so run from inside a job
+# it would miss that job's worker (see drain-stop-when-idle.sh).
+if pgrep -a -f "$DIR/bin(\.[^/]+)?/Runner\.Worker" >/dev/null 2>&1; then
   BUSY=1
 fi
 
