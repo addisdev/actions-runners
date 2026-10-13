@@ -216,6 +216,21 @@ Portable, mobile-first dashboard.
 
 ### Fixed
 
+- **Primary self-drain flapped.** The standby tiers controller drained every
+  idle primary runner on the first tick a lane reached its cap and resumed them
+  all 30 s after it dipped below. With a build cap of 2 that is the lane's
+  normal operating point: from 10-10 to 10-13 runner-host saw 489 drain batches
+  (up to 55 runners each, 7,495 runner drains), a median hold of 2.9 min, a
+  resume followed by the next drain within 2 min half the time, and 88 drains
+  that landed on a runner which had just taken a job. Self-drain now has
+  hysteresis per lane: it starts after 60 s at cap
+  (`FLEET_TIERS_SELF_DRAIN_AFTER_S`), ends after 5 min with room
+  (`FLEET_TIERS_SELF_RESUME_AFTER_S`, was 30 s) and no sooner than 10 min after
+  it started (`FLEET_TIERS_SELF_MIN_HOLD_S`), and does not start again within
+  5 min of ending (`FLEET_TIERS_SELF_MIN_OPEN_S`). Resumes that keep a repo
+  served are still immediate, and a lane in its hold never drains more runners
+  unless it is at cap. `/api/state` lanes gain `shedding` and `shedSince`.
+
 - Drained runners came back after a reboot or login, because their
   LaunchAgents run at load and `svc.sh stop` only unloads. fleetd and the agent
   now stop a running drained runner again within a tick, keeping its drain

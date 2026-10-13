@@ -48,10 +48,19 @@ export const TIERS_DEFAULTS = {
   // (the coordinator refuses to queue work for a staler host anyway).
   commandStaleMs: 120_000,
   selfDrain: true,
-  // A self-drained primary runner comes back after its lane has had room
-  // this long. Short, but not zero: a lane that frees and refills within
-  // seconds would otherwise stop and start every idle listener each time.
-  selfResumeAfterMs: 30_000,
+  // Self-drain has hysteresis, because the cap is the lane's normal operating
+  // point: with a build cap of 2 the lane crosses it every time a job starts or
+  // ends, and with no hold each crossing drained or resumed ~50 runners
+  // (runner-host, 10-10..10-13: 489 drain batches, a median hold of 2.9 min).
+  // A lane starts shedding (drains its idle runners) after being at cap this
+  // long...
+  selfDrainAfterMs: 60_000,
+  // ...stops (resumes them) once it has had room this long...
+  selfResumeAfterMs: 300_000,
+  // ...but never sooner than this after it started shedding...
+  selfMinHoldMs: 600_000,
+  // ...and does not start shedding again sooner than this after it stopped.
+  selfMinOpenMs: 300_000,
   // An action not yet reflected in the reported state is not re-sent for
   // this long.
   retryMs: 180_000,
@@ -102,7 +111,10 @@ export function tiersConfigFromEnv(env = {}, { localHostId = null } = {}) {
     drainAfterQuietMs: s('FLEET_TIERS_DRAIN_AFTER_S', TIERS_DEFAULTS.drainAfterQuietMs),
     primaryStaleMs: s('FLEET_TIERS_PRIMARY_STALE_S', TIERS_DEFAULTS.primaryStaleMs),
     selfDrain: String(env.FLEET_TIERS_SELF_DRAIN ?? '1') !== '0',
+    selfDrainAfterMs: s('FLEET_TIERS_SELF_DRAIN_AFTER_S', TIERS_DEFAULTS.selfDrainAfterMs),
     selfResumeAfterMs: s('FLEET_TIERS_SELF_RESUME_AFTER_S', TIERS_DEFAULTS.selfResumeAfterMs),
+    selfMinHoldMs: s('FLEET_TIERS_SELF_MIN_HOLD_S', TIERS_DEFAULTS.selfMinHoldMs),
+    selfMinOpenMs: s('FLEET_TIERS_SELF_MIN_OPEN_S', TIERS_DEFAULTS.selfMinOpenMs),
     caps: {
       build: int(env.FLEET_TIERS_BUILD_CAP, int(env.FLEET_ADMIT_MAX_CONCURRENT, TIERS_DEFAULTS.caps.build)),
       simulator: int(env.FLEET_TIERS_SIMULATOR_CAP, int(env.FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT, 0)),
@@ -224,11 +236,37 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
       freeForMs: atCap ? 0 : now - freeSince[lane],
     };
   }
-  const laneAtCap = (r) => Boolean(lanes.build?.atCap || (isSim(r) && lanes.simulator?.atCap));
-  const laneFreeForMs = (r) => Math.min(
-    lanes.build ? lanes.build.freeForMs : Infinity,
-    isSim(r) && lanes.simulator ? lanes.simulator.freeForMs : Infinity,
-  );
+
+  // ---- self-drain hysteresis ---------------------------------------------------
+  // Whether each lane is shedding (its idle primary runners drained), with
+  // `since` the time it last started or stopped. Entering needs the lane at cap
+  // for selfDrainAfterMs and open for selfMinOpenMs; leaving needs room for
+  // selfResumeAfterMs and a hold of selfMinHoldMs. At start a lane whose
+  // runners the controller already drained is shedding, held from now.
+  const shed = {};
+  for (const [lane, l] of Object.entries(lanes)) {
+    let s = prev.shed?.[lane];
+    if (!s) {
+      const members = primaryRunners.filter((r) => (lane === 'simulator' ? isSim(r) : !isSim(r)));
+      s = members.some(own) ? { on: true, since: now } : { on: false, since: null };
+    }
+    if (!s.on && l.atCap && l.atCapForMs >= cfg.selfDrainAfterMs
+      && (s.since == null || now - s.since >= cfg.selfMinOpenMs)) {
+      s = { on: true, since: now };
+    } else if (s.on && !l.atCap && l.freeForMs >= cfg.selfResumeAfterMs
+      && now - s.since >= cfg.selfMinHoldMs) {
+      s = { on: false, since: now };
+    }
+    shed[lane] = s;
+    l.shedding = s.on;
+    l.shedSince = s.since;
+  }
+  // A runner is held drained while any of its lanes is shedding, and newly
+  // drained only while such a lane is also at cap right now: a hold delays
+  // resumes, it never drains more of a lane that has room.
+  const lanesOf = (r) => Object.keys(shed).filter((k) => k === 'build' || isSim(r));
+  const held = (r) => lanesOf(r).some((k) => shed[k].on);
+  const drainLane = (r) => lanesOf(r).find((k) => shed[k].on && lanes[k].atCap) ?? null;
 
   // ---- standby hosts ---------------------------------------------------------
   const hostInfo = new Map(standby.map((h) => {
@@ -370,12 +408,14 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
       if (!selfDrain) want(p, 'resume', 'primary', off ? 'tiers switched off' : 'self-drain disabled');
       else if (pinned) want(p, 'resume', 'primary', 'repo is primary-only');
       else if (!twinFor(p)) want(p, 'resume', 'primary', 'no online standby twin');
-      else if (!laneAtCap(p) && laneFreeForMs(p) >= cfg.selfResumeAfterMs) {
-        want(p, 'resume', 'primary', `lane below cap for ${secs(laneFreeForMs(p))}`);
+      else if (!held(p)) {
+        const freeFor = Math.min(...lanesOf(p).map((k) => lanes[k].freeForMs));
+        want(p, 'resume', 'primary', Number.isFinite(freeFor) ? `lane below cap for ${secs(freeFor)}` : 'no lane to shed');
       }
       continue;
     }
-    if (!selfDrain || pinned || p.drainState || !laneAtCap(p)) continue;
+    const lane = drainLane(p);
+    if (!selfDrain || pinned || p.drainState || !lane) continue;
     // Idle only, and only with a twin online elsewhere: a repo must never be
     // left with nothing but drained runners.
     if (busy(p) || !online(p)) continue;
@@ -383,7 +423,7 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
       deferred.push({ name: p.name, reason: 'no online standby twin' });
       continue;
     }
-    want(p, 'drain', 'primary', `${lanes.build?.atCap ? 'build' : 'simulator'} lane at cap`);
+    want(p, 'drain', 'primary', `${lane} lane at cap`);
   }
 
   // Commands only reach a host whose agent is reporting, and never one that is
@@ -412,7 +452,7 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
     drainedByOperator: rs.filter(operatorDrained).length,
   });
 
-  const nextState = { overflow, since, reason, atCapSince, freeSince, quietSince, pending };
+  const nextState = { overflow, since, reason, atCapSince, freeSince, quietSince, shed, pending };
   return {
     state: nextState,
     decision: {

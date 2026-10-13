@@ -60,8 +60,30 @@ The primary's runners all look idle to GitHub while its admission hook lets two
 jobs run, so GitHub keeps assigning it work that then waits at "Set up runner",
 where it cannot move to another host. While a primary lane is at its cap, the
 controller drains the primary's **idle** runners in that lane, so new jobs go to
-the standby host instead, and resumes them once the lane has had room for
-`FLEET_TIERS_SELF_RESUME_AFTER_S` (30 s).
+the standby host instead, and resumes them once the lane has had room again.
+
+### Hysteresis
+
+The cap is where a busy primary lives: with a build cap of 2, the lane crosses
+it every time a job starts or ends. The first version drained on the first tick
+at cap and resumed after 30 s with room, and on runner-host (10-10 to 10-13)
+that meant 489 drain batches of up to 55 runners, a median hold of 2.9 minutes,
+and 88 drains that reached a runner after it had taken a job. Each lane now
+carries a shedding state with four timers:
+
+| | Default | |
+|---|---|---|
+| `FLEET_TIERS_SELF_DRAIN_AFTER_S` | 60 s | at cap this long before shedding starts |
+| `FLEET_TIERS_SELF_RESUME_AFTER_S` | 5 min | room this long, without a tick back at cap, before it ends |
+| `FLEET_TIERS_SELF_MIN_HOLD_S` | 10 min | shedding never ends sooner than this after it started |
+| `FLEET_TIERS_SELF_MIN_OPEN_S` | 5 min | shedding never starts sooner than this after it ended |
+
+While a lane is shedding its drained runners stay drained, and idle runners
+are drained only while the lane is also at cap at that moment: a hold delays
+resumes, it does not drain more of a lane with room. A fleetd restart that
+finds the controller's drains in a lane treats it as shedding from the
+restart, so the hold starts again rather than resuming everything at once.
+The safety resumes below never wait for a hold.
 
 It never strands a repo. A primary runner is drained only while a standby
 runner for the same repo, carrying every one of its labels, is online and not
