@@ -45,6 +45,11 @@ ROOT="${FLEET_ROOT:-$(cd "$HERE/.." && pwd)}"
 # not already booted before CI began.
 [ -f "$HERE/simulator-control.sh" ] && FLEET_ROOT="$ROOT" bash "$HERE/simulator-control.sh" start
 
+# Remove SysV shared memory left by Postgres clusters a cancelled job killed, so
+# this job's own cluster can get one. Independent of admission: a full table
+# fails Postgres suites whether or not anything here throttles them.
+[ -f "$HERE/shm-reap.sh" ] && FLEET_ROOT="$ROOT" bash "$HERE/shm-reap.sh" started
+
 # shellcheck source=hooks/common.sh
 . "$HERE/common.sh" 2>/dev/null || exit 0
 

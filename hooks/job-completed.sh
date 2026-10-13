@@ -27,6 +27,11 @@ ROOT="${FLEET_ROOT:-$(cd "$HERE/.." && pwd)}"
 # this completion hook.
 [ -f "$HERE/simulator-control.sh" ] && FLEET_ROOT="$ROOT" bash "$HERE/simulator-control.sh" complete
 
+# Same sweep as the started hook. Running it here too means a host that goes
+# quiet after a cancelled Postgres job is not left near the 32-segment cap until
+# the next job happens to start.
+[ -f "$HERE/shm-reap.sh" ] && FLEET_ROOT="$ROOT" bash "$HERE/shm-reap.sh" completed
+
 # Drain, handled BEFORE the admission-mode check below, because a drain has
 # nothing to do with admission and must work on a fleet that never turned
 # admission on.

@@ -123,6 +123,9 @@ jobs:
       - name: Admission control tests
         run: bash hooks/tests/run.sh
 
+      - name: Shared memory sweep tests
+        run: bash hooks/tests/shm.sh
+
       - name: Host sentinel tests
         run: bash scripts/test-sentinel.sh
 

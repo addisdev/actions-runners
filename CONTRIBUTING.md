@@ -89,6 +89,7 @@ or `scripts/install-hooks.sh`:
 
 ```bash
 hooks/tests/run.sh        # slots, limits, stale-slot reaping, fail-open
+hooks/tests/shm.sh        # orphaned SysV shared memory sweep
 hooks/tests/install.sh    # the installer, against a fake fleet
 ```
 
