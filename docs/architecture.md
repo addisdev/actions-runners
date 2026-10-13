@@ -125,12 +125,6 @@ them up.
 Schema is managed by forward-only migrations in `lib/db.js`. There is no
 downgrade path — back up `fleet.db` before upgrading.
 
-## Autofix and admission
-
-`autofix/` runs inside each job's started hook, keyed on the admission module.
-`autofix/escalate/` is an optional third-party subtree that must be opted into
-separately (see [Security Hardening](security-hardening.md)).
-
 ## What the control token is worth
 
 The dashboard's control plane executes shell commands as the current macOS

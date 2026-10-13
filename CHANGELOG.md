@@ -214,6 +214,18 @@ Portable, mobile-first dashboard.
   that is only clearing. Replayed over the recorded intervals, 2026-09-20 goes
   from 1,284 offline alerts (264 notifications) to 21 (41).
 
+### Removed
+
+- **The autofix bridge.** `dashboard/autofix/` is gone: the `fleet-autofix`
+  LaunchAgent, infra reruns, Cursor-agent escalations and fix PRs, and with them
+  the project's only Cursor SDK dependency. Alerts notify and nothing acts on
+  them unattended; `health.sh --repair` remains the response to `launchd-dead`,
+  `launchd-missing` and `offline`. `GET /api/remediation-candidates`,
+  `GET /api/autofix/status`, `FLEET_AUTOFIX_STATUS_URL` and the dashboard's
+  Remediation panel went with it. To clean up a host that ran it: unload and
+  delete `~/Library/LaunchAgents/<prefix>.fleet-autofix.plist`, and delete
+  `~/.cursor/sdk/auth.json` or `dashboard/.cursor-api-key`.
+
 ### Fixed
 
 - **Primary self-drain flapped.** The standby tiers controller drained every

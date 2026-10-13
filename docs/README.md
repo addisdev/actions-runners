@@ -66,6 +66,6 @@ is grounded in something that actually went wrong on a real fleet — see
 | [Inferred groups](design/groups.md) | Why headings are derived from disk, never from the current tick |
 | [The control plane](design/control-plane.md) | No shell, no free-form commands, and an allowlisted bundle |
 | [Workflow lint](design/lint.md) | Parsing the YAML rather than grepping it, on the branches that run |
-| [Alerts and autofix](design/alerts.md) | Transitions rather than levels, and what may act unattended |
+| [Alerts](design/alerts.md) | Transitions rather than levels, and which rules are worth having |
 | [Capacity and autoscaling](design/capacity.md) | Sizing per repo, and why the host tile shows pressure not swap |
 | [Honest analytics](design/analytics.md) | What the numbers exclude, and why a job failed |

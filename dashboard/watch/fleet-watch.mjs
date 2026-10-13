@@ -25,9 +25,7 @@ const NOTIFY = process.env.WATCH_NOTIFY === '1';
 // before seventeen runners have registered, so a watcher without a sustain
 // reports a broken fleet every reboot — and an alarm that fires on every
 // healthy boot is one you learn to skip. And the `offline` drift kind here
-// self-resolves in 46-280s; fleetd's own autofix waits 5 minutes before acting
-// on it for exactly that reason. One poll of patience is the cheapest version
-// of the same idea.
+// self-resolves in 46-280s. One poll of patience is the cheapest way to let it.
 const SUSTAIN = Number(process.env.WATCH_SUSTAIN ?? 2);
 
 const stamp = () => new Date().toISOString().replace('T', ' ').slice(0, 19);

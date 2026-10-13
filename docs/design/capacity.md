@@ -152,10 +152,8 @@ immediately proposed removing a duplicate that had run 103 jobs and last worked
 that morning — six hours does not mean "unused", it means "overnight", and the
 runner would be re-added the next working day and removed again the night after.
 
-It lives in the collector rather than in autofix. Autofix remediates *faults* and
-should act quickly on a clear one; a scaler spends a shared resource and should
-act slowly and reluctantly. Keeping it here also avoids widening autofix's
-allowlist to include registration and removal, which it deliberately excludes.
+It lives in the collector. A scaler spends a shared resource, so it should act
+slowly and reluctantly.
 
 It cannot help a fan-out burst — a runner takes tens of seconds to create, and by
 then a 33-job fan-out is over. It is aimed at the sustained case: the repo that

@@ -110,16 +110,6 @@ describe('dismissing', () => {
     assert.equal(open.find((a) => a.key === 'drift:orphan:runner-b').dismissed_at, undefined);
   });
 
-  test('dismissed alerts stay in the open list so the bridge still repairs them', async () => {
-    const alerts = makeAlerts();
-    await alerts.run(driftSnapshot(drift('offline', 'runner-a')));
-    alerts.dismiss('drift:offline:runner-a');
-
-    const keys = alerts.snapshot().open.map((a) => a.key);
-    assert.ok(keys.includes('drift:offline:runner-a'),
-      'removing it would stop autofix repairing it and silently reset its attempt budget');
-  });
-
   test('a dismissed alert does not announce its own resolution', async () => {
     const alerts = makeAlerts();
     await alerts.run(driftSnapshot(drift('offline', 'runner-a')));
@@ -373,7 +363,7 @@ describe('offline: a flapping runner is one alert', () => {
     alerts.evaluate(offline('runner-a'), T0);
     alerts.evaluate(offline(), T0 + MIN);
     assert.equal(alerts.snapshot().open[0].clearing_since, T0 + MIN,
-      'autofix reads this and leaves a recovered listener alone');
+      'the open alert records when its condition began to clear');
 
     alerts.evaluate(offline('runner-a'), T0 + 3 * MIN);
     assert.equal(alerts.snapshot().open[0].clearing_since, undefined);

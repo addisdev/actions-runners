@@ -213,11 +213,7 @@ the rig drives a real fleet over SSH and films the real page:
   loaded. Not `launchctl unload` — an unloaded job reads as `launchd-missing`,
   a different finding with a different fix. `dead` is a loaded job with no
   process, which is the failure no runner plist's `KeepAlive` will undo,
-  because none of them sets it;
-- the auto-remediation bridge is stopped for the take and started again
-  afterwards. `dashboard/autofix/bridge.js` answers the alert by running
-  `health.sh --repair` within seconds of it opening, which is the right
-  behaviour and the wrong recording.
+  because none of them sets it.
 
 Frames, not a video stream, for the same reason every figure here is rendered
 rather than drawn: a frame is a screenshot of the real page with animations

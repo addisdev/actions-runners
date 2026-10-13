@@ -1,13 +1,6 @@
 // Decides whether to add or remove one runner. Decides only — the caller
 // executes, so every decision here is testable without touching the fleet.
 //
-// WHY THIS LIVES IN THE COLLECTOR AND NOT IN AUTOFIX. Autofix remediates faults:
-// something is broken, restart it. Scaling is capacity management, and the two
-// want opposite dispositions — autofix should act fast on a clear fault, while a
-// scaler should act slowly and reluctantly because it is spending a shared
-// resource. Putting it here also avoids widening autofix's action allowlist to
-// include registration and removal, which it deliberately excludes.
-//
 // ONE ACTION PER SWEEP by default, always. Registering a runner takes tens of
 // seconds and changes the very inputs this reads, so a batch decision is stale
 // before it finishes. When the caller opts into `revalidate`, a bounded list may

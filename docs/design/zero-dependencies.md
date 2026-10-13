@@ -12,13 +12,11 @@ better tool and not a compromise: percentage widths are responsive for free, and
 text stays at its real size instead of being scaled by a viewBox — which is how
 SVG charts end up with 9px axis labels on one screen and 20px on another.
 
-There are two isolated exceptions:
+There is one isolated exception:
 
 - Optional PostgreSQL HA dynamically loads the locked `pg` driver. A normal
   single-host start never imports it, and `fleetctl.sh install` installs it only
   when a database URL file is configured.
-- Escalation lives behind its own `package.json`; see
-  [Alerts and auto-remediation](alerts.md#escalation-the-alerts-with-no-mechanical-fix).
 
 ## Tests
 

@@ -49,7 +49,6 @@ without `--repair` — have no `--apply` because there is nothing to guard.
 | `dashboard/agentctl.sh` | Install, run and inspect the fleet agent on an agent Mac | n/a — subcommands |
 | `install.sh` | One-command setup for coordinator or agent role | n/a — runs preflight then fleetctl/agentctl |
 | `dashboard/watch/watchctl.sh` | Install, run and inspect the watchdog | n/a — subcommands |
-| `dashboard/autofix/autofixctl.sh` | Install, run and inspect the auto-remediation bridge | `dryrun` subcommand |
 
 ## Fleet management
 
@@ -862,11 +861,10 @@ Four checks, and it exits non-zero if any fails:
 4. Example workflows target `self-hosted` and pin actions to a full SHA.
 
 A short list of files are named as deliberate exceptions to check 2 — the
-sourced hook libraries (`hooks/common.sh`, `hooks/free-disk.sh`), the hook test
-helpers under `hooks/tests/` and `autofix/escalate/run.mjs` — because each is
-sourced or spawned by something else rather than run by a person. They are
-listed individually rather than matched by a pattern, so that adding one is a
-decision somebody makes in a diff.
+sourced hook libraries (`hooks/common.sh`, `hooks/free-disk.sh`) and the hook
+test helpers under `hooks/tests/` — because each is sourced by something else
+rather than run by a person. They are listed individually rather than matched by
+a pattern, so that adding one is a decision somebody makes in a diff.
 
 There is deliberately no check that every script named on this page exists,
 because this page names `teardown.sh`, which was removed and is described here
@@ -1204,14 +1202,6 @@ Tests for `host-sentinel.sh` with a scripted probe and delivery: announce after
 the threshold, once; announce recovery, once; retry an undelivered message.
 Source: [`scripts/test-sentinel.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/test-sentinel.sh).
 
-### `dashboard/autofix/fix.sh`
-
-The allowlisted entry point used by the remediation bridge to launch a cloud
-agent for a failed run and open a fix pull request. An empty
-`AUTOFIX_FIX_REPOS` disables it. `--login` establishes the Cursor credential
-and `--verify` checks it without launching a fix.
-Source: [`dashboard/autofix/fix.sh`](https://github.com/addisdev/actions-runners/blob/main/dashboard/autofix/fix.sh).
-
 ### `install.sh`
 
 One-command setup for a coordinator or agent host. Runs preflight checks, then
@@ -1257,110 +1247,10 @@ Set `WATCH_NOTIFY=1` in `fleet.env` before `install` to show local macOS
 notifications for sustained `FLEET_PROBLEM`/`FLEET_UNREACHABLE` transitions and
 their recovery. Logging remains enabled regardless.
 
-### `dashboard/autofix/autofixctl.sh`
-
-Installs, runs and inspects the auto-remediation bridge.
-Source: [`dashboard/autofix/autofixctl.sh`](https://github.com/addisdev/actions-runners/blob/main/dashboard/autofix/autofixctl.sh).
-
-| Subcommand | What it does |
-|---|---|
-| `install` | Write the LaunchAgent plist, load it, and report status. |
-| `uninstall` | Unload the agent and delete the plist. |
-| `start` / `stop` | Load or unload the agent. |
-| `restart` | Unload, load, and report status. |
-| `status` | **The default.** launchd state, plus the bridge's `/status`: whether it is in dry-run mode, how many alerts it is tracking, and which have exhausted their attempts and need a human. |
-| `logs [n]` | Tail the bridge log. Default 60 lines. |
-| `run` | Run `bridge.js` in the foreground. |
-| `dryrun` | Run `bridge.js` in the foreground with `AUTOFIX_DRY_RUN=1` — it decides but never acts. |
-| `ping` | POST an empty alert to the bridge, as if one had fired. |
-| `wire` | Point `fleetd`'s alert webhook at this bridge, preserving anything else already in `alerts.config.json`, then tell you to restart the dashboard. |
-
-`AUTOFIX_PORT` defaults to `7879`; the bridge is given `FLEET_URL` pointing at
-`127.0.0.1:$FLEET_PORT`. It resolves a stable `node` path for the same reason
-`watchctl.sh` does.
-
-`install` also copies the auto-remediation settings out of `fleet.env` and into
-the plist's `EnvironmentVariables` — the rerun, fix, and escalation tuning
-variables listed in [configuration](../configuration.md), and only those with a
-value. This matters more than it looks: launchd gives a LaunchAgent no part of
-the installing shell's environment, so a variable set in `fleet.env` and not
-named in that list is simply absent at runtime. Changing any of them means
-re-running `install`, not `restart` — `restart` reloads the existing plist and
-so reuses the environment captured the last time it was written.
-
-### `dashboard/autofix/fleet-action.sh`
-
-The only way the auto-remediation bridge can act on the fleet.
-Source: [`dashboard/autofix/fleet-action.sh`](https://github.com/addisdev/actions-runners/blob/main/dashboard/autofix/fleet-action.sh).
-
-```bash
-./fleet-action.sh <action-id> ['{"json":"args"}']
-```
-
-The bridge decides *when* to act; this decides *what may ever be acted on*. Those
-are separate files on purpose — the complete set of things an unattended process
-can do to the fleet should be one short list you can read in a few seconds, not
-something reconstructed by following control flow through a daemon. It also keeps
-the control token out of the daemon holding an open socket.
-
-The allowlist is `fleet.health`, `fleet.healthRepair`, `fleet.status`,
-`fleet.preflight`, `fleet.cleanupPreview`, `runner.restart` and `run.rerun`. Each
-is read-only or idempotent and reversible.
-
-What it refuses to do:
-
-- **Anything not on the list**, matched exactly — no globbing and no prefix
-  matching, because a prefix rule accepting `fleet.cleanup` would accept
-  `fleet.cleanupApply`. It exits 77 and tells the caller to report the alert to
-  an operator rather than work around it.
-- `fleet.cleanupApply`, `runner.register` and `runner.deregister` are absent
-  deliberately; adding one is a decision, not a config tweak.
-- `run.cancel` is absent for a subtler reason: cancelling looks harmless, but the
-  fleet's analytics treat a cancelled run as unmeasurable, so anything cancelling
-  automatically would quietly corrupt the duration percentiles it is judged by.
-
-The request body is built here rather than accepted from the caller, so the
-arguments can never override the action field that just passed the allowlist
-check.
-
-### `dashboard/autofix/escalate.sh`
-
-The only way the bridge can ask an agent about an alert.
-Source: [`dashboard/autofix/escalate.sh`](https://github.com/addisdev/actions-runners/blob/main/dashboard/autofix/escalate.sh).
-
-```bash
-./escalate.sh '<alert-json>'
-./escalate.sh --login    # sign in with an existing Cursor account
-./escalate.sh --verify   # check the credential actually works
-```
-
-Escalatable rules are `newly-failing`, `stuck-queue`, `label-mismatch`, `orphan`
-and `no-listener`. What qualifies a rule is that answering it requires *reading*
-something — a workflow file, an annotation, a percentile — rather than running
-something; if the answer is a known shell command it belongs in
-`fleet-action.sh`'s allowlist instead.
-
-What it refuses to do:
-
-- **It refuses `launchd-dead`, `launchd-missing` and `offline`.** Those have a
-  deterministic repair that autofix owns, and escalating one would pay a model to
-  narrate a fix that is already running, racing the repair it describes.
-- **It refuses any other rule not on the escalatable list**, and it parses the
-  alert JSON to find the rule rather than pattern-matching, so a rule name
-  appearing inside a workflow title cannot smuggle an alert past the allowlist.
-- **It refuses a world-readable credential file** rather than quietly using it.
-- **It refuses to run with no credential at all**, printing both ways to create
-  one.
-
-`--verify` exists because of how this path failed before: the key was present,
-the daemon looked installed, and every run died on authentication for four days
-before anyone noticed there had been no diagnoses. It reports the credential
-source and warns when a stored login is within 14 days of expiry.
-
 ## See also
 
 - [Configuration](../configuration.md) — every variable these scripts read
 - [Operations](../operations.md) — when to run which of them
 - [Admission control and autoscaling](../admission-and-scaling.md) — what the
   hooks are for
-- [HTTP API](../api.md) — the actions `fleet-action.sh` calls
+- [HTTP API](../api.md) — the endpoints and actions behind the dashboard

@@ -67,7 +67,6 @@ import {
 import { planPrewarm } from './lib/prewarm.js';
 import { createAdmission } from './lib/admission.js';
 import { ingestTestOutcomes } from './lib/test-results.js';
-import { remediationCandidates } from './lib/remediation.js';
 import { annotateActiveFromDb } from './lib/long-running.js';
 import { renderPrometheusMetrics } from './lib/metrics.js';
 import { classifyAnnotations } from './lib/failures.js';
@@ -157,10 +156,6 @@ const CONFIG = {
   // hooks/shm-reap.sh's log of orphaned shared memory it removed (lib/shm.js).
   shmLog: process.env.FLEET_SHM_LOG ?? join(HERE, 'logs', 'shm.ndjson'),
   testOutcomesSpool: process.env.FLEET_TEST_OUTCOMES_SPOOL ?? join(HERE, '..', '.playwright-outcomes.ndjson'),
-  // The autofix bridge remains a separate process and privilege boundary. The
-  // dashboard proxies only its read-only status so operators can see when
-  // remediation is stale, storm-paused or disabled.
-  autofixStatusUrl: process.env.FLEET_AUTOFIX_STATUS_URL ?? 'http://127.0.0.1:7879/status',
   // Extra names accepted in the Host header, beyond the ones discovered from
   // this machine. Coordinator URLs are included because an HA replica is
   // addressed by whatever name its peers and agents were configured with.
@@ -1552,7 +1547,7 @@ function reposToPoll() {
 }
 
 // The ten-minute backfill is durable history, but it is too slow for a failure
-// that should be diagnosed before remediation decides whether to rerun it. Pull
+// that should be classified while it is still news. Pull
 // job detail and annotations for only the newest failed runs, under a tiny call
 // budget; the regular backfill still fills steps and older history.
 async function classifyRecentFailures(runs, maxCalls = 4) {
@@ -2882,31 +2877,6 @@ const server = http.createServer(async (req, res) => {
     return json(res, rows);
   }
 
-  // Readable without a token: the autofix bridge reads this to decide whether
-  // to rerun or escalate a failed run, and it holds no control token.
-  if (url.pathname === '/api/remediation-candidates') {
-    try {
-      return json(res, remediationCandidates(db));
-    } catch (err) {
-      warn('remediation-candidates:', err.message);
-      return json(res, { error: err.message }, 500);
-    }
-  }
-
-  if (url.pathname === '/api/autofix/status') {
-    try {
-      const response = await fetch(CONFIG.autofixStatusUrl, {
-        headers: { accept: 'application/json' },
-        signal: AbortSignal.timeout(2500),
-      });
-      if (!response.ok) throw new Error(`autofix bridge returned ${response.status}`);
-      const body = await response.json();
-      return json(res, { available: true, ...body });
-    } catch (err) {
-      return json(res, { available: false, error: err.message }, 503);
-    }
-  }
-
   if (url.pathname === '/api/queue-history') {
     const hours = Math.min(Math.max(Number(url.searchParams.get('hours') ?? 24), 1), 24 * 90);
     const repo = url.searchParams.get('repo');
@@ -3682,8 +3652,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   // No token from the machine the daemon runs on. Dismissing changes what this
-  // page and the notifier tell you; it starts nothing, stops nothing, and does
-  // not touch autofix — so a prompt to go and run `./fleetctl.sh token` buys
+  // page and the notifier tell you; it starts nothing and stops nothing — so a
+  // prompt to go and run `./fleetctl.sh token` buys
   // nothing that reading the same alert on the same page had not already given
   // away, and it costs the one thing this control needs, which is being one
   // click. From anywhere else the token still applies, because hiding alerts on

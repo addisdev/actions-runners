@@ -38,10 +38,6 @@ let drawerCloseTimer = null;
 // Matches fleetd CONFIG.collectorStaleMs default; /api/health is authoritative when polled.
 const COLLECTOR_STALE_MS = 240_000;
 let collectorHealth = null;
-let remediation = null;
-let autofixStatus = null;
-let remediationLoading = false;
-let remediationFetched = false;
 
 // ------------------------------------------------------------------ helpers
 
@@ -339,86 +335,6 @@ async function pollHealth() {
     collectorHealth = null;
   }
   updateConnectionIndicator();
-}
-
-async function loadRemediation() {
-  remediationLoading = true;
-  const [candidates, status] = await Promise.allSettled([
-    fetch('/api/remediation-candidates').then((res) => {
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json();
-    }),
-    fetch('/api/autofix/status').then(async (res) => {
-      const body = await res.json();
-      if (!res.ok && body.available !== false) throw new Error(`HTTP ${res.status}`);
-      return body;
-    }),
-  ]);
-  remediation = candidates.status === 'fulfilled' ? candidates.value : null;
-  autofixStatus = status.status === 'fulfilled' ? status.value : { available: false };
-  remediationFetched = candidates.status === 'fulfilled';
-  remediationLoading = false;
-  if (view === 'fleet' || view === 'runs') render();
-}
-
-function remediationSection() {
-  if (remediationLoading && !remediationFetched) {
-    return h('div', { class: 'panel' },
-      h('div', { class: 'panel-head' }, h('h3', { text: 'Remediation' })),
-      h('div', { class: 'panel-sub muted', text: 'Loading autofix candidates…' })
-    );
-  }
-  if (!remediationFetched) return null;
-  const list = Array.isArray(remediation) ? remediation : [];
-  const bridgeAvailable = autofixStatus?.available !== false;
-  const bridgePaused = bridgeAvailable && autofixStatus?.fleet?.actionable === false;
-  const escalationDisabled = bridgeAvailable && autofixStatus?.escalation?.enabled === false;
-  const bridgeState = !bridgeAvailable
-    ? h('div', { class: 'callout warn', text: 'Autofix bridge is not reachable; candidates remain visible but no automated action is confirmed.' })
-    : bridgePaused
-      ? h('div', { class: 'callout warn', text:
-          `Autofix paused because fleet data is stale${autofixStatus.fleet.lastError ? `: ${autofixStatus.fleet.lastError}` : '.'}` })
-      : escalationDisabled
-        ? h('div', { class: 'callout warn', text: 'Autofix is running, but escalation is disabled or its credential is unavailable.' })
-        : h('div', { class: 'callout good', text:
-            `Autofix active${autofixStatus.dryRun ? ' in dry-run mode' : ''}; `
-            + `${autofixStatus.reruns?.usedLast24h ?? 0}/${autofixStatus.reruns?.dailyCap ?? '–'} reruns and `
-            + `${autofixStatus.fixes?.usedLast24h ?? 0}/${autofixStatus.fixes?.dailyCap ?? '–'} fixes used in 24h.` });
-  if (!list.length) {
-    return h('div', { class: 'panel' },
-      h('div', { class: 'panel-head' },
-        h('h3', { text: 'Remediation' }),
-        h('span', { class: 'flag good', text: 'nothing pending' })),
-      bridgeState,
-      h('div', { class: 'panel-sub muted', text:
-        'No recent failures are waiting for autofix. The bridge reads this list every minute.' })
-    );
-  }
-  return h('div', { class: 'panel' },
-    h('div', { class: 'panel-head' },
-      h('h3', { text: 'Remediation' }),
-      h('span', { class: 'count warn', text: `${list.length} candidate${list.length === 1 ? '' : 's'}` })),
-    h('div', { class: 'panel-sub', text:
-      'Recently failed runs the autofix bridge may rerun or send to escalation. '
-      + 'Dismissed alerts still repair — this list is independent of notification.' }),
-    bridgeState,
-    h('table', { class: 'mini-table' },
-      h('thead', {}, h('tr', {},
-        h('th', { scope: 'col', text: 'Repo' }), h('th', { scope: 'col', text: 'Workflow' }),
-        h('th', { scope: 'col', text: 'Strategy' }), h('th', { scope: 'col', text: 'Branch' })
-      )),
-      h('tbody', {}, list.slice(0, 12).map((c) =>
-        h('tr', {},
-          h('td', { class: 'mono', text: c.repo?.split('/').pop() ?? '–' }),
-          h('td', {}, c.url
-            ? h('a', { href: c.url, target: '_blank', rel: 'noreferrer', text: c.workflowName ?? 'run' })
-            : (c.workflowName ?? '–')),
-          h('td', {}, h('span', { class: `strategy ${c.strategy}`, text: c.strategy ?? '–' })),
-          h('td', { class: 'mono', text: c.branch ?? '–' })
-        )
-      ))
-    )
-  );
 }
 
 // ------------------------------------------------------------------- header
@@ -1036,14 +952,6 @@ function renderFleet(s) {
     mount($('#fleet-queue'));
   }
 
-  let remEl = $('#remediation');
-  if (!remEl) {
-    remEl = document.createElement('section');
-    remEl.id = 'remediation';
-    $('#view-fleet')?.appendChild(remEl);
-  }
-  mount(remEl, remediationSection());
-
   const unserved = (s.repos ?? []).filter((r) => !r.hasRunner && r.workflows > 0);
   mount($('#unserved'),
     ...(unserved.length
@@ -1165,14 +1073,6 @@ function renderRuns(s) {
     ),
     h('div', { class: 'rows' }, recent.map((r) => runRow(r, { live: false, diagnosis: null })))
   );
-
-  let remEl = $('#remediation-runs');
-  if (!remEl) {
-    remEl = document.createElement('section');
-    remEl.id = 'remediation-runs';
-    $('#view-runs')?.appendChild(remEl);
-  }
-  mount(remEl, remediationSection());
 }
 
 // ------------------------------------------------------------------ drawer
@@ -1900,8 +1800,6 @@ connect();
 // Paints before the first SSE push arrives, and — through the service worker's
 // cached copy — gives an offline launch something to show.
 refreshState();
-loadRemediation();
-setInterval(loadRemediation, 120_000);
 control.maybeExchangePairCode();
 
 // Every table gets a horizontal scroll container, so a wide one scrolls inside

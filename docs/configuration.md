@@ -116,7 +116,6 @@ that `fleetctl.sh install` writes. To change after install:
 | `FLEET_SETTLE_CALLS` | `12` | Per fast tick: re-fetches of jobs whose run just completed but whose row still has no conclusion (`lib/settle.js`). The backfill's settle phase catches anything over budget. | No |
 | `FLEET_BACKUP_DIR` | `dashboard/backups` | Destination directory for `./fleetctl.sh backup`. | No |
 | `FLEET_COLLECTOR_STALE_MS` | `240000` (4 min) | Snapshot age after which `/api/health` reports `stale: true` and metrics mark the collector stale. | No |
-| `FLEET_AUTOFIX_STATUS_URL` | `http://127.0.0.1:7879/status` | Loopback bridge status endpoint proxied by `/api/autofix/status` for remediation health in the dashboard. | No |
 
 ### Database backups and restore drills
 
@@ -413,66 +412,6 @@ host and referenced from the LaunchAgent plist written by `agentctl.sh install`.
 | `FLEET_ADMISSION_LOG` | `<FLEET_ROOT>/dashboard/logs/admission.ndjson` | The hooks' admission log the agent ships to the coordinator. Same default as `hooks/common.sh`. |
 | `FLEET_AGENT_ADMISSION_OFFSET_FILE` | `dashboard/.fleet-agent-admission-offset` | How far the coordinator has accepted that log. Created at the log's end on first start; seed it to continue an existing history (see [Federation](federation.md#moving-the-coordinator-to-another-mac)). |
 
-## Autofix bridge variables
-
-Set in the environment of `autofix/bridge.js` via `autofixctl.sh install`.
-
-### Infrastructure repair and safe reruns
-
-| Variable | Default | What it does |
-|---|---|---|
-| `AUTOFIX_PORT` | `7879` | Bridge HTTP port. |
-| `AUTOFIX_STORM` | `6` | Past this many open alerts, act on nothing. |
-| `AUTOFIX_SWEEP_MS` | `60000` | How often the bridge re-reads state, ms. |
-| `AUTOFIX_COOLDOWN_MS` | `900000` | Minimum gap between repair attempts on the same alert, ms. |
-| `AUTOFIX_DRY_RUN` | `0` | Set to `1` to decide everything and do nothing. |
-| `AUTOFIX_ESCALATE_CAP` | `8` | Max escalations (AI diagnoses) per 24 h. |
-| `AUTOFIX_ESCALATE_TIMEOUT_MS` | `420000` | Max time a diagnosis agent may run, ms. |
-| `AUTOFIX_RERUN_MIN_WAIT_MS` | `300000` | Wait after a run completes before retrying, ms (5 min). |
-| `AUTOFIX_RERUN_COOLDOWN_MS` | `10800000` | Per-workflow rerun cooldown, ms (3 h). |
-| `AUTOFIX_RERUN_DAILY_CAP` | `20` | Max automatic reruns per 24 h across all repos. |
-
-### AI fix PRs (opt-in)
-
-AI fixes are **disabled by default**. Set `AUTOFIX_FIX_REPOS` to a
-comma-separated list of repos that should receive automated fix pull requests.
-
-| Variable | Default | What it does |
-|---|---|---|
-| `AUTOFIX_FIX_REPOS` | `""` (disabled) | Comma-separated `owner/repo` list eligible for AI fix PRs. |
-| `AUTOFIX_FIX_MIN_WAIT_MS` | `300000` | Wait after a run completes before launching a fix, ms. |
-| `AUTOFIX_FIX_COOLDOWN_MS` | `86400000` | Per-workflow fix cooldown, ms (24 h). |
-| `AUTOFIX_FIX_DAILY_CAP` | `3` | Max fix agent runs per 24 h across all repos. |
-| `AUTOFIX_FIX_TIMEOUT_MS` | `600000` | Max time a fix agent may run, ms (10 min). |
-| `FIX_MODEL` | `composer-2.5` | Cursor model used for fix agents. |
-| `FIX_ALLOW_BRANCH_UPDATE` | `1` | Set to `0` to skip updating existing PR branches even with the `fleet-autofix` label. |
-| `FIX_ARCHIVE_AGENTS` | `1` | Archive each cloud agent when it finishes. Set to `0` to leave them active in the agent list. |
-
-A Cursor credential must also be present. Use the same credential as escalation
-(see `./autofix/fix.sh --login` and `--verify`).
-
-### Finding a fix agent afterwards
-
-Fix agents run in the Cursor cloud, so they are visible in the Cursor app and on
-the web as well as in `dashboard/logs/fixes/`. Two things make them easy to miss:
-
-- Agents started through the SDK are hidden from the default agent list. Use
-  **Filter → Source → SDK** to see them.
-- They are archived on completion by default, so also enable **Filter → Archived**
-  (or set `FIX_ARCHIVE_AGENTS=0` while you are still tuning the rollout).
-
-Archiving is not deletion. Every fix report records the `bc-` agent ID, and that
-ID still resolves through `Agent.get(id)` and
-`Agent.list({ includeArchived: true })`. Any pull request the agent opened is
-unaffected.
-
-**Rollout sequence:**
-1. `AUTOFIX_DRY_RUN=1 ./autofix/autofixctl.sh run` — confirm bridge decisions match expectations.
-2. Add one repo to `AUTOFIX_FIX_REPOS`.
-3. `./autofix/fix.sh --verify` — confirm the credential is working.
-4. Remove `AUTOFIX_DRY_RUN`, restart the bridge.
-5. Monitor `dashboard/logs/fixes/` for reports.
-
 ## Secret variables
 
 These should never appear in `fleet.env` or any tracked file. Pass them via the
@@ -482,4 +421,3 @@ LaunchAgent environment or a keychain-backed wrapper.
 |---|---|
 | `GITHUB_TOKEN` | `register.sh`, if set (otherwise uses `gh` CLI) |
 | `FLEET_AGENT_TOKEN` | Agent authentication — treat as a credential |
-| `CURSOR_API_KEY` | `escalate.sh` and `fix.sh` — key-file is preferred over env var |

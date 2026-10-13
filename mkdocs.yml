@@ -131,7 +131,7 @@ nav:
       - Inferred groups: design/groups.md
       - The control plane: design/control-plane.md
       - Workflow lint: design/lint.md
-      - Alerts and autofix: design/alerts.md
+      - Alerts: design/alerts.md
       - Dismissing alerts: design/dismissing.md
       - Capacity and autoscaling: design/capacity.md
       - Honest analytics: design/analytics.md

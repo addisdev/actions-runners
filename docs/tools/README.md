@@ -59,9 +59,7 @@ npm run motion -- --runner <dir-name> --dry-run
 npm run motion -- --serve                 # the redacted dashboard, no take
 ```
 
-It stops the auto-remediation bridge for the length of the take and starts it
-again afterwards, because `autofix/bridge.js` would otherwise repair the runner
-within seconds of the alert. `--runner` has no default: it should name a runner
+`--runner` has no default: it should name a runner
 whose repository has a second runner still serving it, which is a judgement
 about a particular fleet rather than a constant, and it is why there is no
 repository name anywhere in the file. `docs/brand.md` has the rest, including

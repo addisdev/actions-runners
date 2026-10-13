@@ -67,8 +67,8 @@ while every other repo looks completely fine.
 That is the single most important fact on this page. It is a silent failure
 with a slow tell, which is why `health.sh` exists and why `health.sh --repair`
 is the response to three separate alert conditions. It is also the difference
-between the runner plists and the fleet's own: the dashboard, autofix and watch
-LaunchAgents all set `KeepAlive` deliberately, because a watchdog that dies
+between the runner plists and the fleet's own: the dashboard and watch
+LaunchAgents both set `KeepAlive` deliberately, because a watchdog that dies
 quietly is worse than no watchdog.
 
 Two dashboard badges name the two ways this shows up:
@@ -266,8 +266,7 @@ The same conditions, in the order that makes the others meaningless, are the
 the host conditions — the alerting rules and the drift table are deliberately
 the same vocabulary.
 
-See [Alerts and autofix](design/alerts.md) for what happens after an alert
-opens.
+See [Alerts](design/alerts.md) for what happens after an alert opens.
 
 ## Where to go next
 

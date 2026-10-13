@@ -128,11 +128,6 @@ const QUEUE_CAUSE_ALERTS = {
 // operator dismissing "this workflow is failing" means the workflow, and would
 // be very surprised to be told again by the next commit. Every other rule's key
 // already names its condition, so it is its own scope.
-//
-// bridge.js and autofix/escalate/run.mjs each hold these same three lines for
-// their cooldowns, which found the same problem first. They are separate
-// processes that deliberately import nothing from the dashboard core, so the
-// duplication is the price of that isolation rather than an oversight.
 export function alertScope(alert) {
   return alert.key.startsWith('newfail:')
     ? alert.key.split(':').slice(0, 3).join(':')
@@ -190,7 +185,7 @@ export class Alerts {
   // ---- dismissals --------------------------------------------------------
   //
   // Dismissing decides one thing: whether a condition is allowed to interrupt
-  // someone. It never closes the interval and never reaches autofix.
+  // someone. It never closes the interval.
 
   dismissals() {
     return new Map(this.dismissalRows.all().map((d) => [d.scope, d.dismissed_at]));

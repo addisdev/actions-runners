@@ -89,21 +89,6 @@ on the same origin can read it. Do not open other pages on `localhost:7878`;
 use a dedicated browser profile for the dashboard if you have other dev servers
 running.
 
-## Autofix bridge
-
-`autofix/` modifies job hook behaviour. `autofix/escalate/` wraps a third-party
-agent binary.
-
-**Accepted risks:**
-- The agent binary's telemetry and network behaviour outside its documented
-  scope have not been independently audited
-- It can open branches and pull requests on your repositories
-- It is disabled by default and requires `FLEET_ESCALATE_ENABLED=1`
-- CI never exercises it
-
-See `THIRD_PARTY_NOTICES.md` and the lockfile before enabling it.
-Run `autofixctl.sh dryrun` first to see what it would do without acting.
-
 ## Credentials this repo deliberately does not track
 
 `.gitignore` is a deny-by-default allowlist, not a denylist, specifically so
@@ -116,7 +101,6 @@ that a new file in a runner directory cannot be committed by accident.
 | `dashboard/.fleet-agent-token` | Agent authentication token |
 | `dashboard/alerts.config.json` | Alert webhook URL (may carry a token) |
 | `dashboard/fleet.db*` | Run history, including repo and branch names |
-| `dashboard/autofix/state.json`, `runs/`, `repos/` | Agent state, transcripts, scratch clones |
 | `fleet.env` | Host-local config (owner, repo list, launchd prefix) |
 
 ## Registration tokens

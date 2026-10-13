@@ -247,51 +247,6 @@ role, and the current leader ID.
 The action catalogue: which actions exist and their labels. Available without
 authentication so the UI can render buttons before the token is entered.
 
-### `GET /api/remediation-candidates`
-
-Recently failed runs classified by remediation strategy. Used by the autofix
-bridge to decide whether to rerun a run or request an AI fix. Available without
-authentication (the bridge holds no control token).
-
-Each entry in the response array contains:
-
-| Field | Type | Description |
-|---|---|---|
-| `repo` | string | `owner/name` |
-| `runId` | number | GitHub run ID |
-| `runAttempt` | number | Attempt number (1 = first try) |
-| `runStartedAt` | string\|null | Run start time used by remediation age gates |
-| `workflowName` | string\|null | Workflow display name |
-| `workflowPath` | string\|null | `.github/workflows/...yml` |
-| `event` | string\|null | Trigger event (push, pull_request, …) |
-| `branch` | string\|null | Head branch |
-| `sha` | string\|null | Head commit SHA |
-| `prNumber` | number\|null | PR number, if triggered by pull_request |
-| `url` | string\|null | Run URL on GitHub |
-| `conclusion` | string | `failure` or `timed_out` |
-| `defaultBranch` | string\|null | Repo default branch |
-| `strategy` | string | `infra-rerun`, `ai-fix`, `diagnose`, or `skip` |
-| `jobs` | array | Failed jobs with `failureClass`, `failureDetail`, `runnerName` |
-
-At most one entry per `(repo, workflow_name)` pair is returned, and only when
-the newest run of that workflow inside the 2-hour window is itself a completed
-failure. A workflow that failed and then went green on a re-run or re-dispatch
-is therefore absent, as is one whose retry is still queued or in progress — in
-both cases the failure has already been handled and there is nothing to act on.
-
-A strategy of `diagnose` means the bridge will not act but the escalation path
-may diagnose it; it is also what a run gets while its job rows are still
-unclassified, so an entry can move from `diagnose` to a real strategy on a
-later sweep. `skip` means neither path will act (wrong event type, or a failed
-run whose jobs all concluded without failing).
-
-### `GET /api/autofix/status`
-
-Read-only proxy to the loopback autofix bridge. Reports whether remediation is
-available, paused because collector data is stale, running in dry-run mode, or
-disabled/exhausted by its safety budgets. Returns `503` with
-`{"available":false}` when the bridge is not running.
-
 ### `GET /metrics`
 
 Prometheus text exposition for collector age/staleness, queue count and worst
@@ -309,8 +264,7 @@ job peak.
 
 What is open now and what fired recently. `open` contains every condition that
 is currently true, including dismissed ones — dismissing suppresses notification,
-not the condition, and a consumer that filtered them out would also stop the
-autofix bridge repairing them. Dismissed entries carry a `dismissed_at`
+not the condition. Dismissed entries carry a `dismissed_at`
 timestamp; `counts` separates `open` from `dismissed` for anything rendering a
 badge. See [Dismissing alerts](design/dismissing.md).
 
@@ -385,8 +339,7 @@ token does not need to leave the coordinator.
 
 ### `POST /api/alerts/dismiss`
 
-Stop a condition notifying, without closing its interval or stopping autofix
-repairing it.
+Stop a condition notifying, without closing its interval.
 
 **No token is required from the machine the daemon runs on** — this changes what
 the dashboard tells you rather than anything about the fleet, and it is a `×` on

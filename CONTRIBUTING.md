@@ -18,15 +18,7 @@ Things that do not fit, and why:
 - **Unbounded runtime dependencies in the dashboard.** Single-host mode uses
   Node built-ins; optional PostgreSQL HA has one locked `pg` dependency that is
   dynamically loaded only in HA mode. Additional packages need a concrete
-  reliability justification. `autofix/escalate/` remains opt-in and isolated
-  behind its own lock file.
-
-  **Accepted-risk note:** `autofix/escalate/` wraps a third-party agent binary
-  whose supply-chain provenance and telemetry/network behaviour have not been
-  independently audited for this project. It is disabled by default
-  (`FLEET_ESCALATE_ENABLED` is not set) and is never exercised by CI. Before
-  enabling it in production, review the lockfile (`autofix/escalate/package-lock.json`)
-  and the `THIRD_PARTY_NOTICES.md` entry for its telemetry behaviour.
+  reliability justification.
 - **Linux or Windows runner hosts.** The scripts are built on `launchd`,
   `scutil`, `vm_stat` and `xcrun`. A port is a bigger change than a patch;
   open an issue to discuss it first.
@@ -101,9 +93,9 @@ root under `TMPDIR`, so no real runner, `.env` or database is touched. Writing
 the installer's test first is what found it aborting silently on a runner with
 no `.env`, having already rewritten the ones before it.
 
-For anything touching the control plane or autofix, exercise the dry-run path
-first (`autofixctl.sh dryrun`, `cleanup.sh` without `--apply`). Both default to
-deciding without acting, and changes should preserve that.
+For anything touching the control plane, exercise the dry-run path first
+(`cleanup.sh` without `--apply`). It defaults to deciding without acting, and
+changes should preserve that.
 
 Please say in the pull request which macOS and Node versions you ran on, since
 that is the part hardest to infer from a diff.
@@ -119,7 +111,7 @@ failure that produced it.
 - `lib/state.js` (`deriveDrift`) → [Drift](docs/concepts.md#drift-when-this-machine-and-github-disagree)
 - `lib/groups.js` → [Inferred groups](docs/design/groups.md)
 - `lib/actions.js` / `lib/bundle.js` → [The control plane](docs/design/control-plane.md)
-- `lib/alerts.js` / `autofix/` → [Alerts and autofix](docs/design/alerts.md)
+- `lib/alerts.js` → [Alerts](docs/design/alerts.md)
 - `lib/yaml.js` / `lib/lint.js` → [Workflow lint](docs/design/lint.md)
 - `lib/placement.js` → [Federation placement](docs/federation.md#placement)
 - `lib/autoscale.js` / `lib/sizing.js` / `lib/capacity.js` → [Capacity and autoscaling](docs/design/capacity.md)

@@ -68,7 +68,6 @@ not_entry_points=(
   hooks/tests/install.sh
   hooks/tests/shm.sh
   hooks/tests/simulator.sh
-  dashboard/autofix/escalate/run.mjs
 )
 
 while IFS= read -r script; do
