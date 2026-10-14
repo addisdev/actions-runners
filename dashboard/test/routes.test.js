@@ -51,6 +51,7 @@ async function startDaemon(extraEnv = {}) {
       // The default lives in the dashboard directory, where test pairings
       // would land in the operator's real paired-device list.
       FLEET_DEVICE_TOKENS_FILE: join(dir, 'device-tokens.json'),
+      FLEET_OAUTH_CLIENTS_FILE: join(dir, 'oauth-clients.json'),
       // Never shell out to the developer's real tailscale from a test daemon.
       FLEET_TAILSCALE: 'off',
       FLEET_ALERTS: '0',
@@ -1010,5 +1011,80 @@ describe('/api/access', () => {
     const body = await r.json();
     assert.equal(body.via, 'local');
     assert.ok(Array.isArray(body.urls));
+  });
+});
+
+// ------------------------------------------------------ public MCP listener
+
+describe('public MCP listener', () => {
+  let d;
+  let pub;
+  before(async () => {
+    const port = 19878 + Math.floor(Math.random() * 1000);
+    pub = `http://localhost:${port}`;
+    d = await startDaemon({ FLEET_PUBLIC_PORT: String(port), FLEET_PUBLIC_URL: pub });
+    for (let i = 0; i < 50; i++) {
+      try { await fetch(`${pub}/.well-known/oauth-authorization-server`); break; } catch { await new Promise((r) => setTimeout(r, 100)); }
+    }
+  });
+  after(() => d?.kill());
+
+  test('serves OAuth and /mcp only, and refuses the master token', async () => {
+    const meta = await (await fetch(`${pub}/.well-known/oauth-authorization-server`)).json();
+    assert.equal(meta.issuer, pub);
+    assert.equal((await fetch(`${pub}/api/state`)).status, 404);
+    assert.equal((await fetch(`${pub}/`)).status, 404);
+    const master = await fetch(`${pub}/mcp`, {
+      method: 'POST', headers: { authorization: `Bearer ${d.token}`, 'content-type': 'application/json' }, body: '{}',
+    });
+    assert.equal(master.status, 401);
+    assert.match(master.headers.get('www-authenticate'), /resource_metadata=/);
+    const access = await (await fetch(`http://127.0.0.1:${d.port}/api/access`)).json();
+    assert.equal(access.publicUrl, `${pub}/mcp`);
+  });
+
+  test('a pairing code signs a chat tool in; its token works on /mcp and nowhere else', async () => {
+    const { createHash, randomBytes } = await import('node:crypto');
+    const started = await (await fetch(`http://127.0.0.1:${d.port}/api/pair/start`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${d.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ scopes: 'read,act' }),
+    })).json();
+    const redirect = 'https://chat.example/cb';
+    const client = await (await fetch(`${pub}/oauth/register`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ client_name: 'test', redirect_uris: [redirect] }),
+    })).json();
+    const verifier = randomBytes(32).toString('base64url');
+    const q = new URLSearchParams({
+      response_type: 'code', client_id: client.client_id, redirect_uri: redirect,
+      code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256',
+    });
+    const html = await (await fetch(`${pub}/oauth/authorize?${q}`)).text();
+    const request = /name="request" value="([^"]+)"/.exec(html)[1];
+    const consent = await fetch(`${pub}/oauth/authorize`, {
+      method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ request, code: started.code, decision: 'allow' }),
+    });
+    const code = new URL(consent.headers.get('location')).searchParams.get('code');
+    const tok = await (await fetch(`${pub}/oauth/token`, {
+      method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'authorization_code', code, client_id: client.client_id, code_verifier: verifier }),
+    })).json();
+    assert.equal(tok.scope, 'read act');
+
+    const bearer = { authorization: `Bearer ${tok.access_token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+    const call = await (await fetch(`${pub}/mcp`, {
+      method: 'POST', headers: bearer,
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'run_action', arguments: { id: 'fleet.status', dryRun: true } } }),
+    })).json();
+    assert.equal(call.result.isError, false, JSON.stringify(call.result.structuredContent));
+
+    const legacy = await fetch(`http://127.0.0.1:${d.port}/api/action`, {
+      method: 'POST', headers: bearer, body: JSON.stringify({ action: 'fleet.status', args: {} }),
+    });
+    assert.equal(legacy.status, 403);
+    const devices = await (await fetch(`http://127.0.0.1:${d.port}/api/devices`, { headers: { authorization: `Bearer ${d.token}` } })).json();
+    assert.ok(devices.devices.some((x) => x.kind === 'oauth' && x.name === 'test (OAuth)'));
   });
 });

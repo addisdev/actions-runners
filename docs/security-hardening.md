@@ -39,10 +39,37 @@ See [Remote access and mobile](remote-access.md) for full details.
 ```
 
 Puts the dashboard behind Tailscale Serve: HTTPS on your tailnet, never
-Tailscale Funnel (never public). The daemon stays on loopback; Tailscale proxies.
+public. The daemon stays on loopback; Tailscale proxies.
 The service worker and "Add to Home Screen" are available over this HTTPS connection.
 
 See [Remote access and mobile](remote-access.md) for full details.
+
+### Public MCP listener (chat tools)
+
+```sh
+./dashboard/fleetctl.sh remote funnel on                          # or
+./dashboard/fleetctl.sh remote cloudflare on fleet-mcp.example.com
+```
+
+The dashboard is never published. What a tunnel publishes is a second
+listener, bound to loopback, that serves `/mcp` and its OAuth sign-in and
+returns 404 for everything else:
+
+- `/mcp` accepts only tokens issued by that sign-in. The master token, paired
+  devices and `api-token` tokens are refused there, and an OAuth token is
+  refused by the dashboard's own write routes.
+- Signing in takes a pairing code from `fleetctl.sh pair` on the runner host,
+  so reaching the page is not enough. The code's scopes cap the token's; a
+  plain `pair` code connects read-only.
+- PKCE is required, redirect URIs must match the client's registration
+  exactly, and authorization codes are single use. Access tokens expire after
+  an hour and refresh tokens rotate.
+- Funnel uses port 8443, so the tailnet-only Serve on 443 is never published
+  with it. The Cloudflare ingress passes only the listener's paths.
+
+Turn it off with `remote funnel off` or `remote cloudflare off`. Revoke one
+connector with `fleetctl.sh revoke "<name> (OAuth)"`. See
+[Chat tools](remote-access.md#chat-tools-claudeai-chatgpt).
 
 ### LAN access with a reverse proxy
 

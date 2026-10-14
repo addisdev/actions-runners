@@ -1028,9 +1028,11 @@ Source: [`dashboard/fleetctl.sh`](https://github.com/addisdev/actions-runners/bl
 | `pair` | Create a single-use five-minute pairing code for a remote browser without exposing the master token. |
 | `devices` | List paired browser devices and their last-seen times. |
 | `revoke <key-or-name>` | Revoke one paired browser token. |
-| `remote status` | Show bind mode, reachable URLs, Tailscale Serve state, and firewall state. |
+| `remote status` | Show bind mode, reachable URLs, the public MCP URL, Tailscale Serve state, and firewall state. |
 | `remote lan on\|off` | Enable or disable LAN binding and restart the daemon when running. |
 | `remote tailscale on\|off` | Configure or reset Tailscale Serve for the dashboard. |
+| `remote funnel on\|off` | Publish only the MCP listener on Tailscale Funnel port 8443, and set `FLEET_PUBLIC_PORT`/`FLEET_PUBLIC_URL`. See [Chat tools](../remote-access.md#chat-tools-claudeai-chatgpt). |
+| `remote cloudflare on <hostname>\|off` | The same through a Cloudflare Tunnel: create or reuse the `fleet-mcp` tunnel, route the hostname, and run it as a LaunchAgent. `off` stops it and keeps the tunnel. |
 | `backup` | Write a consistent SQLite backup with `sqlite3 .backup`. Safe while the daemon is running. |
 | `restore <path>` | Replace the live database from an explicit backup path. **Refuses while the daemon is running.** |
 

@@ -39,6 +39,8 @@ import { analytics, repoDetail } from './lib/analytics.js';
 import { buildActions, ActionError, ACTION_ARGS } from './lib/actions.js';
 import { handleApi, ApiError, API_PREFIX } from './lib/api.js';
 import { handleMcp } from './lib/mcp.js';
+import { createOAuth, parsePublicUrl } from './lib/oauth.js';
+import { createPublicHandler } from './lib/public.js';
 import { findOrphans, trimJob } from './lib/orphans.js';
 import { waitForChecks, parseGitHubChecks } from './lib/checks.js';
 import { loadOrCreateToken, authorize, bearerToken, tokenMatches } from './lib/auth.js';
@@ -48,8 +50,8 @@ import {
 } from './lib/remote.js';
 import { hasHostToken, hostTokenMatches } from './lib/host-auth.js';
 import {
-  createPairingCode, exchangeCode, deviceTokenEntry, addToken, listDevices, revokeDevice,
-  PAIRING_CODE_TTL_MS,
+  createPairingCode, exchangeCode, redeemCode, deviceTokenEntry, addToken, refreshGrant,
+  listDevices, revokeDevice, PAIRING_CODE_TTL_MS,
 } from './lib/devices.js';
 import { ALL_SCOPES, scopeForAction, parseScopes } from './lib/scopes.js';
 import { issueConfirmation, consumeConfirmation } from './lib/confirm.js';
@@ -172,6 +174,11 @@ const CONFIG = {
       .map((u) => { try { return new URL(String(u).trim()).hostname; } catch { return ''; } }),
   ].map((s) => s.trim()).filter(Boolean),
   deviceTokensFile: process.env.FLEET_DEVICE_TOKENS_FILE ?? join(HERE, '.fleet-device-tokens.json'),
+  // The internet-facing listener for chat tools (lib/public.js): off unless
+  // both are set. It always binds loopback; a tunnel publishes it at publicUrl.
+  publicPort: Number(process.env.FLEET_PUBLIC_PORT || 0),
+  publicUrl: process.env.FLEET_PUBLIC_URL ?? '',
+  oauthClientsFile: process.env.FLEET_OAUTH_CLIENTS_FILE ?? join(HERE, '.fleet-oauth-clients.json'),
   // The hooks' own admission settings, handed to this process by fleetctl.sh so
   // the verdict and the admission alerts judge a hold by the limits actually in
   // force. Unset means an older plist: the Capacity tab's disk floor stands in.
@@ -241,9 +248,11 @@ function checkDevice(token) {
   if (CONFIG.readOnly) return false;
   // The UI's write routes predate scopes and can do anything, so only a
   // token holding every scope gets through them. A scoped token's way in is
-  // /api/v1, which checks the scope each action needs.
+  // /api/v1, which checks the scope each action needs; a chat tool's OAuth
+  // token is for /mcp.
   const d = deviceTokenEntry(CONFIG.deviceTokensFile, token);
-  return Boolean(d) && (d.scopes === null || ALL_SCOPES.every((s) => d.scopes.includes(s)));
+  return Boolean(d) && d.kind !== 'oauth'
+    && (d.scopes === null || ALL_SCOPES.every((s) => d.scopes.includes(s)));
 }
 // Who a request's bearer token belongs to: { principal } (null without a
 // token), or { error } for a token that is not ours. A device paired before
@@ -2902,6 +2911,7 @@ const server = http.createServer(async (req, res) => {
       host: CONFIG.host,
       port: CONFIG.port,
       readOnly: CONFIG.readOnly,
+      publicUrl: publicServer ? `${PUBLIC_URL}/mcp` : null,
     });
   }
 
@@ -3955,6 +3965,26 @@ const server = http.createServer(async (req, res) => {
   return serveStatic(res, url.pathname);
 });
 
+const PUBLIC_URL = CONFIG.publicPort ? parsePublicUrl(CONFIG.publicUrl) : null;
+const publicServer = PUBLIC_URL && !CONFIG.readOnly
+  ? http.createServer(createPublicHandler({
+    oauth: createOAuth({
+      publicUrl: PUBLIC_URL,
+      clientsFile: CONFIG.oauthClientsFile,
+      redeemCode,
+      issueGrant: (grant) => addToken(CONFIG.deviceTokensFile, { ...grant, kind: 'oauth' }),
+      refreshGrant: (token, opts) => refreshGrant(CONFIG.deviceTokensFile, token, opts),
+      revokeGrant: (key) => revokeDevice(CONFIG.deviceTokensFile, key),
+    }),
+    authenticate: (token) => {
+      const d = deviceTokenEntry(CONFIG.deviceTokensFile, token);
+      if (d?.kind !== 'oauth') return null;
+      return { id: `oauth:${d.key}`, name: d.name, kind: 'oauth', scopes: d.scopes ?? [] };
+    },
+    mcp: (request) => handleMcp(request, API_CONTEXT),
+  }))
+  : null;
+
 // ---------------------------------------------------------------------- start
 
 async function main() {
@@ -4002,6 +4032,16 @@ async function main() {
       resolve();
     });
   });
+  if (publicServer) {
+    publicServer.on('error', (err) => warn(`public listener on 127.0.0.1:${CONFIG.publicPort}:`, err.message));
+    publicServer.listen(CONFIG.publicPort, '127.0.0.1', () => {
+      log(`public MCP listener on http://127.0.0.1:${CONFIG.publicPort}, published as ${PUBLIC_URL}/mcp`);
+    });
+  } else if (CONFIG.publicPort) {
+    warn(CONFIG.readOnly
+      ? 'FLEET_PUBLIC_PORT is ignored in read-only mode'
+      : `FLEET_PUBLIC_PORT is set but FLEET_PUBLIC_URL "${CONFIG.publicUrl}" is not an https origin — public listener off`);
+  }
   identity.then(() => {
     for (const { label, url } of reachableUrls(CONFIG.port, { bindHost: CONFIG.host })) {
       log(`reachable via ${label}: ${url}`);

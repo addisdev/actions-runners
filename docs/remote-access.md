@@ -3,7 +3,9 @@
 The dashboard was originally loopback-only by design: the control plane can
 restart runners and delete caches, so keeping it on `127.0.0.1` was the safest
 default. The setup here extends that safely to your local network and to your
-tailnet — without ever putting the dashboard on the public internet.
+tailnet — without ever putting the dashboard on the public internet. The one
+thing that can be published is the MCP server, for chat tools, on a listener
+of its own that serves nothing else ([Chat tools](#chat-tools-claudeai-chatgpt)).
 
 ## Reading vs controlling
 
@@ -101,6 +103,83 @@ clear.
 
 The service worker is deliberately not active on plain LAN HTTP, where
 `isSecureContext` is false (except for localhost).
+
+## Chat tools (claude.ai, ChatGPT)
+
+A chat tool's custom connector calls an MCP server from the vendor's cloud, so
+it needs a public HTTPS URL. The daemon can serve one without publishing the
+dashboard: a second listener, on `127.0.0.1:7879`, that answers only `/mcp`
+and the OAuth sign-in in front of it. A tunnel publishes that port and nothing
+else. Every other path is a 404, and every `/mcp` call needs a token the
+sign-in issued. The master token and paired devices are refused there, so
+nothing older than this listener works from the internet.
+
+Pick one tunnel:
+
+```sh
+# Tailscale Funnel: https://<host>.<tailnet>.ts.net:8443/mcp
+./dashboard/fleetctl.sh remote funnel on
+
+# Cloudflare Tunnel, on a hostname in a zone you control
+./dashboard/fleetctl.sh remote cloudflare on fleet-mcp.example.com
+```
+
+Both set `FLEET_PUBLIC_PORT` and `FLEET_PUBLIC_URL` in `fleet.env`, regenerate
+the LaunchAgent, and print the URL to give the chat tool.
+
+- **Funnel** publishes HTTPS port 8443 (`FLEET_FUNNEL_PORT`; Funnel allows 443,
+  8443 and 10000). Port 443 stays with Serve, so the dashboard on your tailnet
+  is never public. Funnel must be allowed for the machine in the tailnet
+  policy; if it isn't, Tailscale prints the link to allow it.
+- **Cloudflare** needs `brew install cloudflared` and `cloudflared tunnel
+  login` once. The command creates a tunnel named `fleet-mcp`
+  (`FLEET_CLOUDFLARE_TUNNEL`), routes the hostname to it, and runs it as a
+  LaunchAgent. The tunnel's ingress passes on only `/mcp`, `/oauth/…` and
+  `/.well-known/oauth-…`, so other paths stop at Cloudflare.
+
+One public URL at a time. It is the OAuth issuer, so switching tunnels means
+signing each connector in again.
+
+### Signing a chat tool in
+
+1. In the chat tool, add a custom connector with the URL ending in `/mcp`.
+2. It opens the fleet's sign-in page. On the runner host, run:
+
+   ```sh
+   ./dashboard/fleetctl.sh pair --scopes read,act
+   ```
+
+3. Type the six digits on the sign-in page and choose **Connect**.
+
+The code decides what the connector may do. `read` lets it look. `act` also
+lets it drain, resume, re-run and cancel, each after a preview it must confirm
+([Running an action](api.md#running-an-action)). A code from plain `pair`
+connects read-only. A code that names `act:danger` grants everything, which a
+chat tool rarely needs.
+
+Each connector shows up in `./dashboard/fleetctl.sh devices` as
+`<name> (OAuth)`, and `revoke` ends it. Its access token lasts an hour, and
+the chat tool refreshes it. A connector unused for 90 days must sign in again.
+
+### How the sign-in works
+
+The daemon is its own OAuth 2.1 authorization server, as the MCP specification
+describes:
+
+- An unauthenticated `/mcp` call gets `401` with a `WWW-Authenticate` header
+  that points at `/.well-known/oauth-protected-resource/mcp` (RFC 9728), which
+  names the daemon as the authorization server
+  (`/.well-known/oauth-authorization-server`, RFC 8414).
+- The chat tool registers itself at `/oauth/register` (RFC 7591). Registration
+  is open, but each address may register 10 clients an hour, all addresses
+  together 30, and the registry holds at most 100. A client unused for 30 days
+  (a day, if it never signed in) is dropped.
+- `/oauth/authorize` requires PKCE with `S256` and a `redirect_uri` the client
+  registered. The pairing code is checked with the same single use, expiry
+  and rate limits as pairing a phone.
+- `/oauth/token` swaps the code for an access token and a refresh token.
+  Refreshing replaces both. A code presented twice revokes the token it
+  already bought.
 
 ## Pairing a device for controls
 
@@ -243,6 +322,8 @@ on screen, labelled **Reconnecting…**, until fresh data arrives.
 | Tailscale URL refused right after `remote tailscale on` | Reload once. The daemon re-reads its Tailscale name when it sees an unknown one. |
 | Control tab says **Token no longer accepted** | The device was revoked or the master token rotated. Choose **Forget token** and pair again. |
 | Pairing says "too many failed attempts" | Wait a minute. If codes keep being invalidated, someone else is guessing; check the daemon log. |
+| Chat tool says it cannot reach the MCP server | `./fleetctl.sh remote status` shows the public URL, or `off`. From another network, `curl https://<public host>/.well-known/oauth-authorization-server` should answer. If the daemon log says the public URL is not an https origin, rerun `remote funnel on` or `remote cloudflare on`. |
+| Connector worked, then stopped | It was revoked, or unused for 90 days. Remove it in the chat tool and add it again. |
 
 ## Environment variables
 
@@ -254,3 +335,8 @@ on screen, labelled **Reconnecting…**, until fresh data arrives.
 | `FLEET_DEVICE_TOKENS_FILE` | `.fleet-device-tokens.json` | Paired device token store. |
 | `FLEET_TAILSCALE` | `auto` | `off` stops the daemon from calling the Tailscale CLI. |
 | `FLEET_TAILSCALE_BIN` | auto-detected | Path to the Tailscale CLI when it is not in a standard place. |
+| `FLEET_PUBLIC_PORT` | _(off)_ | Loopback port of the public MCP listener. Set by `remote funnel on` and `remote cloudflare on` to `7879`. |
+| `FLEET_PUBLIC_URL` | _(off)_ | The https origin a tunnel publishes that port at. The OAuth issuer. |
+| `FLEET_OAUTH_CLIENTS_FILE` | `.fleet-oauth-clients.json` | Registered chat-tool clients. |
+| `FLEET_FUNNEL_PORT` | `8443` | HTTPS port `remote funnel on` publishes. |
+| `FLEET_CLOUDFLARE_TUNNEL` | `fleet-mcp` | Tunnel name `remote cloudflare on` creates or reuses. |
