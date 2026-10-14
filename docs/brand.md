@@ -94,7 +94,7 @@ opens each one in headless Chromium and screenshots the `.figure` element at
 | `img/drift.png` | 2560x1360 | `figures/drift.html` |
 | `img/queue-causes.png` | 2560x1400 | `figures/queue-causes.html` |
 | `img/loops.png` | 2560x900 | `figures/loops.html` |
-| `img/federation.png` | 2560x1200 | `figures/federation.html` |
+| `img/federation.png` | 2560x1520 | `figures/federation.html` |
 | `img/banner.png` | 2560x1280 | `figures/banner.html` |
 | `img/social-preview.png` | 2560x1280 (2x of GitHub's 1280x640) | `figures/social-preview.html` |
 | `img/fleet-tab.png`, `runs-tab.png`, `analytics-tab.png`, `lint-tab.png`, `alerts-tab.png`, `capacity-tab.png`, `hosts-tab.png`, `control-tab.png`, `runner-drawer.png` | 2880x1800 (1440x900 at 2x) | `npm run shoot`, against the fixture fleet |

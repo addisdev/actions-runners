@@ -18,7 +18,7 @@ For installation, see [Get started → Install the dashboard](getting-started.md
 
 ### Fleet
 
-![The Fleet tab: nine summary tiles across the top led by Hosts, three drift rows naming a dead LaunchAgent, a label mismatch and a repo at capacity, then every runner as a card grouped by host and project](img/fleet-tab.png)
+![The Fleet tab: nine summary tiles across the top led by Hosts, three drift rows naming a dead LaunchAgent, a label mismatch and a repo at capacity, then every runner as a card grouped by host and project, each host headed by its on/off switch](img/fleet-tab.png)
 
 The main view. Shows every registered runner grouped by project, with live
 status badges.
@@ -142,7 +142,7 @@ action.
 
 ### Hosts
 
-![The Hosts tab: this machine live, and a second Mac marked stale after six minutes without a heartbeat, its runners greyed rather than removed](img/hosts-tab.png)
+![The Hosts tab: fleet-wide capacity, this machine live, and a second Mac marked stale after six minutes without a heartbeat, its runners greyed rather than removed; each host card has its on/off switch and a Pause new runners button](img/hosts-tab.png)
 
 Federated host view (when agents are configured). Shows every Mac's runners,
 load, memory, disk, shared memory (free System V segments, orphans the next job

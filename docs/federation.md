@@ -6,17 +6,7 @@ coordinator — no inbound port is needed on agent hosts.
 
 ## Architecture
 
-```
-GitHub Actions
-    │  dispatches jobs by runs-on labels
-    ▼
-Runner Host A (coordinator)   Runner Host B (agent)
-  fleetd.js ──────────────── agent.js
-  SQLite (decisions)               │
-       ▲                           │ heartbeat (outbound)
-       └─────── commands in ───────┘
-                heartbeat response
-```
+![Two agent Macs above a coordinator Mac and a browser. Each agent runs agent.js and its own runners and opens no inbound port; its only connection is an outbound heartbeat every 30 seconds, with commands riding back in the reply. The second agent has been silent for six minutes and is marked stale, its runners greyed rather than removed. The coordinator runs fleetd, the dashboard and its own runners. Side notes say each host computes its own headroom, and that a coordinator may drain, resume, switch off and health-check an agent's runners, but removing one needs that host's own opt-in](img/federation.png)
 
 The coordinator is the single SQLite writer and placement authority. Agents
 report outbound-only; the coordinator pushes commands back in the heartbeat

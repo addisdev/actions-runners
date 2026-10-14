@@ -8,7 +8,7 @@
 
 <div class="figure">
   <svg width="1280" height="760" viewBox="0 0 1280 760" xmlns="http://www.w3.org/2000/svg"
-       role="img" aria-label="Two agent Macs above a coordinator Mac and a browser. Each agent runs agent.js and its own runners and opens no inbound port; its only connection is an outbound dashed heartbeat every 30 seconds, with commands riding back in the reply. The second agent has been silent for six minutes and is drawn in warning orange, marked stale with its runners greyed rather than removed. The coordinator runs fleetd, the dashboard and its own runners. Side notes say that each host computes its own headroom, and that deregistration is deliberately absent from what a coordinator may ask of an agent.">
+       role="img" aria-label="Two agent Macs above a coordinator Mac and a browser. Each agent runs agent.js and its own runners and opens no inbound port; its only connection is an outbound dashed heartbeat every 30 seconds, with commands riding back in the reply. The second agent has been silent for six minutes and is drawn in warning orange, marked stale with its runners greyed rather than removed. The coordinator runs fleetd, the dashboard and its own runners. Side notes say that each host computes its own headroom, and that a coordinator may drain, resume, switch off and health-check an agent's runners, but removing one needs that host's own opt-in.">
     <defs id="defs"></defs>
 
     <text x="40" y="36" class="t-title">Three Macs and a browser</text>
@@ -92,11 +92,11 @@
     <rect x="856" y="308" width="384" height="180" rx="10" class="panel"/>
     <text x="880" y="338" class="t-cap muted">WHAT A COORDINATOR MAY ASK</text>
     <text x="880" y="364" class="mono t-sm">runner.drain · runner.resume</text>
-    <text x="880" y="384" class="mono t-sm">health.check</text>
-    <text x="880" y="412" class="t-sm muted">Deregistration is deliberately not on the</text>
-    <text x="880" y="432" class="t-sm muted">list. The host decides — the only setup</text>
-    <text x="880" y="452" class="t-sm muted">where a mistake on the coordinator</text>
-    <text x="880" y="472" class="t-sm muted">cannot become a shell on every machine.</text>
+    <text x="880" y="384" class="mono t-sm">tiers.drain · tiers.resume</text>
+    <text x="880" y="404" class="mono t-sm">host.off · host.on · health.check</text>
+    <text x="880" y="432" class="t-sm muted">Removing a runner needs the host's own</text>
+    <text x="880" y="452" class="t-sm muted">opt-in. The host decides, so a mistake on</text>
+    <text x="880" y="472" class="t-sm muted">the coordinator cannot remove its runners.</text>
 
     <!-- ── the browser ────────────────────────────────────────────────── -->
     <path d="M662 604 H848" class="edge-accent" marker-end="url(#arw-a)"/>
