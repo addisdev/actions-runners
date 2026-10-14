@@ -255,6 +255,21 @@ describe('/api/v1', () => {
     assert.equal((await fetch(url('/mcp'))).status, 405);
   });
 
+  test('bin/fleet.mjs builds its commands from the daemon and runs one over HTTP', async () => {
+    const { execFile } = await import('node:child_process');
+    const fleet = (args, env = {}) => new Promise((resolve) => {
+      execFile(process.execPath, [join(HERE, '../bin/fleet.mjs'), ...args],
+        { env: { ...process.env, FLEET_URL: url(''), FLEET_TOKEN: '', ...env } },
+        (err, stdout, stderr) => resolve({ code: err?.code ?? 0, stdout, stderr }));
+    });
+    const status = await fleet(['status', '--compact']);
+    assert.equal(status.code, 0, status.stderr);
+    assert.ok(JSON.parse(status.stdout).verdict.id);
+    const preview = await fleet(['run', 'fleet.status', '--dry-run'], { FLEET_TOKEN: 'a'.repeat(64) });
+    assert.equal(preview.code, 0, preview.stderr);
+    assert.equal(JSON.parse(preview.stdout).status, 'preview');
+  });
+
   test('a token that is not ours is refused even on a read', async () => {
     const r = await fetch(url('/api/v1/status'), { headers: { authorization: `Bearer ${'b'.repeat(64)}` } });
     assert.equal(r.status, 403);

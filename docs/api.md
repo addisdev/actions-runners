@@ -210,6 +210,48 @@ The server is stateless. It answers each POST with one JSON response and
 opens no event stream, so `GET /mcp` is 405 and a daemon restart doesn't drop
 a client's session.
 
+### Command line (`fleet`)
+
+`dashboard/bin/fleet.mjs` is `/api/v1` from a shell: one file, Node 22, no
+dependencies. It has no command list of its own. It reads the daemon's
+`/api/v1/openapi.json` on each run and offers one command per route, so it
+always matches the daemon it is talking to. Copy or link it anywhere:
+
+```sh
+ln -s "$PWD/dashboard/bin/fleet.mjs" ~/.local/bin/fleet
+export FLEET_URL=http://localhost:7878     # the default; or a forwarded port
+export FLEET_TOKEN=...                     # only for actions; reads need none on loopback
+```
+
+```console
+$ fleet
+usage: fleet <command> [args] [--flag value ...]
+
+commands (from the daemon's /api/v1/openapi.json):
+  status                     The fleet verdict
+  why owner/repo             Why one repository's CI is queued, slow or red
+  checks owner/repo          A PR's or commit's checks as green, red, pending or pointless, optionally waiting
+  queue                      Queued runs, each with why it is waiting
+  …
+  wait owner/repo            checks, asked again until they finish or --timeout (default 45m)
+```
+
+- `fleet help <command>` prints the route's description, the scope it needs
+  and its flags.
+- Path parameters are positional (`owner/repo`, an action id). Query
+  parameters and body fields are `--flags`, written in kebab case
+  (`--dry-run`).
+- A flag the route doesn't declare is sent anyway, so the daemon refuses it
+  with its usual hint rather than the CLI guessing. For `run`, extra flags are
+  the action's arguments: `fleet run runner.drain --name build-host-web-2`.
+- `fleet run` previews first. An action whose danger isn't `none` stops at the
+  preview, exits `2` and prints the command it would run; `--yes` confirms it.
+- `fleet wait owner/repo --pr N` asks `checks` again until the checks finish.
+  Exits `0` green, `1` red, `2` pointless, `3` timed out.
+- Output is the daemon's JSON on stdout (`--compact` for one line), and
+  errors also go to stderr as message and hint. Other exits: `1` refused,
+  `3` unreachable, `64` usage.
+
 ## Read endpoints
 
 ### `GET /api/state`

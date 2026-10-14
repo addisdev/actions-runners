@@ -21,6 +21,13 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
   progress because their runner was drained or lost during "Complete job",
   with the force-cancel and re-run commands that clear them. Until now only
   the Mac app could see these, by calling `gh` from the laptop.
+- **`fleet`, a command line for `/api/v1`.** `dashboard/bin/fleet.mjs` is a
+  single file with no dependencies, and it builds its commands from the
+  daemon's OpenAPI document on each run, so it has nothing to keep in step
+  with the daemon. `fleet status`, `fleet why owner/repo`,
+  `fleet wait owner/repo --pr N`, `fleet run <action> [--yes]`, and one
+  command for every other route. Each route names its command in the route
+  table (`x-fleet-cli`).
 - **`cockpit why`, `wait`, `run` and `mcp` ask `/api/v1`.** The daemon
   now diagnoses the repo, decides when checks are done and finds orphaned
   jobs, so the command line prints its answer instead of rebuilding it from a
