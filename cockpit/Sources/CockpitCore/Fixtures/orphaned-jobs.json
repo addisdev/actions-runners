@@ -1,5 +1,5 @@
 {
- "_comment": "addisdev/lake-api PR #73, 2026-10-12/13. Each is gh api repos/addisdev/lake-api/actions/jobs/<id> with the steps exactly as GitHub recorded them; status/conclusion/completed_at are put back to what GitHub showed while it was stuck. Read by cockpit's OrphanedJobTests and dashboard/test/orphans.test.js, so both classifiers are held to the same jobs.",
+ "_comment": "addisdev/lake-api PR #73, 2026-10-12/13. Each is gh api repos/addisdev/lake-api/actions/jobs/<id> with the steps exactly as GitHub recorded them; status/conclusion/completed_at are put back to what GitHub showed while it was stuck. Read by dashboard/test/orphans.test.js, and by make-glance-fixtures.mjs for the v1 orphan fixtures the cockpit decodes.",
  "docsBuild1": {
   "completed_at": null,
   "conclusion": null,

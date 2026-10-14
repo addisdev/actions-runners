@@ -25,6 +25,12 @@ trustworthy, in this order:
 The human output always ends with the route it used, for example
 `via app (runner-host, 12s ago)` or `via runner-ts`.
 
+`why`, `wait`, `run` and `mcp` ask the dashboard's [`/api/v1`](../api.md#version-1-apiv1)
+instead, over the same route, and never read the snapshot or a fixture. The
+daemon does the work: it diagnoses the repo, decides when checks are done and
+finds orphaned jobs, and these commands print its answer. A dashboard older
+than `/api/v1` gets the message to update actions-runners on the host.
+
 ## Global options
 
 | Option | Meaning |
@@ -79,8 +85,10 @@ the last glance, whose "Working" may have been true half an hour ago. See
 
 ## `cockpit why <repo>`
 
-Everything the fleet knows about one repository. `<repo>` is `name` or
-`owner/name`.
+Everything the fleet knows about one repository, from
+[`GET /api/v1/repos/{owner}/{repo}/diagnosis`](../api.md#version-1-apiv1).
+`<repo>` is `owner/name`, or `name` when only one repository the fleet serves
+has that name.
 
 ```console
 $ cockpit why comet-web
@@ -92,7 +100,7 @@ comet-web: 3 runner(s)
   idle          build-host-comet-web-3  idle
 
 Checks:
-  comet-web · develop: 1 of 2 done, done in 40m–70m
+  develop @ 8c10c20: 1 of 2 done, done in 40m–70m
 
 Failed in the last 2 hours:
   web-e2e: Runner lost contact — the host, not the code  [not your code]
@@ -119,26 +127,24 @@ says so: its jobs can only queue. Each queued run shows its age, the cause in
 words with the classifier's confidence, and the ETA; under it, `·` lines are the
 classifier's evidence and `→` its recommendation.
 
-A run active for more than three minutes has its jobs asked of GitHub, and a
-job [orphaned by a draining runner](#a-job-orphaned-by-a-draining-runner) gets
-its own section, with the commands that end it:
+A job [orphaned by a draining runner](#a-job-orphaned-by-a-draining-runner)
+gets its own section, with the commands that end it:
 
 ```console
-Orphaned by a draining runner — not your code:
-  build: orphaned by a draining runner — not your code. Every step passed, then MACSERIAL0-lake-api (draining) went away; stuck at "Complete job" for 12m.
+Orphaned (the runner went away while the job was finishing):
+  build: orphaned by a draining runner — not your code. Every step passed, then MACSERIAL0-lake-api (draining) went away; stuck at "Complete job" for 12 min.
     gh api -X POST repos/addisdev/lake-api/actions/runs/38318681067/force-cancel
     # about a minute later, once the run shows completed:
     gh run rerun 38318681067 -R addisdev/lake-api
 ```
 
-`--json` prints `{ verdict, runners, queue, checks, failures, incidents, orphaned }`.
-`runners`, `queue`, `failures` and `incidents` are the glance's own objects
-filtered to the repo; `checks` is a list of `"label: progress"` strings;
-`orphaned` lists the orphaned jobs (`runId`, `jobId`, `job`, `runner`,
-`runnerState`, `stuckStep`, `stuckForMs`, `workPassed`).
+`--json` prints the daemon's diagnosis as it sent it: `verdict`, `runners`,
+`queue`, `runs`, `recent`, `failures`, `checks`, `orphans`, `incidents` and
+`freshness`.
 
 Exit code: from the **fleet** verdict's tone, so `why` in a script still fails
-when the fleet is broken; `3` when nothing could be read.
+when the fleet is broken; `3` when nothing could be read or the dashboard's view
+is stale.
 
 ## `cockpit queue`
 
@@ -170,8 +176,10 @@ cockpit wait <repo> [--pr N | --sha S | --branch B] [--timeout 45m] [--recover]
 | `--timeout` | `90s`, `45m`, `2h`, or a bare number of minutes. Default `45m` |
 | `--recover` | With `--pr` only: force-cancel and re-run this PR's [orphaned](#a-job-orphaned-by-a-draining-runner) runs instead of stopping |
 
-`wait` always opens its own stream (it does not read the snapshot) and decides
-on every update. Progress goes to stderr, once per change:
+`wait` asks [`GET /api/v1/repos/{owner}/{repo}/checks`](../api.md#waiting-on-checks),
+which the daemon holds open for up to 5 minutes until the checks finish, and
+asks again until `--timeout`. The rules below are the daemon's
+(`dashboard/lib/checks.js`). Progress goes to stderr, once per change:
 
 ```console
 $ cockpit wait comet-web --pr 96
@@ -187,14 +195,21 @@ $ cockpit wait comet-web --pr 96
 | `2` | `⏹ not waiting — <reason>` | Waiting cannot end well: the host is down, the disk floor is holding jobs, GitHub is refusing jobs for billing, one of the checks is queued with a cause that never clears, or a job was orphaned by a draining runner (the reason carries the recovery commands). Stop and report the reason |
 | `3` | `…timed out` or `? dashboard unreachable` | The timeout passed, or (for `--sha` and `--branch`) the dashboard could not be reached; try `cockpit sentinel` |
 
-The deadline is a wall-clock timer of its own, so a wait always ends by
-`--timeout`: no stream, tunnel or `gh` call can hold it (each GitHub ask gets at
-most 25 seconds, capped by the time left), and the command line adds a last
-backstop that exits `3` thirty seconds past the deadline whatever else is
-happening. A dropped stream is reopened with backoff (3 seconds, doubling to
-30). A stream with no glance and no keepalive for 75 seconds (fleetd sends one
-every 25) is treated as dead: the wait drops its tunnel, opens a new one and
-asks GitHub meanwhile.
+The deadline is the command line's own: each request asks the daemon to hold
+no longer than the time left, and a last backstop exits `3` thirty seconds
+past the deadline whatever else is happening. A dashboard that stops answering
+does not end the wait. The tunnel is reopened and the request retried every 10
+seconds, and with `--pr` cockpit asks GitHub itself meanwhile, once a minute,
+with your own `gh` login
+(`gh pr view --json headRefOid,statusCheckRollup`). GitHub's finished answer
+ends the wait and says so:
+
+```console
+✔ comet-web PR #96: 1 of 1 green (from GitHub; the dashboard did not answer)
+```
+
+A `--sha` or `--branch` wait needs the dashboard, and exits `3` when it cannot
+be reached at the start.
 
 ### `--pr` judges the head commit
 
@@ -206,15 +221,31 @@ run ("waiting for kit-ci to run again on this commit").
 
 ### A red is checked against the run's latest attempt
 
-A re-run (`gh run rerun`, with or without `--failed`) keeps the run id, and
-cockpit's view can still hold the attempt it retries for a tick or more. So
-before a red ends the wait, each failed run is asked of GitHub
-(`gh api repos/<repo>/actions/runs/<id>`, which always describes the latest
-attempt). A run that is running again keeps the wait open ("tests is running
-again (attempt 3)"), and with `--pr` GitHub's rollup is then asked every 30
-seconds; a run that already passed ends the wait green. A failure GitHub
-confirms, or one it cannot be asked about, ends the wait red as before. This
-works for `--sha` and `--branch` too.
+A re-run (`gh run rerun`, with or without `--failed`) keeps the run id, and the
+fleet's view can still hold the attempt it retries for a tick or more. So
+before a red ends the wait, the daemon asks GitHub for each failed run's latest
+attempt. A run that is running again keeps the wait open; one that already
+passed ends it green.
+
+### When the fleet's view is behind
+
+The daemon's rows are a copy of GitHub's, made by its fast loop, and that loop
+can stop finishing ticks on a saturated host. So the daemon also asks GitHub
+for the commit's check runs and statuses (REST, cached 20 seconds per commit):
+
+| The fleet's view | GitHub is asked |
+|---|---|
+| Stale, with no runs for the target, or behind a re-run | Every 30 seconds |
+| Fresh | Every 2 minutes |
+
+GitHub's **finished** answer ends the wait, with how far behind the fleet was:
+
+```console
+✔ comet-web PR #96: 1 of 1 green (from GitHub; the fleet's view is 27m old, it still read 0 of 1 done)
+```
+
+That note is a daemon problem worth reporting, not part of the PR's result.
+GitHub still *pending* never overrides the fleet's own green or red.
 
 ### A job orphaned by a draining runner
 
@@ -224,64 +255,29 @@ result reaches GitHub. The job then passed every step and still reads
 progress, and it stays that way: `gh run cancel` does nothing, and only
 `POST repos/<repo>/actions/runs/<id>/force-cancel` completes it (addisdev/lake-api
 PR #73, 2026-10-12/13). The drain bug behind it is fixed, but a runner can still
-be stopped mid-report (a host reboot, a killed service), so the wait checks.
-
-Once a minute, the target's runs that have been in progress for more than three
-minutes have their jobs asked of GitHub
-(`gh api repos/<repo>/actions/runs/<id>/jobs`). A job is orphaned when it is in
-progress, every step that is not a "Complete …" step has completed, a
-"Complete …" step has been cancelled or unfinished for three minutes, and its
-runner is draining, offline, dead or lost in cockpit's view. A cancelled
-"Complete runner" is enough on its own: the worker cancels it only when the
-listener shuts down, and a drained runner the tiers controller has since resumed
-reads busy again while GitHub still holds the orphan.
+be stopped mid-report (a host reboot, a killed service), so the daemon checks
+every active run's jobs. See [Orphaned jobs](../api.md#orphaned-jobs) for the
+exact rule.
 
 Without `--recover` the wait stops with exit `2` and the commands:
 
 ```console
-⏹ lake-api PR #73: not waiting — build: orphaned by a draining runner — not your code. Every step passed, then MACSERIAL0-lake-api (draining) went away; stuck at "Complete job" for 12m.
-  force-cancel: gh api -X POST repos/addisdev/lake-api/actions/runs/38318681067/force-cancel
-  then, once the run shows completed (~1 min): gh run rerun 38318681067 -R addisdev/lake-api
-  or let cockpit do both for this PR: cockpit wait addisdev/lake-api --pr 73 --recover
+⏹ lake-api PR #73: not waiting — build: orphaned by a draining runner — not your code. Every step passed, then MACSERIAL0-lake-api (draining) went away; stuck at "Complete job" for 12 min.
+    gh api -X POST repos/addisdev/lake-api/actions/runs/38318681067/force-cancel
+    # about a minute later, once the run shows completed:
+    gh run rerun 38318681067 -R addisdev/lake-api
+  or let cockpit do both: cockpit wait lake-api --pr 73 --recover
 ```
 
-With `--pr N --recover`, the wait does both itself: force-cancel, poll the run
-every 5 seconds until GitHub completes it (up to 3 minutes), `gh run rerun`,
-then keep waiting on the new attempt. Each run is recovered at most once per
-wait; a job whose work had already failed is never recovered (a re-run would
-repeat it), and every attempt is appended to
-`~/Library/Logs/FleetCockpit/orphan-recover.ndjson`. It is opt-in and limited to
-the PR you are waiting on because it acts on GitHub: cancelling runs across the
-fleet kills other sessions' fresh re-runs. The MCP `wait_for_checks` reports
-orphans the same way but never recovers.
-
-### `--pr` also asks GitHub
-
-Cockpit's rows are a copy of GitHub's, made by the daemon's fast loop. When that
-loop stops finishing ticks (a saturated host), the daemon publishes nothing and
-the last view stays on screen while keepalives hold the stream open. So with
-`--pr`, the wait also asks GitHub itself, with
-`gh pr view --json headRefOid,statusCheckRollup` (GraphQL, so it does not spend
-the daemon's REST budget):
-
-| Cockpit's view | GitHub is asked |
-|---|---|
-| More than 4 minutes old, missing, silent, or the dashboard unreachable | Every 30 seconds |
-| Fresh, but with no runs for this PR (finished before the view's window) | At once, then every 30 seconds |
-| Fresh | Every 2 minutes |
-
-GitHub's **finished** answer ends the wait, and says that it came from GitHub
-and how far behind cockpit was:
-
-```console
-✔ comet-web PR #96: 1 of 1 green (from GitHub; cockpit's view is 27m old, it still read 0 of 1 done)
-```
-
-That note is a daemon problem worth reporting, not part of the PR's result.
-GitHub still *pending* never overrides cockpit's own green or red. Because
-GitHub can answer without the dashboard, an unreachable dashboard does not end a
-`--pr` wait; a `--sha` or `--branch` wait still needs the dashboard and exits `3`
-without it. The GitHub check uses your own `gh` login.
+With `--pr N --recover`, the wait runs the dashboard's `run.recoverOrphan`
+action for each orphaned run, then keeps waiting. The dashboard force-cancels
+the run, re-runs it once GitHub has completed it, and records both in its
+action log under the cockpit's paired name. Each run is recovered at most once
+per wait, and the cancelled result the force-cancel leaves for a minute doesn't
+end the wait. A job whose work had already failed is never recovered, because a
+re-run would repeat it. Recovery is opt-in and limited to the PR you are waiting
+on because it acts on GitHub: cancelling runs across the fleet kills other
+sessions' fresh re-runs. It needs `cockpit pair`.
 
 ## `cockpit sentinel`
 
@@ -382,7 +378,9 @@ prompt blocks a script or an agent session that cannot answer it.
 
 ## `cockpit run`
 
-Runs one action from the dashboard's catalogue.
+Runs one action from the dashboard's catalogue, through
+[`POST /api/v1/actions/{id}`](../api.md#running-an-action): a preview, then the
+run with the confirmation the preview returned.
 
 ```bash
 cockpit run fleet.health                                  # a read: runs at once
@@ -394,20 +392,24 @@ cockpit run runner.restart --name build-host-web-2 --yes
 | Option | Meaning |
 |---|---|
 | `--name <runner>` | The runner, for `runner.*` actions |
+| `--host <id>` | The host, for `host.*` actions (default: the dashboard's own) |
+| `--repo <owner/name>`, `--run <id>` | The run, for `run.*` actions |
 | `--yes` | Required for anything whose catalogue `danger` is not `none` |
 
-The action must be one the cockpit accepts (see
-[Acting on it](using.md#acting-on-it)) **and** one the dashboard offers in
-`GET /api/actions`. Without `--yes`, a changing action prints its label, danger
-and confirmation text and exits `2`: an agent exploring the CLI must not repair
-or restart by accident. Needs `cockpit pair` first.
+Any other `--flag value` is passed as the action's argument of that name. The
+dashboard refuses an argument the action doesn't take and says which ones it
+does; `GET /api/v1/actions` lists them. Without `--yes`, a changing action
+prints its label, danger, what it does and the command it would run, and exits
+`2`: an agent exploring the CLI must not repair or restart by accident. Needs
+`cockpit pair` first.
 
-`--json` prints the action result `{ ok, command, code, output, error, durationMs }`.
-Exit `0` on success, `1` on failure.
+`--json` prints the dashboard's answer:
+`{ status, action, args, ok, command, code, output, durationMs }`. Exit `0` on
+success, `1` on failure or refusal.
 
 ## `cockpit mcp`
 
-Runs as an MCP server over stdio. See [Agent sessions](agents.md).
+The dashboard's MCP tools over stdio. See [Agent sessions](agents.md).
 
 ## `cockpit fixtures`
 

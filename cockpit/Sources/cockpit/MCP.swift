@@ -1,163 +1,51 @@
 import Foundation
 import CockpitCore
 
-// `cockpit mcp`: the same answers as the command line, as an MCP server over
-// stdio (newline-delimited JSON-RPC 2.0), for agent sessions that prefer a tool
-// to a shell command. No dependencies; four tools; read-only by design — the
-// actions that change the fleet stay behind `cockpit run --yes`.
+// `cockpit mcp`: the dashboard's MCP server (/mcp, docs/api.md#mcp-mcp) over
+// stdio, through the same SSH tunnel as every other command. The tools, their
+// descriptions and their answers all come from the daemon; this only carries
+// newline-delimited JSON-RPC each way.
+//
+// No token is sent unless FLEET_API_TOKEN is set, so by default the tools
+// read and every action is refused. The token `cockpit pair` saves holds
+// every scope, and an agent holding it could confirm its own previews of
+// anything, switching a host off included.
 
-enum MCPServer {
-    static var tools: [[String: Any]] { [
-        tool("fleet_status", "The self-hosted runner fleet's verdict: one ordered ladder (host down, disk floor, dead service, saturated, account blocked, config drift, waiting, clear) with evidence and the next move. Call this before diagnosing any CI failure or queue.", [:], []),
-        tool("why_queued", "Everything the fleet knows about one repository: its runners and their states, queued runs with cause, confidence, evidence and ETA, check rollups, recent failures (marked notYourCode when the host or account failed them), jobs orphaned by a draining runner (with the commands that recover them) and open alerts.",
-             ["repo": ["type": "string", "description": "Repository name or owner/name"]], ["repo"]),
-        tool("fleet_queue", "Every queued run, oldest first, with its queue cause and start/finish ETA ranges.", [:], []),
-        tool("wait_for_checks", "Wait until a commit's checks finish. Returns green, red (with failed checks), pointless (waiting cannot end well: host down, disk floor, billing block, a check that will never start, or a job orphaned by a draining runner — stop and report; the text carries the force-cancel and re-run commands) or timeout.",
-             ["repo": ["type": "string"], "pr": ["type": "integer"], "sha": ["type": "string"], "branch": ["type": "string"],
-              "timeout_minutes": ["type": "integer", "description": "Default 10, max 30"]], ["repo"]),
-    ] }
+enum MCPBridge {
+    static let out = NSLock()
 
-    static func tool(_ name: String, _ desc: String, _ props: [String: Any], _ required: [String]) -> [String: Any] {
-        ["name": name, "description": desc,
-         "inputSchema": ["type": "object", "properties": props, "required": required]]
-    }
-
-    static func run() async {
-        while let line = readLine(strippingNewline: true) {
-            guard let data = line.data(using: .utf8),
-                  let msg = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-            let id = msg["id"]
-            let method = msg["method"] as? String ?? ""
-            let params = msg["params"] as? [String: Any] ?? [:]
-            switch method {
-            case "initialize":
-                reply(id, ["protocolVersion": (params["protocolVersion"] as? String) ?? "2025-06-18",
-                           "capabilities": ["tools": [:]],
-                           "serverInfo": ["name": "fleet-cockpit", "version": "0.1.0"]])
-            case "tools/list":
-                reply(id, ["tools": tools])
-            case "tools/call":
-                let name = params["name"] as? String ?? ""
-                let args = params["arguments"] as? [String: Any] ?? [:]
-                let (text, isError) = await call(name, args)
-                reply(id, ["content": [["type": "text", "text": text]], "isError": isError])
-            case "ping":
-                reply(id, [:])
-            default:
-                if id != nil { error(id, -32601, "method not found: \(method)") }
+    static func run(_ link: Transport) async {
+        let routes = RouteCache(link)
+        let token = ProcessInfo.processInfo.environment["FLEET_API_TOKEN"].flatMap { $0.isEmpty ? nil : $0 }
+        await withTaskGroup(of: Void.self) { group in
+            // wait_for_checks holds a call for minutes; a ping or a second
+            // call must not queue behind it.
+            while let line = readLine(strippingNewline: true) {
+                guard let data = line.data(using: .utf8), !line.isEmpty else { continue }
+                group.addTask { await forward(data, routes: routes, token: token) }
             }
         }
+        link.close()
     }
 
-    static func reply(_ id: Any?, _ result: [String: Any]) {
-        write(["jsonrpc": "2.0", "id": id ?? NSNull(), "result": result])
-    }
-
-    static func error(_ id: Any?, _ code: Int, _ message: String) {
-        write(["jsonrpc": "2.0", "id": id ?? NSNull(), "error": ["code": code, "message": message]])
-    }
-
-    static func write(_ obj: [String: Any]) {
-        guard let d = try? JSONSerialization.data(withJSONObject: obj) else { return }
-        FileHandle.standardOutput.write(d + Data("\n".utf8))
-    }
-
-    static func json<T: Encodable>(_ v: T) -> String {
-        let e = JSONEncoder()
-        e.outputFormatting = [.prettyPrinted, .sortedKeys]
-        return (try? String(decoding: e.encode(v), as: UTF8.self)) ?? "{}"
-    }
-
-    /// The freshest view: the app's snapshot when under 90 s old, else a tunnel.
-    static func glance() async -> (Glance?, Verdict, String) {
-        if let snap = try? SnapshotFile.read(), snap.ageMs() < 90_000 {
-            return (snap.glance, snap.verdict, "app")
-        }
-        let t = TunnelTransport(aliases: ["runner-host", "runner-ts"])
-        defer { t.close() }
+    static func forward(_ data: Data, routes: RouteCache, token: String?) async {
+        let id = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["id"]
         do {
-            let r = try await t.open()
-            let g = try await FleetClient(base: r.baseURL).glance()
-            return (g, g.verdict, r.label)
+            let client = FleetClient(base: try await routes.base(), token: token)
+            if let reply = try await client.mcp(data) { write(reply) }
         } catch {
-            return (nil, Verdict(id: "unreachable", tone: .unknown, title: "Dashboard unreachable",
-                                 sentence: "\(error)", evidence: [], next: nil, rung: nil, open: []), "none")
+            routes.invalidate()
+            guard let id else { return }
+            let msg: String = (error as? APIError)?.description
+                ?? "the fleet dashboard did not answer (\(error.localizedDescription)); `cockpit sentinel` checks the host out of band"
+            if let d = try? JSONSerialization.data(withJSONObject: [
+                "jsonrpc": "2.0", "id": id, "error": ["code": -32000, "message": msg],
+            ]) { write(d) }
         }
     }
 
-    static func call(_ name: String, _ a: [String: Any]) async -> (String, Bool) {
-        switch name {
-        case "fleet_status":
-            let (g, v, route) = await glance()
-            struct Out: Encodable { let verdict: Verdict; let counts: Counts?; let route: String; let posture: [PostureItem]? }
-            return (json(Out(verdict: v, counts: g?.counts, route: route, posture: g?.posture?.items)), false)
-        case "why_queued":
-            guard let repo = a["repo"] as? String else { return ("repo is required", true) }
-            let (g, v, _) = await glance()
-            guard let g else { return (json(v), true) }
-            let m: (String?) -> Bool = { r in guard let r else { return false }; return r == repo || r.hasSuffix("/" + repo) }
-            struct Why: Encodable {
-                let verdict: Verdict; let runners: [Runner]; let queue: [QueueItem]; let checks: [String]
-                let failures: [FailureRow]; let incidents: [Incident]; let orphaned: [OrphanedJob]
-            }
-            let short = repo.split(separator: "/").last.map(String.init) ?? repo
-            let longRuns = (g.runs ?? []).filter { m($0.repo) && $0.isActive && ($0.elapsedMs ?? .infinity) >= OrphanedJob.minStuckMs }
-            let orphans = longRuns.isEmpty ? [] : await GHJobsProbe.orphans(repo: longRuns[0].repo, runIds: longRuns.prefix(8).map(\.id), glance: g)
-            return (json(Why(verdict: v, runners: g.runners.filter { m($0.repo) }, queue: g.queue.filter { m($0.repo) },
-                             checks: Rollup.checkSets(g).filter { m($0.repo) }.map { "\($0.label): \($0.progress)" },
-                             failures: (g.failures ?? []).filter { m($0.repo) },
-                             incidents: g.incidents.filter { $0.key.contains(short) || $0.title.contains(short) },
-                             orphaned: orphans)), false)
-        case "fleet_queue":
-            let (g, v, _) = await glance()
-            guard let g else { return (json(v), true) }
-            return (json(g.queue), false)
-        case "wait_for_checks":
-            guard let repo = a["repo"] as? String else { return ("repo is required", true) }
-            let target = WaitTarget(repo: repo, pr: a["pr"] as? Int, sha: a["sha"] as? String, branch: a["branch"] as? String)
-            let minutes = min(30, max(1, a["timeout_minutes"] as? Int ?? 10))
-            // The same loop as `cockpit wait`, fed by a poll every 20 s.
-            let poll: WaitLoop.Connect = {
-                AsyncThrowingStream { c in
-                    let task = Task {
-                        while !Task.isCancelled {
-                            if let g = await glance().0 { c.yield(.glance(g)) }
-                            try? await Task.sleep(nanoseconds: 20_000_000_000)
-                        }
-                        c.finish()
-                    }
-                    c.onTermination = { _ in task.cancel() }
-                }
-            }
-            var loop = WaitLoop(
-                target: target, timeout: Double(minutes) * 60, connect: poll,
-                github: target.pr.map { pr in
-                    { @Sendable g in
-                        guard let full = await GHChecksProbe.fullName(repo, glance: g) else { return nil }
-                        return await GHChecksProbe(repo: full, pr: pr).fetch()
-                    }
-                }
-            )
-            loop.latestRun = { r, g in await GHRunProbe.fetch(r, glance: g) }
-            // Detection only: recovery acts on GitHub and stays behind the
-            // CLI's explicit --recover.
-            loop.orphans = { ids, g in await GHJobsProbe.orphans(repo: repo, runIds: ids, glance: g) }
-            let outcome = await loop.run()
-            let last = outcome.decision
-            let via = outcome.source == .github
-                ? " (from GitHub; cockpit's view was \(outcome.cockpitAgeMs.map { Format.duration(ms: $0) } ?? "missing")\(outcome.cockpitAgeMs == nil ? "" : " old"))"
-                : ""
-            switch last {
-            case .green(let s): return ("green: \(target.label) — \(s.progress)\(via)", false)
-            case .red(let s):
-                let names = s.failed.map { "\($0.workflow ?? "?")\($0.cancelled ? " (cancelled)" : "")" }.joined(separator: ", ")
-                let hint = s.failed.contains(where: \.cancelled) ? " — \(WaitDecision.cancelledHint)" : ""
-                return ("red: \(target.label) — \(s.progress); not passed: \(names)\(hint)\(via)", false)
-            case .pointless(let why): return ("pointless: \(why)", false)
-            case .waiting(let s): return ("timeout after \(minutes) min: \(s?.progress ?? "no runs seen")\(via)", false)
-            }
-        default:
-            return ("unknown tool \(name)", true)
-        }
+    static func write(_ d: Data) {
+        // One line per message; the daemon's JSON has no raw newlines.
+        out.withLock { FileHandle.standardOutput.write(d + Data("\n".utf8)) }
     }
 }

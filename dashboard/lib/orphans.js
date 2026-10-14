@@ -8,8 +8,7 @@
 // completed the run about a minute later and a re-run then passed in 15 s.
 // Anything waiting on those checks waits forever unless it is told.
 //
-// The same rules as cockpit's OrphanedJob.swift, and the same fixtures test
-// both (test/orphans.test.js).
+// test/orphans.test.js holds the jobs from that PR, as GitHub recorded them.
 
 // The completion hook normally takes seconds.
 export const MIN_STUCK_MS = 180_000;

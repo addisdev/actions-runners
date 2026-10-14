@@ -1,0 +1,88 @@
+{
+ "target": {
+  "repo": "acme/comet-web",
+  "pr": null,
+  "sha": "8c10c20",
+  "branch": null
+ },
+ "state": "pointless",
+ "waitedMs": 0,
+ "source": "fleet",
+ "checks": {
+  "id": "acme/comet-web@8c10c20",
+  "repo": "acme/comet-web",
+  "prNumber": null,
+  "branch": "develop",
+  "sha": "8c10c20",
+  "title": "(displayTitle removed)",
+  "runs": [
+   {
+    "id": 36736111193,
+    "repo": "acme/comet-web",
+    "workflow": "web-ci",
+    "status": "completed",
+    "conclusion": "success",
+    "branch": "develop",
+    "sha": "8c10c20",
+    "runAttempt": 1,
+    "event": "push",
+    "title": "(displayTitle removed)",
+    "url": "https://github.com/acme/comet-web/actions/runs/36736111193",
+    "startedAt": 1790781691000,
+    "updatedAt": 1790781924000
+   },
+   {
+    "id": 36736111347,
+    "repo": "acme/comet-web",
+    "workflow": "web-e2e",
+    "status": "in_progress",
+    "branch": "develop",
+    "sha": "8c10c20",
+    "runAttempt": 1,
+    "event": "push",
+    "title": "(displayTitle removed)",
+    "url": "https://github.com/acme/comet-web/actions/runs/36736111347",
+    "startedAt": 1790781691000,
+    "updatedAt": 1790781793000,
+    "elapsedMs": 295956,
+    "expectedMs": 4519000
+   }
+  ],
+  "total": 2,
+  "done": 1,
+  "failed": [],
+  "queued": [],
+  "etaGreenMs": [
+   2415444,
+   4223044
+  ],
+  "state": "pending",
+  "superseded": [],
+  "progress": "1 of 2 done"
+ },
+ "orphans": [
+  {
+   "repo": "acme/comet-web",
+   "runId": 36736111347,
+   "jobId": 115041321171,
+   "job": "build",
+   "runner": "MACSERIAL0-lake-api",
+   "runnerState": "draining",
+   "stuckStep": "Complete job",
+   "stuckSince": 1791846033000,
+   "stuckForMs": 606000,
+   "workPassed": true,
+   "failedStep": null,
+   "url": "https://github.com/addisdev/lake-api/actions/runs/38318681067/job/115041321171",
+   "summary": "build: orphaned by a draining runner — not your code. Every step passed, then MACSERIAL0-lake-api (draining) went away; stuck at \"Complete job\" for 10 min.",
+   "recovery": [
+    "gh api -X POST repos/acme/comet-web/actions/runs/36736111347/force-cancel",
+    "# about a minute later, once the run shows completed:",
+    "gh run rerun 36736111347 -R acme/comet-web"
+   ]
+  }
+ ],
+ "hint": null,
+ "fleetAgeMs": 0,
+ "reason": "build: orphaned by a draining runner — not your code. Every step passed, then MACSERIAL0-lake-api (draining) went away; stuck at \"Complete job\" for 10 min."
+}

@@ -38,7 +38,11 @@ thin SwiftUI layer over it.
 | `CockpitVerdict.swift` | What the top of the popover shows: the daemon's verdict when it can be trusted, otherwise an honest unknown or the out-of-band verdict |
 | `Ladder.swift` | The rungs as the Why view shows them, with the two client-only rungs on top; the markdown incident brief |
 | `Presenter.swift` | Glance → view models: lanes, pills and their shapes, queue rows, cause labels, ETA ranges, the menu bar mark, the posture chip |
-| `Rollup.swift` | A commit's checks as one row; `Waiter.decide` for `cockpit wait`; watches |
+| `Rollup.swift` | A commit's checks as one row, for the popover; watches |
+| `API.swift` | `/api/v1` for the command line: the diagnosis, checks, actions and MCP calls, decoded against `Fixtures/v1/` |
+| `CheckWait.swift` | `cockpit wait`: asks the daemon until the deadline, retries a dashboard that stopped answering, asks GitHub meanwhile, recovers orphans with `--recover` |
+| `Why.swift` | `cockpit why`'s text |
+| `GitHubChecks.swift` | A PR's checks from `gh pr view`, for a wait while the dashboard is unreachable |
 | `History.swift` | `/api/timeline` → incident lanes, today's line, the weekly digest |
 | `IncidentTracker.swift` | Successive glances' incidents → notifications: transitions, storms, snoozes, severity, quiet hours |
 | `Sentinel.swift` | The out-of-band classification table, as one pure function |
@@ -94,6 +98,7 @@ The tests that carry the most weight:
 | `SentinelTests` | The out-of-band table, row by row; the Why ladder; the brief |
 | `RollupTests` | Check rollups and `Waiter.decide`: green, red, cancelled, reruns, pointless, a public repo worth waiting for |
 | `HistoryTests` | Timeline lanes, today's line and the digest, posture and forecast, unchecked probes named rather than hidden, every replay step being a real fixture |
+| `APITests` | Every `/api/v1` fixture decoded; `why` and `wait` text; the wait loop against a fake clock: asking again, the deadline, refusals, an unreachable dashboard with GitHub asked meanwhile, orphan recovery |
 
 ## Fixtures: one contract, two languages
 
@@ -110,6 +115,11 @@ node scripts/make-glance-fixtures.mjs --check  # exit 1 if any is out of date (C
 So a change to `verdict.js` that changes the contract fails CI until the
 fixtures are regenerated, and the regenerated fixtures then run through the
 Swift decoder and presenter tests. The two sides cannot drift silently.
+
+The same script writes `Fixtures/v1/`, a set of `/api/v1` answers made by the
+daemon's route handler: a diagnosis, checks that are green, red, pending and
+orphaned, an action preview and its run, and an error. `APITests` decodes each
+one, so a change to an `/api/v1` response fails CI the same way.
 
 To add a scenario: add it to `scenarios.js`, assert its verdict in
 `verdict.test.js`, regenerate, and add its name to `Fixtures.names` in

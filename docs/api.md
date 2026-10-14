@@ -172,9 +172,10 @@ The daemon flags a job when all of these hold:
 
 `workPassed: false` means a work step had already failed, so a re-run would
 only repeat the failure. The daemon reads the steps from the job lists it
-already fetches for active runs, so this costs no extra GitHub calls. The Mac
-app's `cockpit` uses the same rules, and both are tested against the same
-fixture (`cockpit/Sources/CockpitCore/Fixtures/orphaned-jobs.json`).
+already fetches for active runs, so this costs no extra GitHub calls. `cockpit
+why` and `cockpit wait` show the daemon's orphans; they no longer look for
+their own. The rules are tested against lake-api PR #73's jobs as GitHub
+recorded them (`cockpit/Sources/CockpitCore/Fixtures/orphaned-jobs.json`).
 
 ### MCP (`/mcp`)
 

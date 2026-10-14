@@ -1,0 +1,200 @@
+{
+ "repo": "acme/comet-web",
+ "verdict": {
+  "id": "waiting",
+  "tone": "ok",
+  "title": "Working",
+  "sentence": "1 running, 1 queued, oldest 9 min. A queue is not a stall.",
+  "evidence": [
+   "ember-ios · ios-ci: repo-capacity (medium)"
+  ],
+  "next": {
+   "label": "Nothing to do",
+   "kind": "none"
+  },
+  "rung": 8,
+  "open": [
+   {
+    "id": "waiting",
+    "tone": "ok",
+    "title": "Working",
+    "sentence": "1 running, 1 queued, oldest 9 min. A queue is not a stall.",
+    "evidence": [
+     "ember-ios · ios-ci: repo-capacity (medium)"
+    ],
+    "causes": [
+     "repo-capacity"
+    ],
+    "next": {
+     "label": "Nothing to do",
+     "kind": "none"
+    }
+   }
+  ]
+ },
+ "runners": [
+  {
+   "name": "build-host-comet-web",
+   "repo": "acme/comet-web",
+   "project": "comet",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  },
+  {
+   "name": "build-host-comet-web-2",
+   "repo": "acme/comet-web",
+   "project": "comet",
+   "host": "build-host",
+   "state": "busy",
+   "detail": "web-e2e · e2e / e2e / webkit · 3 min of ~75 min",
+   "job": {
+    "runId": 36736111347,
+    "repo": "acme/comet-web",
+    "workflow": "web-e2e",
+    "job": "e2e / e2e / webkit",
+    "startedAt": 1790781792000,
+    "elapsedMs": 194956,
+    "expectedMs": 4519000,
+    "overdue": false,
+    "url": "https://github.com/acme/comet-web/actions/runs/36736111347/job/109958140779",
+    "branch": "develop"
+   }
+  },
+  {
+   "name": "build-host-comet-web-3",
+   "repo": "acme/comet-web",
+   "project": "comet",
+   "host": "build-host",
+   "state": "idle",
+   "detail": "idle"
+  }
+ ],
+ "queue": [],
+ "runs": [
+  {
+   "id": 36736111347,
+   "repo": "acme/comet-web",
+   "workflow": "web-e2e",
+   "status": "in_progress",
+   "branch": "develop",
+   "sha": "8c10c20",
+   "runAttempt": 1,
+   "event": "push",
+   "title": "(displayTitle removed)",
+   "url": "https://github.com/acme/comet-web/actions/runs/36736111347",
+   "startedAt": 1790781691000,
+   "updatedAt": 1790781793000,
+   "elapsedMs": 295956,
+   "expectedMs": 4519000
+  }
+ ],
+ "recent": [
+  {
+   "id": 36736111193,
+   "repo": "acme/comet-web",
+   "workflow": "web-ci",
+   "status": "completed",
+   "conclusion": "success",
+   "branch": "develop",
+   "sha": "8c10c20",
+   "runAttempt": 1,
+   "event": "push",
+   "title": "(displayTitle removed)",
+   "url": "https://github.com/acme/comet-web/actions/runs/36736111193",
+   "startedAt": 1790781691000,
+   "updatedAt": 1790781924000
+  },
+  {
+   "id": 36732651278,
+   "repo": "acme/comet-web",
+   "workflow": "web-ci",
+   "status": "completed",
+   "conclusion": "success",
+   "branch": "sound-layer",
+   "sha": "ec99782",
+   "runAttempt": 1,
+   "event": "pull_request",
+   "title": "(displayTitle removed)",
+   "url": "https://github.com/acme/comet-web/actions/runs/36732651278",
+   "startedAt": 1790780065000,
+   "updatedAt": 1790781635000
+  },
+  {
+   "id": 36732301141,
+   "repo": "acme/comet-web",
+   "workflow": "web-ci",
+   "status": "completed",
+   "conclusion": "success",
+   "branch": "sound-layer",
+   "sha": "56c56a7",
+   "runAttempt": 1,
+   "event": "pull_request",
+   "title": "(displayTitle removed)",
+   "url": "https://github.com/acme/comet-web/actions/runs/36732301141",
+   "startedAt": 1790779903000,
+   "updatedAt": 1790781444000
+  }
+ ],
+ "failures": [],
+ "checks": [
+  {
+   "prNumber": null,
+   "branch": "develop",
+   "sha": "8c10c20",
+   "title": "(displayTitle removed)",
+   "state": "pending",
+   "progress": "1 of 2 done",
+   "etaGreenMs": [
+    2415444,
+    4223044
+   ]
+  },
+  {
+   "prNumber": null,
+   "branch": "sound-layer",
+   "sha": "ec99782",
+   "title": "(displayTitle removed)",
+   "state": "green",
+   "progress": "1 of 1 green",
+   "etaGreenMs": null
+  },
+  {
+   "prNumber": null,
+   "branch": "sound-layer",
+   "sha": "56c56a7",
+   "title": "(displayTitle removed)",
+   "state": "green",
+   "progress": "1 of 1 green",
+   "etaGreenMs": null
+  }
+ ],
+ "orphans": [
+  {
+   "repo": "acme/comet-web",
+   "runId": 36736111347,
+   "jobId": 115041321171,
+   "job": "build",
+   "runner": "MACSERIAL0-lake-api",
+   "runnerState": "draining",
+   "stuckStep": "Complete job",
+   "stuckSince": 1791846033000,
+   "stuckForMs": 606000,
+   "workPassed": true,
+   "failedStep": null,
+   "url": "https://github.com/addisdev/lake-api/actions/runs/38318681067/job/115041321171",
+   "summary": "build: orphaned by a draining runner — not your code. Every step passed, then MACSERIAL0-lake-api (draining) went away; stuck at \"Complete job\" for 10 min.",
+   "recovery": [
+    "gh api -X POST repos/acme/comet-web/actions/runs/36736111347/force-cancel",
+    "# about a minute later, once the run shows completed:",
+    "gh run rerun 36736111347 -R acme/comet-web"
+   ]
+  }
+ ],
+ "incidents": [],
+ "freshness": {
+  "generatedAt": 1790781986956,
+  "ageMs": 0,
+  "stale": false
+ }
+}

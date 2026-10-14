@@ -21,6 +21,24 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
   progress because their runner was drained or lost during "Complete job",
   with the force-cancel and re-run commands that clear them. Until now only
   the Mac app could see these, by calling `gh` from the laptop.
+- **`cockpit why`, `wait`, `run` and `mcp` ask `/api/v1`.** The daemon
+  now diagnoses the repo, decides when checks are done and finds orphaned
+  jobs, so the command line prints its answer instead of rebuilding it from a
+  glance stream (`WaitLoop.swift` and `OrphanedJob.swift` are gone; their
+  incident cases live in `dashboard/test/checks.test.js` and
+  `orphans.test.js`). `cockpit wait` still survives an unreachable dashboard,
+  asking GitHub itself once a minute for a PR. `--recover` runs the
+  dashboard's `run.recoverOrphan` action, recorded in its action log instead
+  of `~/Library/Logs/FleetCockpit/orphan-recover.ndjson`. `cockpit run`
+  previews, then confirms; any `--flag` is passed as the action's argument.
+  `cockpit mcp` is a stdio bridge to the dashboard's `/mcp`, so its tools are
+  the dashboard's: `why_queued` is now `diagnose_repo`, `fleet_queue` is
+  `list_queue`, and `wait_for_checks` takes `wait` in seconds (up to 300)
+  instead of `timeout_minutes`. It stays read-only unless `FLEET_API_TOKEN`
+  holds a scoped token. `why --json` and `wait --json` print the daemon's
+  answer. The diagnosis gains `checks`. Swift decodes `Fixtures/v1/`, which
+  the fixture script makes with the daemon's own handler, so CI fails when
+  the two disagree. Needs a dashboard with `/api/v1`.
 - **MCP over HTTP at `/mcp`.** The daemon serves its v1 routes as MCP tools,
   each named by its route id and answered by the route itself, so a tool and
   its REST route can't disagree. Actions go through the same preview and

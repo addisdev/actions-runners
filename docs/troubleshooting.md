@@ -223,7 +223,8 @@ See [Shared memory variables](configuration.md#shared-memory-variables) for the
 
 **Evidence:** The run stays `in_progress` with every work step green and the
 job stuck at "Complete job" (or "Complete runner" cancelled). `gh run cancel`
-does nothing. `cockpit why` lists it under *Orphaned by a draining runner*.
+does nothing. `cockpit why` lists it under *Orphaned*, and
+`GET /api/v1/orphans` returns it.
 
 **Cause:** The runner was drained or stopped while it finished the job, and the
 job's result never reached GitHub. This is not the code.
@@ -234,7 +235,8 @@ gh api -X POST repos/<owner>/<repo>/actions/runs/<run-id>/force-cancel
 # about a minute later, once the run shows completed:
 gh run rerun <run-id> -R <owner>/<repo>
 ```
-`cockpit wait --pr <n> --recover` does both for a PR's own orphaned runs. See
+`cockpit wait --pr <n> --recover` does both for a PR's own orphaned runs, as
+does the `run.recoverOrphan` action. See
 [A job orphaned by a draining runner](cockpit/cli.md#a-job-orphaned-by-a-draining-runner).
 
 ## `swiftc` exits 69 on a new host

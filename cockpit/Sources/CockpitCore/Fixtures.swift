@@ -17,6 +17,14 @@ public enum Fixtures {
         return try Data(contentsOf: url)
     }
 
+    /// An /api/v1 response from Fixtures/v1/, made by the daemon's handler.
+    public static func v1(_ name: String) throws -> Data {
+        guard let url = Bundle.module.url(forResource: name, withExtension: "json", subdirectory: "Fixtures/v1") else {
+            throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: "Fixtures/v1/\(name).json"])
+        }
+        return try Data(contentsOf: url)
+    }
+
     public static func glance(_ name: String) throws -> Glance {
         try Glance.decode(data(name))
     }

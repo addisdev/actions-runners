@@ -1,0 +1,7 @@
+{
+ "error": {
+  "code": "unknown_repo",
+  "message": "the fleet has no runner, queued run, recent run or failure for someone/else",
+  "hint": "Repositories are owner/repo and match GitHub. GET /api/v1/runners lists the ones the fleet serves."
+ }
+}
