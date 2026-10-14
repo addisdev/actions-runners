@@ -51,6 +51,7 @@ async function startDaemon(extraEnv = {}) {
       // The default lives in the dashboard directory, where test pairings
       // would land in the operator's real paired-device list.
       FLEET_DEVICE_TOKENS_FILE: join(dir, 'device-tokens.json'),
+      FLEET_OAUTH_CLIENTS_FILE: join(dir, 'oauth-clients.json'),
       // Never shell out to the developer's real tailscale from a test daemon.
       FLEET_TAILSCALE: 'off',
       FLEET_ALERTS: '0',
