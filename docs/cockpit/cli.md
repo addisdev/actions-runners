@@ -125,10 +125,10 @@ its own section, with the commands that end it:
 
 ```console
 Orphaned by a draining runner — not your code:
-  build: orphaned by a draining runner — not your code. Every step passed, then RL6P9G7WYT-homelake (draining) went away; stuck at "Complete job" for 12m.
-    gh api -X POST repos/addisdev/homelake/actions/runs/38318681067/force-cancel
+  build: orphaned by a draining runner — not your code. Every step passed, then MACSERIAL0-lake-api (draining) went away; stuck at "Complete job" for 12m.
+    gh api -X POST repos/addisdev/lake-api/actions/runs/38318681067/force-cancel
     # about a minute later, once the run shows completed:
-    gh run rerun 38318681067 -R addisdev/homelake
+    gh run rerun 38318681067 -R addisdev/lake-api
 ```
 
 `--json` prints `{ verdict, runners, queue, checks, failures, incidents, orphaned }`.
@@ -222,7 +222,7 @@ A runner that is drained while it finishes a job can stop before the job's
 result reaches GitHub. The job then passed every step and still reads
 `in_progress`, with "Complete runner" cancelled or stuck and "Complete job" in
 progress, and it stays that way: `gh run cancel` does nothing, and only
-`POST repos/<repo>/actions/runs/<id>/force-cancel` completes it (addisdev/homelake
+`POST repos/<repo>/actions/runs/<id>/force-cancel` completes it (addisdev/lake-api
 PR #73, 2026-10-12/13). The drain bug behind it is fixed, but a runner can still
 be stopped mid-report (a host reboot, a killed service), so the wait checks.
 
@@ -239,10 +239,10 @@ reads busy again while GitHub still holds the orphan.
 Without `--recover` the wait stops with exit `2` and the commands:
 
 ```console
-⏹ homelake PR #73: not waiting — build: orphaned by a draining runner — not your code. Every step passed, then RL6P9G7WYT-homelake (draining) went away; stuck at "Complete job" for 12m.
-  force-cancel: gh api -X POST repos/addisdev/homelake/actions/runs/38318681067/force-cancel
-  then, once the run shows completed (~1 min): gh run rerun 38318681067 -R addisdev/homelake
-  or let cockpit do both for this PR: cockpit wait addisdev/homelake --pr 73 --recover
+⏹ lake-api PR #73: not waiting — build: orphaned by a draining runner — not your code. Every step passed, then MACSERIAL0-lake-api (draining) went away; stuck at "Complete job" for 12m.
+  force-cancel: gh api -X POST repos/addisdev/lake-api/actions/runs/38318681067/force-cancel
+  then, once the run shows completed (~1 min): gh run rerun 38318681067 -R addisdev/lake-api
+  or let cockpit do both for this PR: cockpit wait addisdev/lake-api --pr 73 --recover
 ```
 
 With `--pr N --recover`, the wait does both itself: force-cancel, poll the run

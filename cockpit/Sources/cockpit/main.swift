@@ -293,7 +293,7 @@ case "why":
     let failures = (g.failures ?? []).filter { match($0.repo) }
     let short = repo.split(separator: "/").last.map(String.init) ?? repo
     let incidents = g.incidents.filter { $0.key.contains(short) || $0.title.contains(short) }
-    // Jobs a draining runner left unreported (homelake PR #73): only GitHub's
+    // Jobs a draining runner left unreported (lake-api PR #73): only GitHub's
     // job steps show them, so ask about runs active past the threshold.
     let longRuns = (g.runs ?? []).filter { match($0.repo) && $0.isActive && ($0.elapsedMs ?? .infinity) >= OrphanedJob.minStuckMs }
     let orphans = opts.fixture != nil || longRuns.isEmpty ? []

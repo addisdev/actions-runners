@@ -12,7 +12,7 @@ const SIM = ['*-ios', '*-ios-*', '*-tvos', '*-tvos-*'];
 
 describe('planMirror', () => {
   test('copies one runner per distinct label set, not per repo', () => {
-    // On runner-host aliquant-web is ci, ui-web, ui-web, ci. Copying instance 1
+    // On runner-host quant-web is ci, ui-web, ui-web, ci. Copying instance 1
     // only would leave every ui-web job queued for the old host.
     const plan = planMirror({
       runners: [r('web', 'web', ['ci'], 1), r('web-2', 'web', ['ui-web'], 2),
@@ -25,13 +25,13 @@ describe('planMirror', () => {
   });
 
   test('a runner with no extra labels is copied with none', () => {
-    const plan = planMirror({ runners: [r('radiator', 'radiator', [])], hostLabels: [] });
+    const plan = planMirror({ runners: [r('widget-web', 'widget-web', [])], hostLabels: [] });
     assert.deepEqual(plan.register.map((x) => x.labels), [[]]);
   });
 
   test('a label the host does not advertise is a skip with the reason', () => {
     const plan = planMirror({
-      runners: [r('backend', 'backend', ['postgres']), r('map', 'homelab-map', ['hmap'])],
+      runners: [r('backend', 'backend', ['postgres']), r('map', 'map-web', ['hmap'])],
       hostLabels: ['ci'],
     });
     assert.equal(plan.register.length, 0);
@@ -87,8 +87,8 @@ describe('helpers', () => {
     assert.deepEqual(extraLabels(['self-hosted', { name: 'macOS' }, 'ARM64', { name: 'ci' }, 'ui-web']), ['ci', 'ui-web']);
   });
   test('globMatch handles * and escapes the rest', () => {
-    assert.ok(globMatch('*-ios-*', 'jerv-ios-2'));
-    assert.ok(!globMatch('*-ios', 'jerv-ios-2'));
+    assert.ok(globMatch('*-ios-*', 'jot-ios-2'));
+    assert.ok(!globMatch('*-ios', 'jot-ios-2'));
     assert.ok(!globMatch('a.b', 'axb'));
   });
 });

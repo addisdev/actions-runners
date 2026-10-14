@@ -14,8 +14,8 @@ public struct WaitOutcome: Sendable, Equatable {
 
 /// `cockpit wait` and the MCP `wait_for_checks`, as one loop.
 ///
-/// Two things went wrong on 2026-10-07 (greenfolio-ios PR #445,
-/// greenfolio-android PR #280) and this loop is shaped against both:
+/// Two things went wrong on 2026-10-07 (shop-ios PR #445,
+/// shop-android PR #280) and this loop is shaped against both:
 ///
 /// 1. The daemon's fast loop stopped finishing ticks under load, so it
 ///    published nothing; the stream carried keepalives only and the last
@@ -30,8 +30,8 @@ public struct WaitOutcome: Sendable, Equatable {
 ///    GitHub's finished answer ends the wait; its "pending" never overrides
 ///    cockpit's own green or red.
 ///
-/// 2026-10-09 (aliquant-backend #54, aliquant-web #116, homelab-map #11,
-/// taylab-launch-kit #86): waits ran 1.5 h past their deadline because the
+/// 2026-10-09 (quant-api #54, quant-web #116, map-web #11,
+/// site-web #86): waits ran 1.5 h past their deadline because the
 /// loop awaited the GitHub ask inline and the ask itself never returned (see
 /// `Subprocess`). So now:
 /// 3. The deadline is a wall-clock timer of its own (`Deadline.race`); no
@@ -43,7 +43,7 @@ public struct WaitOutcome: Sendable, Equatable {
 /// 5. A view that has no runs for the target at all (finished long ago, or
 ///    rows missing) asks GitHub at the stale cadence, from the start.
 ///
-/// 2026-10-11 (jerv-ios PR #181): `gh run rerun --failed` started attempt 3
+/// 2026-10-11 (jot-ios PR #181): `gh run rerun --failed` started attempt 3
 /// of a run whose attempt 2 had failed, and `cockpit wait` returned red at
 /// once, twice. A re-run keeps the run id, and the daemon's view lagged the
 /// 29 s re-run by a tick, so the wait read the failure it was retrying. So:
@@ -53,7 +53,7 @@ public struct WaitOutcome: Sendable, Equatable {
 ///    the view catches up; GitHub's PR rollup is then asked at the stale
 ///    cadence. A run GitHub cannot answer for keeps cockpit's red.
 ///
-/// 2026-10-12/13 (homelake PR #73): jobs passed every step and then stayed
+/// 2026-10-12/13 (lake-api PR #73): jobs passed every step and then stayed
 /// `in_progress` for 10-25 minutes because a drain stopped their runner while
 /// the job-completed hook ran; nothing would ever report them. So:
 /// 7. Once a minute, the target's runs that have been in progress longer than
@@ -93,7 +93,7 @@ public struct WaitLoop: Sendable {
     public var tick: TimeInterval = 1
     public var reconnectDelay: TimeInterval = 3
     public var now: @Sendable () -> Double = { Format.nowMs() }
-    /// Progress lines ("… greenfolio-ios PR #445: 0 of 1 done").
+    /// Progress lines ("… shop-ios PR #445: 0 of 1 done").
     public var progress: @Sendable (String) -> Void = { _ in }
     /// Called when a connection ended without a glance or went silent: the
     /// route under it may be dead (the CLI reopens its SSH tunnel).

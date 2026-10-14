@@ -112,7 +112,7 @@ describe('extraLabels', () => {
 // ---- shapeRun ----------------------------------------------------------------
 
 describe('shapeRun — the PR head', () => {
-  // taylab-launch-kit PR #79, 2026-10-03: a wait on the PR read "red" from a
+  // site-web PR #79, 2026-10-03: a wait on the PR read "red" from a
   // commit the branch had been force-pushed off. The head is what tells them apart.
   test('keeps the head commit of the PR the run belongs to', () => {
     const r = shapeRun('acme/web', {

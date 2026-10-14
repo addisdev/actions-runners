@@ -3,7 +3,7 @@
 #
 #   scripts/join-host.sh                       # check everything, change nothing
 #   scripts/join-host.sh --apply               # install the agent, mirror runners, health timer
-#   scripts/join-host.sh --apply --only peertest,radiator     # pilot a few repos first
+#   scripts/join-host.sh --apply --only peer-api,widget-web     # pilot a few repos first
 #   scripts/join-host.sh --apply --install-tools              # also brew-install what is missing
 #   ... | scripts/join-host.sh --apply --tokens-from -        # registration tokens minted elsewhere
 #

@@ -3,8 +3,8 @@ import Foundation
 /// GitHub's own view of a PR's checks: `gh pr view <n> --json
 /// headRefOid,statusCheckRollup`. Cockpit's rows are a copy of this, made by
 /// the daemon's fast loop; when that loop stops finishing ticks the copy
-/// freezes, so a wait asks the original as well (greenfolio-ios PR #445 and
-/// greenfolio-android PR #280, 2026-10-07: both green on GitHub while cockpit
+/// freezes, so a wait asks the original as well (shop-ios PR #445 and
+/// shop-android PR #280, 2026-10-07: both green on GitHub while cockpit
 /// still showed them running).
 public struct GitHubChecks: Sendable, Equatable {
     public struct Check: Sendable, Equatable {
@@ -131,7 +131,7 @@ public struct GHChecksProbe: Sendable {
 /// One workflow run as GitHub has it now: `gh api repos/<repo>/actions/runs/<id>`,
 /// which always describes the run's latest attempt. A wait asks before it
 /// believes a red from cockpit's view, because a re-run keeps the run id and
-/// the view can still hold the attempt it retries: jerv-ios PR #181
+/// the view can still hold the attempt it retries: jot-ios PR #181
 /// (2026-10-11), where `gh run rerun --failed` started attempt 3 and cockpit
 /// still showed attempt 2's failure, so `cockpit wait` returned red at once.
 public enum GHRunProbe {

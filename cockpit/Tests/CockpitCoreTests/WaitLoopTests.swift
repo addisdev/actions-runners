@@ -2,16 +2,16 @@ import Foundation
 import Testing
 @testable import CockpitCore
 
-// 2026-10-07: greenfolio-ios PR #445 went green on GitHub at 12:33Z and
-// greenfolio-android PR #280 at 12:37Z, but runner-host's fast loop finished
+// 2026-10-07: shop-ios PR #445 went green on GitHub at 12:33Z and
+// shop-android PR #280 at 12:37Z, but runner-host's fast loop finished
 // its last tick about 12:32Z. fleetd publishes only after a tick, so every
 // client kept the 12:32 glance ("0 of 1 done", "ci / instrumentation · 12 min")
 // while keepalives held the stream open. `cockpit wait` checked its deadline
 // only when a glance arrived, so it neither saw the result nor timed out.
 
-/// `gh pr view 280 -R addisdev/greenfolio-android --json headRefOid,statusCheckRollup`, as GitHub answered.
+/// `gh pr view 280 -R addisdev/shop-android --json headRefOid,statusCheckRollup`, as GitHub answered.
 private let android280 = #"""
-{"headRefOid":"51e466845614f2380c7dce74d6c256deef077b77","statusCheckRollup":[{"__typename":"CheckRun","completedAt":"2026-10-07T12:24:49Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/addisdev/greenfolio-android/actions/runs/37620208185/job/112788264922","name":"ci / build","startedAt":"2026-10-07T12:19:50Z","status":"COMPLETED","workflowName":"Android CI"},{"__typename":"CheckRun","completedAt":"2026-10-07T12:37:13Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/addisdev/greenfolio-android/actions/runs/37620208185/job/112788264677","name":"ci / instrumentation","startedAt":"2026-10-07T12:19:50Z","status":"COMPLETED","workflowName":"Android CI"}]}
+{"headRefOid":"51e466845614f2380c7dce74d6c256deef077b77","statusCheckRollup":[{"__typename":"CheckRun","completedAt":"2026-10-07T12:24:49Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/addisdev/shop-android/actions/runs/37620208185/job/112788264922","name":"ci / build","startedAt":"2026-10-07T12:19:50Z","status":"COMPLETED","workflowName":"Android CI"},{"__typename":"CheckRun","completedAt":"2026-10-07T12:37:13Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/addisdev/shop-android/actions/runs/37620208185/job/112788264677","name":"ci / instrumentation","startedAt":"2026-10-07T12:19:50Z","status":"COMPLETED","workflowName":"Android CI"}]}
 """#
 
 /// The same PR while instrumentation was still running.
@@ -21,7 +21,7 @@ private let android280Running = #"""
 
 private func checks(_ json: String) throws -> GitHubChecks { try GitHubChecks.parse(prView: Data(json.utf8)) }
 
-private let ios = "addisdev/greenfolio-ios"
+private let ios = "addisdev/shop-ios"
 
 /// The glance a client held from 12:32Z: PR #445's one check in progress,
 /// built `ageMs` before now.
@@ -91,7 +91,7 @@ struct WaitLoopTests {
         let asked = Counter()
         let green = try checks(android280)
         var loop = fast(WaitLoop(
-            target: WaitTarget(repo: "greenfolio-ios", pr: 445), timeout: 10,
+            target: WaitTarget(repo: "shop-ios", pr: 445), timeout: 10,
             connect: { FleetClient(base: base).stream() },
             github: { _ in asked.bump(); return green }
         ))
@@ -116,7 +116,7 @@ struct WaitLoopTests {
     @Test func keepalivesAloneStillTimeOut() async throws {
         let pending = try checks(android280Running)
         let loop = fast(WaitLoop(
-            target: WaitTarget(repo: "greenfolio-ios", pr: 445), timeout: 0.6,
+            target: WaitTarget(repo: "shop-ios", pr: 445), timeout: 0.6,
             connect: keepalivesAfter(try frozenGlance(ageMs: 27 * 60_000)),
             github: { _ in pending }
         ))
@@ -132,7 +132,7 @@ struct WaitLoopTests {
 
     /// Without GitHub (a sha or branch wait), the deadline still holds.
     @Test func noGitHubStillTimesOut() async throws {
-        let loop = fast(WaitLoop(target: WaitTarget(repo: "greenfolio-ios", sha: "70418921"), timeout: 0.4,
+        let loop = fast(WaitLoop(target: WaitTarget(repo: "shop-ios", sha: "70418921"), timeout: 0.4,
                                  connect: keepalivesAfter(nil), github: nil))
         let started = Date()
         let out = await loop.run()
@@ -144,7 +144,7 @@ struct WaitLoopTests {
     @Test func aFreshCockpitResultNeedsNoGitHub() async throws {
         let asked = Counter()
         let loop = fast(WaitLoop(
-            target: WaitTarget(repo: "greenfolio-ios", pr: 445), timeout: 5,
+            target: WaitTarget(repo: "shop-ios", pr: 445), timeout: 5,
             connect: keepalivesAfter(try frozenGlance(ageMs: 5_000, conclusion: "success")),
             github: { _ in asked.bump(); return nil }
         ))
@@ -159,7 +159,7 @@ struct WaitLoopTests {
     @Test func aFreshPendingViewIsStillCrossChecked() async throws {
         let green = try checks(android280)
         let loop = fast(WaitLoop(
-            target: WaitTarget(repo: "greenfolio-ios", pr: 445), timeout: 5,
+            target: WaitTarget(repo: "shop-ios", pr: 445), timeout: 5,
             connect: keepalivesAfter(try frozenGlance(ageMs: 5_000)),
             github: { _ in green }
         ))
@@ -174,7 +174,7 @@ struct WaitLoopTests {
     @Test func gitHubPendingDoesNotHideACockpitRed() async throws {
         let pending = try checks(android280Running)
         let loop = fast(WaitLoop(
-            target: WaitTarget(repo: "greenfolio-ios", pr: 445), timeout: 5,
+            target: WaitTarget(repo: "shop-ios", pr: 445), timeout: 5,
             connect: keepalivesAfter(try frozenGlance(ageMs: 5_000, conclusion: "failure")),
             github: { _ in pending }
         ))
@@ -188,14 +188,14 @@ struct WaitLoopTests {
     @Test func anUnreachableDashboardStillEndsOnGitHub() async throws {
         let green = try checks(android280)
         let loop = fast(WaitLoop(
-            target: WaitTarget(repo: "addisdev/greenfolio-android", pr: 280), timeout: 5,
+            target: WaitTarget(repo: "addisdev/shop-android", pr: 280), timeout: 5,
             connect: { throw TransportError.noRoute(["runner-host", "runner-ts"]) },
             github: { _ in green }
         ))
         let out = await loop.run()
         guard case .green(let s) = out.decision else { Issue.record("expected green, got \(out.decision)"); return }
         #expect(out.source == .github && out.cockpitAgeMs == nil)
-        #expect(s.repo == "addisdev/greenfolio-android")
+        #expect(s.repo == "addisdev/shop-android")
     }
 
     /// A "pointless" verdict from a view 27 minutes old is not a reason to stop.
@@ -204,7 +204,7 @@ struct WaitLoopTests {
         g.verdict = Verdict(id: "disk-floor", tone: .critical, title: "Disk under the floor", sentence: nil,
                             evidence: [], next: nil, rung: 2, open: [])
         let green = try checks(android280)
-        let loop = fast(WaitLoop(target: WaitTarget(repo: "greenfolio-ios", pr: 445), timeout: 5,
+        let loop = fast(WaitLoop(target: WaitTarget(repo: "shop-ios", pr: 445), timeout: 5,
                                  connect: keepalivesAfter(g), github: { _ in green }))
         let out = await loop.run()
         guard case .green = out.decision else { Issue.record("expected green, got \(out.decision)"); return }
@@ -240,7 +240,7 @@ struct WaitDeadlineTests {
         let stuck = Stuck()
         defer { stuck.release() }
         var loop = fast(WaitLoop(
-            target: WaitTarget(repo: "greenfolio-ios", pr: 445), timeout: 0.8,
+            target: WaitTarget(repo: "shop-ios", pr: 445), timeout: 0.8,
             connect: keepalivesAfter(try frozenGlance(ageMs: 27 * 60_000)),
             github: { _ in await stuck.ask() }
         ))
@@ -260,7 +260,7 @@ struct WaitDeadlineTests {
         let calls = Counter()
         let green = try checks(android280)
         var loop = fast(WaitLoop(
-            target: WaitTarget(repo: "greenfolio-ios", pr: 445), timeout: 10,
+            target: WaitTarget(repo: "shop-ios", pr: 445), timeout: 10,
             connect: keepalivesAfter(try frozenGlance(ageMs: 27 * 60_000)),
             github: { _ in
                 calls.bump()
@@ -283,7 +283,7 @@ struct WaitDeadlineTests {
     @Test func aViewWithNoRunsForTheTargetAsksGitHubAtOnce() async throws {
         let green = try checks(android280)
         var loop = fast(WaitLoop(
-            target: WaitTarget(repo: "greenfolio-ios", pr: 445), timeout: 10,
+            target: WaitTarget(repo: "shop-ios", pr: 445), timeout: 10,
             connect: keepalivesAfter(try emptyGlance()),
             github: { _ in green }
         ))
@@ -300,7 +300,7 @@ struct WaitDeadlineTests {
     @Test func aBlindTimeoutReportsGitHubsProgress() async throws {
         let pending = try checks(android280Running)
         let loop = fast(WaitLoop(
-            target: WaitTarget(repo: "greenfolio-ios", pr: 445), timeout: 0.5,
+            target: WaitTarget(repo: "shop-ios", pr: 445), timeout: 0.5,
             connect: keepalivesAfter(try emptyGlance()),
             github: { _ in pending }
         ))
@@ -319,7 +319,7 @@ struct WaitDeadlineTests {
         let fresh = try frozenGlance(ageMs: 1_000)
         let green = try checks(android280)
         var loop = fast(WaitLoop(
-            target: WaitTarget(repo: "greenfolio-ios", pr: 445), timeout: 10,
+            target: WaitTarget(repo: "shop-ios", pr: 445), timeout: 10,
             connect: {
                 connects.bump()
                 return AsyncThrowingStream { c in
@@ -390,7 +390,7 @@ struct GitHubChecksTests {
         let c = try checks(android280)
         #expect(c.head == "51e466845614f2380c7dce74d6c256deef077b77")
         #expect(c.state == .green)
-        let s = c.checkSet(repo: "addisdev/greenfolio-android", pr: 280)
+        let s = c.checkSet(repo: "addisdev/shop-android", pr: 280)
         #expect(s.progress == "2 of 2 green" && s.sha == "51e466845614")
     }
 
@@ -452,13 +452,13 @@ struct CollectorStalenessTests {
     }
 }
 
-// 2026-10-11, jerv-ios PR #181, run 38163415231 (workflow "tests"): attempt 2
+// 2026-10-11, jot-ios PR #181, run 38163415231 (workflow "tests"): attempt 2
 // failed at 21:32:14Z; `gh run rerun --failed` started attempt 3 at 21:46:33Z
-// and it passed at 21:47:02Z. In between, `cockpit wait jerv-ios --pr 181`
-// returned "✖ jerv-ios PR #181: 1 failed · 1 of 1 done" at once, twice: the
+// and it passed at 21:47:02Z. In between, `cockpit wait jot-ios --pr 181`
+// returned "✖ jot-ios PR #181: 1 failed · 1 of 1 done" at once, twice: the
 // daemon's view still held attempt 2, and a re-run keeps the run id.
 
-private let jerv = "addisdev/jerv-ios"
+private let jerv = "addisdev/jot-ios"
 private let jervRun = 38163415231
 
 /// The run as cockpit's view had it, or as GitHub had it at some moment.
@@ -530,7 +530,7 @@ struct WaitRerunTests {
         let rollups = [try checks(jerv181Running), try checks(jerv181Running), try checks(jerv181Green)]
         let asked = Counter(), probed = Counter(), said = Lines()
         var loop = fast(WaitLoop(
-            target: WaitTarget(repo: "jerv-ios", pr: 181), timeout: 5,
+            target: WaitTarget(repo: "jot-ios", pr: 181), timeout: 5,
             connect: keepalivesAfter(try jervGlance(failed)),
             github: { _ in asked.bump(); return rollups[min(asked.value - 1, rollups.count - 1)] }
         ))
@@ -560,7 +560,7 @@ struct WaitRerunTests {
         let passed = jervTests(attempt: 3, conclusion: "success", updatedAt: now + 1_000)
         let probed = Counter()
         var loop = fast(WaitLoop(
-            target: WaitTarget(repo: "jerv-ios", sha: "2eaa915159977f541d29466ee83a2924984a02e5"), timeout: 5,
+            target: WaitTarget(repo: "jot-ios", sha: "2eaa915159977f541d29466ee83a2924984a02e5"), timeout: 5,
             // The stale failure twice (as twice on 10-11), then the pass.
             connect: glances([try jervGlance(failed), try jervGlance(failed), try jervGlance(passed)], gap: 0.3),
             github: nil
@@ -580,7 +580,7 @@ struct WaitRerunTests {
     @Test func aRerunThatAlreadyPassedEndsGreen() async throws {
         let now = Format.nowMs()
         var loop = fast(WaitLoop(
-            target: WaitTarget(repo: "jerv-ios", pr: 181), timeout: 5,
+            target: WaitTarget(repo: "jot-ios", pr: 181), timeout: 5,
             connect: keepalivesAfter(try jervGlance(jervTests(attempt: 2, updatedAt: now - 14 * 60_000))),
             github: nil
         ))
@@ -599,7 +599,7 @@ struct WaitRerunTests {
         for answer in [failed, nil] as [RunRow?] {
             let probed = Counter()
             var loop = fast(WaitLoop(
-                target: WaitTarget(repo: "jerv-ios", pr: 181), timeout: 5,
+                target: WaitTarget(repo: "jot-ios", pr: 181), timeout: 5,
                 connect: keepalivesAfter(try jervGlance(failed)), github: nil
             ))
             loop.latestRun = { _, _ in probed.bump(); return answer }
@@ -613,10 +613,10 @@ struct WaitRerunTests {
         }
     }
 
-    /// `gh api repos/addisdev/jerv-ios/actions/runs/38163415231` mid-re-run,
+    /// `gh api repos/addisdev/jot-ios/actions/runs/38163415231` mid-re-run,
     /// laid over cockpit's attempt-2 row.
     @Test func aRestRunBodyUpdatesTheRow() throws {
-        let body = #"{"id":38163415231,"name":"tests","status":"in_progress","conclusion":null,"run_attempt":3,"run_started_at":"2026-10-11T21:46:33Z","updated_at":"2026-10-11T21:46:40Z","html_url":"https://github.com/addisdev/jerv-ios/actions/runs/38163415231"}"#
+        let body = #"{"id":38163415231,"name":"tests","status":"in_progress","conclusion":null,"run_attempt":3,"run_started_at":"2026-10-11T21:46:33Z","updated_at":"2026-10-11T21:46:40Z","html_url":"https://github.com/addisdev/jot-ios/actions/runs/38163415231"}"#
         let old = jervTests(attempt: 2, updatedAt: 1_000)
         let started = ISO8601DateFormatter().date(from: "2026-10-11T21:46:33Z")!.timeIntervalSince1970 * 1000
         let r = try GHRunProbe.update(old, with: Data(body.utf8), now: started + 20_000)

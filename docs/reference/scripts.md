@@ -366,7 +366,7 @@ Source: [`scripts/join-host.sh`](https://github.com/addisdev/actions-runners/blo
 
 ```bash
 scripts/join-host.sh                                  # check everything, change nothing
-scripts/join-host.sh --apply --only peertest,radiator # pilot a few repos
+scripts/join-host.sh --apply --only peer-api,widget-web # pilot a few repos
 scripts/join-host.sh --apply --install-tools          # also brew-install what is missing
 ```
 
@@ -387,7 +387,7 @@ Source: [`scripts/mirror-runners.sh`](https://github.com/addisdev/actions-runner
 
 ```bash
 scripts/mirror-runners.sh                    # the plan
-scripts/mirror-runners.sh --apply --only peertest
+scripts/mirror-runners.sh --apply --only peer-api
 while read -r repo; do printf '%s %s\n' "$repo" "$(gh api -X POST repos/$repo/actions/runners/registration-token --jq .token)"; done < repos.txt \
   | ssh build-mac-2 'cd ~/actions-runners && scripts/mirror-runners.sh --apply --tokens-from -'
 ```

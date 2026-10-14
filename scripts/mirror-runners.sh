@@ -4,7 +4,7 @@
 #
 #   scripts/mirror-runners.sh                      # show the plan
 #   scripts/mirror-runners.sh --apply              # register what the plan lists
-#   scripts/mirror-runners.sh --apply --only peertest,radiator   # a pilot
+#   scripts/mirror-runners.sh --apply --only peer-api,widget-web   # a pilot
 #   ... | scripts/mirror-runners.sh --apply --tokens-from -     # tokens minted elsewhere
 #
 # The plan is dashboard/lib/mirror.js: one runner per distinct label set the

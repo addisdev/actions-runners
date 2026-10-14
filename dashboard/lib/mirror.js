@@ -5,7 +5,7 @@
 // whose labels cover its `runs-on`. So a second host takes a share of a repo's
 // work exactly when it has a runner carrying the same labels as one that is
 // already serving it. That makes the copy unit a LABEL SET, not a repo: on
-// runner-host aliquant-web has four runners, two labelled `ci` and two
+// runner-host quant-web has four runners, two labelled `ci` and two
 // `ui-web`, and copying only the first one's labels would leave every ui-web
 // job queueing for the old host while the new one sat idle.
 //
@@ -45,7 +45,7 @@ export function extraLabels(labels = []) {
 }
 
 // The name a runner would have without its host prefix and instance suffix:
-// RL6P9G7WYT-aliquant-web-3 → aliquant-web. Used only to test the Simulator
+// MACSERIAL0-quant-web-3 → quant-web. Used only to test the Simulator
 // patterns, which are written against the repo-shaped part of the name.
 function bareName(runner) {
   return String(runner.repo ?? '').split('/').pop() || String(runner.name ?? '');

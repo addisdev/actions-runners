@@ -1645,7 +1645,7 @@ async function fastTick(progress = null) {
   // pushed out of view by newer completions. Both sources can contain the same
   // run, so merge by repo+id before shaping the active set. The copy of the
   // latest attempt wins: first-wins once kept a failed attempt from the recent
-  // page over its re-run from the in-progress page (jerv-ios #181, 10-11).
+  // page over its re-run from the in-progress page (jot-ios #181, 10-11).
   const rawRunsByKey = new Map();
   const rememberRun = (repo, run) => {
     const key = `${repo}:${run.id}`;

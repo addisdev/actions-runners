@@ -53,7 +53,7 @@ export function filterActiveRuns(runs) {
 /**
  * Of two copies of one workflow run, the one describing its latest attempt.
  * A re-run keeps the run id, so two pages fetched in one tick can disagree:
- * on jerv-ios PR #181 (2026-10-11) a failed attempt and its in-progress re-run
+ * on jot-ios PR #181 (2026-10-11) a failed attempt and its in-progress re-run
  * were the same id. Higher `run_attempt` wins, then the later `updated_at`;
  * on a tie, `a` (the copy already held).
  *

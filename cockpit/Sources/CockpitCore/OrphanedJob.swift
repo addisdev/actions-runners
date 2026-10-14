@@ -34,7 +34,7 @@ public struct GHJob: Codable, Sendable, Equatable {
 /// A job whose work is done but whose result never reached GitHub, because
 /// its runner went away while the job was finishing.
 ///
-/// addisdev/homelake PR #73, 2026-10-12/13: three jobs (runs 38318681067,
+/// addisdev/lake-api PR #73, 2026-10-12/13: three jobs (runs 38318681067,
 /// 38331315857, 38331315807) on runners the tiers controller was draining
 /// passed every step, then sat `in_progress` for 10-25 minutes with
 /// "Complete runner" cancelled or stuck and "Complete job" in progress. The

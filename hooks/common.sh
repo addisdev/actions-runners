@@ -395,7 +395,7 @@ admit_resolve_wait_owner() {
 }
 
 # The worker's own diagnostic log, the only place a cancel shows while this
-# hook holds the job. Measured on runner-host 2026-10-07 (homelab-map run
+# hook holds the job. Measured on runner-host 2026-10-07 (map-web run
 # 37236945666): the worker logged "Cancellation/Shutdown message received"
 # within a second of the cancel, but it runs this hook with "Force kill process
 # on cancellation: False" and never signals it, and GitHub kept the run AND the
