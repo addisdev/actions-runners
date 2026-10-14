@@ -8,7 +8,8 @@ download, which happens once and is then reused by every runner you add.
 
 This is one machine. There is no cloud control plane, no Kubernetes, and nothing
 to sign up for — the runners, the dashboard and its database all live in the
-directory you are about to clone.
+directory you are about to clone. A second Mac can join later with one command;
+[What to do next](#what-to-do-next) links to it.
 
 ## Before you start
 
@@ -239,3 +240,10 @@ dashboard stays on loopback on the host; the tunnel carries only your session.
   `./healthctl.sh install` for automatic health repair, plus weekly cleanup
 - [Security deployment models](security-hardening.md) — read this before
   putting the dashboard on a LAN
+- [Fleet Cockpit](cockpit/install.md) — the verdict in your menu bar, and
+  `cockpit wait` for a PR's checks
+- [Add a second Mac](federation.md#adding-a-second-runner-host) —
+  `scripts/join-host.sh`, then [standby tiers](design/tiers.md) if one host
+  should take work first
+- [Troubleshooting](troubleshooting.md) — symptom, evidence, cause and fix for
+  the failures this fleet has actually had

@@ -198,3 +198,97 @@ launchctl list | grep fleet-agent    # is the agent running?
 
 The coordinator retains the last-known state for a stale host. It will not be
 chosen for placement while stale.
+
+## A Postgres test fails in `shmget`
+
+**Evidence:** A job that starts a Postgres cluster fails with
+`could not create shared memory segment` or `shmget: No space left on device`.
+The verdict shows `shm-low`, or the host card shows few free segments.
+
+**Cause:** macOS has a small System V shared memory table
+(`kern.sysv.shmmni`). A Postgres cluster killed mid-job (a cancelled run, a
+timeout) leaves its segments behind, and once the table is full every new
+cluster fails. It reads as a broken test, not a host problem.
+
+**Fix:** The job hooks remove orphaned segments before and after every job, so
+reinstall them if this host predates `hooks/shm-reap.sh`:
+```bash
+scripts/install-hooks.sh --apply --restart
+ipcs -m -o -p          # what is still attached, and by which pid
+```
+See [Shared memory variables](configuration.md#shared-memory-variables) for the
+`FLEET_SHM_LOW_FREE` threshold.
+
+## A job passed every step but never finishes
+
+**Evidence:** The run stays `in_progress` with every work step green and the
+job stuck at "Complete job" (or "Complete runner" cancelled). `gh run cancel`
+does nothing. `cockpit why` lists it under *Orphaned by a draining runner*.
+
+**Cause:** The runner was drained or stopped while it finished the job, and the
+job's result never reached GitHub. This is not the code.
+
+**Fix:**
+```bash
+gh api -X POST repos/<owner>/<repo>/actions/runs/<run-id>/force-cancel
+# about a minute later, once the run shows completed:
+gh run rerun <run-id> -R <owner>/<repo>
+```
+`cockpit wait --pr <n> --recover` does both for a PR's own orphaned runs. See
+[A job orphaned by a draining runner](cockpit/cli.md#a-job-orphaned-by-a-draining-runner).
+
+## `swiftc` exits 69 on a new host
+
+**Evidence:** The first Xcode job on a newly added Mac fails at its first
+compile with exit code 69, though `xcodebuild -version` works.
+
+**Cause:** The Xcode license has not been accepted on this host.
+`xcodebuild -version` answers without it; the compiler does not.
+
+**Fix:**
+```bash
+sudo xcodebuild -license accept && sudo xcodebuild -runFirstLaunch
+```
+`scripts/join-host.sh` checks this, and `FLEET_XCODE_VERSION` makes it refuse a
+host whose Xcode differs from the rest of the fleet.
+
+## `make: shellcheck: No such file or directory`
+
+**Evidence:** A job that runs fine on one host fails on another because a
+plain CLI tool (shellcheck, jq, deno) is missing.
+
+**Cause:** Preflight checks toolchains (Xcode, Node, Java, Postgres), and a
+Makefile also calls tools nobody listed. The runners' PATH may also differ
+from your shell's.
+
+**Fix:**
+```bash
+scripts/check-tools.sh $(scripts/check-tools.sh --list all)   # each listed tool, on the runners' PATH
+scripts/join-host.sh --install-tools       # brew-install the missing ones (dry run without --apply)
+scripts/runner-path.sh                     # runners whose job PATH differs from the rest
+```
+
+## A drained runner came back after a reboot
+
+**Evidence:** A runner you drained shows online again after the Mac restarted.
+
+**Cause:** Its LaunchAgent starts it at login whatever the drain marker says.
+
+**Fix:** None needed while fleetd or the agent is running: it stops the runner
+again within one heartbeat and logs `drain held`. If it stays online, check
+that `FLEET_HOLD_DRAINS` is not `0` in `fleet.env`.
+
+## Primary runners drain and resume over and over
+
+**Evidence:** With [standby tiers](design/tiers.md) on, the primary host's idle
+runners drain and resume every few minutes, and `./fleetctl.sh logs` shows a
+`tiers[enforce]:` line for each batch.
+
+**Cause:** Primary self-drain sheds idle runners while a lane is at its
+admission cap, and a busy primary sits right at the cap. Versions before the
+hysteresis change drained on the first tick at cap.
+
+**Fix:** Upgrade. If it still churns, lengthen the hold
+(`FLEET_TIERS_SELF_MIN_HOLD_S`) or turn self-drain off with
+`FLEET_TIERS_SELF_DRAIN=0`. See
+[Primary self-drain](design/tiers.md#primary-self-drain).
