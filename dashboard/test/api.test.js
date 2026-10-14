@@ -110,6 +110,29 @@ describe('responses', () => {
     assert.deepEqual(keys, [`newfail:${r.repo}:ci:1`, `runner:unused:${r.name}`]);
   });
 
+  test('checks pass the target and the wait through, and reject a repository the fleet does not serve', async () => {
+    const g = glance('live');
+    const repo = g.runs[0].repo;
+    let asked = null;
+    const c = { ...ctx(g), waitForChecks: async (target, opts) => { asked = { target, waitS: opts.waitS }; return { state: 'pending' }; } };
+    const out = await get(`/api/v1/repos/${repo}/checks?pr=73&wait=120`, c);
+    assert.equal(out.status, 200);
+    assert.deepEqual(asked, { target: { repo, pr: 73, sha: null, branch: null }, waitS: 120 });
+    assert.equal(out.body.state, 'pending');
+    assert.equal((await get('/api/v1/repos/someone/elses-repo/checks?pr=1', c)).status, 404);
+  });
+
+  test('checks take one of pr, sha or branch, and wait is at most 300', async () => {
+    const repo = glance('live').runs[0].repo;
+    const c = { ...ctx(), waitForChecks: async () => ({ state: 'pending' }) };
+    assert.equal((await get(`/api/v1/repos/${repo}/checks?pr=1&sha=abcdef1`, c)).status, 400);
+    const tooLong = await get(`/api/v1/repos/${repo}/checks?pr=1&wait=301`, c);
+    assert.equal(tooLong.status, 400);
+    assert.match(tooLong.body.error.message, /between 0 and 300/);
+    assert.equal((await get(`/api/v1/repos/${repo}/checks?sha=xyz`, c)).status, 400);
+    assert.equal((await get(`/api/v1/repos/${repo}/checks?pr=0`, c)).status, 400);
+  });
+
   test('actions come from the catalogue', async () => {
     const out = await get('/api/v1/actions');
     assert.equal(out.body.items[0].id, 'fleet.health');
@@ -165,6 +188,11 @@ describe('openapi', () => {
       assert.equal(op.operationId, r.id);
       assert.equal(op['x-fleet-scope'], r.scope);
     }
+  });
+
+  test('integer bounds appear in the schema', () => {
+    const wait = openApi().paths['/api/v1/repos/{owner}/{repo}/checks'].get.parameters.find((p) => p.name === 'wait');
+    assert.deepEqual(wait.schema, { type: 'integer', minimum: 0, maximum: 300 });
   });
 
   test('path parameters are required', () => {

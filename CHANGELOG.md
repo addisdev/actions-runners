@@ -21,6 +21,13 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
   progress because their runner was drained or lost during "Complete job",
   with the force-cancel and re-run commands that clear them. Until now only
   the Mac app could see these, by calling `gh` from the laptop.
+- **Waiting on checks, in the daemon.**
+  `GET /api/v1/repos/{owner}/{repo}/checks?pr=N&wait=300` answers green, red,
+  pending or pointless for a PR's head commit, holding the request open until
+  the checks finish. It applies the same rules as `cockpit wait`: cancelled is
+  red, an older commit never answers for the PR, a failed run is checked
+  again before red is believed, an orphaned job makes waiting pointless, and
+  GitHub is asked directly when the fleet view is stale.
 
 ## [v0.3.0] — 2026-10-13
 
