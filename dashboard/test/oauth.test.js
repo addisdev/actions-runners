@@ -346,4 +346,14 @@ describe('the grant store', () => {
     revokeDevice(tokensFile, g.key);
     assert.equal(refreshGrant(tokensFile, g.refreshToken, { clientId: 'x', ttlMs: 1000, refreshTtlMs: 1000 }), null);
   });
+
+  test('a grant past its last expiry is dropped at the next write', async () => {
+    const once = addToken(tokensFile, { name: 'no refresh', kind: 'oauth', scopes: ['read'], ttlMs: 1 });
+    const refreshable = addToken(tokensFile, { name: 'refresh', kind: 'oauth', scopes: ['read'], ttlMs: 1, refreshTtlMs: 1, clientId: 'x' });
+    await new Promise((r) => setTimeout(r, 5));
+    addToken(tokensFile, { name: 'later' });
+    const keys = Object.keys(JSON.parse(readFileSync(tokensFile, 'utf8')));
+    assert.ok(!keys.includes(once.key));
+    assert.ok(!keys.includes(refreshable.key));
+  });
 });

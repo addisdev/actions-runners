@@ -180,7 +180,8 @@ export function exchangeCode(path, code, name, ip) {
 // Expired OAuth grants, dropped whenever the store is written anyway.
 function prune(store, now) {
   for (const [key, entry] of Object.entries(store)) {
-    if (entry.refreshExpiresAt && entry.refreshExpiresAt < now) delete store[key];
+    const end = entry.refreshHash ? entry.refreshExpiresAt : entry.expiresAt;
+    if (end && end < now) delete store[key];
   }
 }
 
@@ -308,7 +309,7 @@ export function listDevices(path) {
     scopes: entry.scopes ?? null,
     createdAt: entry.createdAt,
     lastSeenAt: entry.lastSeenAt,
-    ...(entry.refreshExpiresAt ? { expiresAt: entry.refreshExpiresAt } : {}),
+    ...(entry.refreshExpiresAt ?? entry.expiresAt ? { expiresAt: entry.refreshExpiresAt ?? entry.expiresAt } : {}),
   }));
 }
 
