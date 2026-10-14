@@ -557,10 +557,13 @@ autofix bridge is removed.
 
 ## [v0.2.0] — 2026-09-22
 
-The documentation release, plus a dismiss button — writing the alerts page down
-made it obvious that the fleet had no way to say "yes, I know" about a condition
-that is real, understood and not going to change. Otherwise: one corrected name
-and two corrected doc claims.
+The documentation release, and the control plane grown up. A handbook site with
+concepts, design notes, a scripts reference and screenshots; optional
+two-replica HA on managed PostgreSQL; host-first fleet controls; per-role
+capacity planning and burst-aware autoscaling; and a dismiss button, because
+writing the alerts page down made it obvious that the fleet had no way to say
+"yes, I know" about a condition that is real, understood and not going to
+change.
 
 ### Added
 
