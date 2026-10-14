@@ -274,8 +274,8 @@ New here? The
 [good first issues](https://github.com/addisdev/actions-runners/labels/good%20first%20issue)
 are scoped to one file with the verify command written down, and
 [Discussions](https://github.com/addisdev/actions-runners/discussions) is the
-place for fleet designs and questions. What is planned next is in the
-[roadmap](https://github.com/addisdev/actions-runners/issues?q=is%3Aissue+is%3Aopen+label%3Aroadmap).
+place for fleet designs and questions. What comes next is discussed in
+[What's next after v0.3](https://github.com/addisdev/actions-runners/discussions/86).
 
 ## License
 
