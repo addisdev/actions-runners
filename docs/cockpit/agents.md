@@ -7,7 +7,7 @@ the disk floor holding jobs, Spotlight starving the machine, a billing block —
 and the change made things worse.
 
 The cockpit gives a session three ways to ask the fleet first: the
-[command line](cli.md), an MCP server, and a Claude Code skill that says when to
+[command line](cli.md), an MCP server, and an agent skill that says when to
 use them. All three are read-only unless a person gives them a token that may act.
 
 ## The MCP server
@@ -75,38 +75,42 @@ permission rules see the exact command.
 
 ## The skill
 
-`cockpit/skills/fleet-cockpit/SKILL.md` is a Claude Code skill that teaches a
-session when to reach for the tools: whenever CI is queued, slow, stuck, red for
-no obvious reason, or it is about to wait on a PR's checks — before blaming a
-workflow, a test or the code.
+`cockpit/skills/fleet-cockpit/SKILL.md` is an agent skill that teaches a
+session when to reach for the fleet: whenever CI is queued, slow, stuck, red
+for no obvious reason, or it is about to wait on a PR's checks, before blaming
+a workflow, a test or the code. It covers all three ways in (the MCP tools,
+`fleet` and `cockpit`), so it works on a machine without the Mac app.
+
+Install it for Claude Code, Cursor, or both. A symlink keeps it current with
+`git pull`:
 
 ```bash
-mkdir -p ~/.claude/skills && cp -R cockpit/skills/fleet-cockpit ~/.claude/skills/
+mkdir -p ~/.claude/skills ~/.cursor/skills
+ln -sfn "$PWD/cockpit/skills/fleet-cockpit" ~/.claude/skills/fleet-cockpit
+ln -sfn "$PWD/cockpit/skills/fleet-cockpit" ~/.cursor/skills/fleet-cockpit
 ```
 
-It carries the verdict table with what a session should **do** on each rung:
+It covers:
 
-| Verdict | Do |
-|---|---|
-| `host-down`, `blind` | Stop and tell the person: only someone at the host can wake it |
-| `disk-floor` | Tell the person; the cleanup is theirs to approve |
-| `dead-service` | `cockpit run fleet.healthRepair --yes`, only if the person allowed repairs |
-| `saturated` | Do not re-run or "fix" the test; wait or tell the person |
-| `account-blocked` | Not the code; tell the person |
-| `config-drift` | Fix `runs-on:` or ask for a runner |
-| `waiting` | Wait, with `cockpit wait` |
-| `clear` | The failure is likely real |
+- **What to ask, in order:** the fleet verdict, then the repository's
+  diagnosis, then a wait on the PR's checks.
+- **What each verdict means** and what a session should do about it, for
+  every rung of the ladder.
+- **What never to do:** watch checks with `gh pr checks --watch`; change code
+  for a failure marked not your code or an orphan whose work passed; cancel
+  other sessions' runs; confirm an action nobody asked for.
 
-and the rule that a failure marked **not your code** (`runner-lost`,
-`account-blocked`, `account-quota`, `no-runner`) is never fixed by changing
-code.
+The verdict table and the rules are generated from `dashboard/lib/guide.js`
+by `dashboard/scripts/make-skill.mjs`, and CI fails if the skill is out of
+date. The MCP server sends the same text as its `instructions`, so a chat tool
+connected over MCP hears the same rules without installing anything.
 
 To make it a standing instruction rather than something a session discovers,
-add a line to your global `CLAUDE.md`:
+add a line to your global `CLAUDE.md` or a Cursor user rule:
 
 ```markdown
-- Before diagnosing self-hosted CI, run `cockpit why <repo>`; use `cockpit wait <repo> --pr <n>`
-  instead of `gh pr checks --watch` (see the fleet-cockpit skill).
+- Before diagnosing self-hosted CI, run `cockpit why <repo>` (or `fleet why <repo>`); use
+  `cockpit wait <repo> --pr <n>` instead of `gh pr checks --watch` (see the fleet-cockpit skill).
 ```
 
 ## The snapshot file, for your own tools

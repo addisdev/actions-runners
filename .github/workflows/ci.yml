@@ -61,6 +61,12 @@ jobs:
         working-directory: dashboard
         run: node scripts/make-glance-fixtures.mjs --check
 
+      # The skill's verdict table and rules are generated from lib/guide.js,
+      # the same text the MCP server sends as its instructions.
+      - name: Agent skill is current
+        working-directory: dashboard
+        run: node scripts/make-skill.mjs --check
+
   # ---------------------------------------------------------------------------
   # JavaScript syntax check (all tracked .js files, no npm install needed)
   # ---------------------------------------------------------------------------

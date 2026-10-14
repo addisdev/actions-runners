@@ -42,6 +42,52 @@ export const LADDER = [
   { id: 'clear', tone: 'ok', title: 'All clear' },
 ];
 
+// What a coding agent should make of each rung. lib/guide.js renders this into
+// the agent skill and the MCP server's instructions; host-down also covers the
+// cockpit's own `blind`.
+export const AGENT_GUIDE = {
+  unknown: {
+    meaning: 'the dashboard has not read GitHub yet, or cannot',
+    do: 'wait a minute and ask again; if it persists, tell the user — nothing it shows is current',
+  },
+  'host-down': {
+    meaning: 'the host is asleep, rebooted with nobody logged in, or offline (`blind`: this machine is offline)',
+    do: 'stop and tell the user; only a person can wake the host',
+  },
+  'disk-floor': {
+    meaning: 'jobs held at "Set up runner" because free disk is under the floor; it looks like load',
+    do: 'tell the user; cleanup is theirs to approve',
+  },
+  'dead-service': {
+    meaning: 'a runner service died and launchd will not revive it',
+    do: 'tell the user; run the `fleet.healthRepair` action only if they ask',
+  },
+  'shm-low': {
+    meaning: 'the host\'s shared memory table is (nearly) full; Postgres suites fail with `could not create shared memory segment: No space left on device`',
+    do: 'not the code: do not "fix" the test; tell the user and re-run once there is room',
+  },
+  saturated: {
+    meaning: 'jobs lost contact mid-step: host starvation, not code',
+    do: 'do not re-run or "fix" the test; wait, or tell the user',
+  },
+  'account-blocked': {
+    meaning: 'GitHub refused jobs (billing) or a storage quota is full',
+    do: 'not the code; tell the user',
+  },
+  'config-drift': {
+    meaning: 'a workflow\'s labels match no runner, or a repo has none',
+    do: 'fix `runs-on:` or ask the user for a runner',
+  },
+  waiting: {
+    meaning: 'queued behind a busy runner; a queue is not a stall',
+    do: 'wait on the checks',
+  },
+  clear: {
+    meaning: 'nothing wrong with the fleet',
+    do: 'the failure is probably real; read its log',
+  },
+};
+
 export const RUNNER_STATES = [
   'host-down', 'unknown', 'dead', 'misconfigured', 'draining', 'offline', 'settling',
   'held-disk', 'held-slot', 'overdue', 'busy', 'lost', 'idle',

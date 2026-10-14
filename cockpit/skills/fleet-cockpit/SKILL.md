@@ -1,70 +1,95 @@
 ---
 name: fleet-cockpit
-description: Diagnose self-hosted GitHub Actions CI with the `cockpit` CLI instead of re-deriving the runner diagnostic ladder. Use whenever CI is queued, slow, stuck, red for no obvious reason, or you are about to wait on a PR's checks — before blaming a workflow, a test or the code.
+description: Diagnose self-hosted GitHub Actions CI by asking the runner fleet's dashboard — through its MCP tools, the `fleet` command or the `cockpit` command — instead of re-deriving the runner diagnostic ladder. Use whenever CI is queued, slow, stuck, red for no obvious reason, or you are about to wait on a PR's checks, before blaming a workflow, a test or the code.
 ---
 
-# Fleet Cockpit
+# Runner fleet
 
-`cockpit` reads the fleet dashboard's verdict (one ordered ladder over drift, queue
-causes, failure classes, admission holds and alerts) and answers from it. It reads the
-menu bar app's snapshot when fresh and otherwise opens its own SSH tunnel.
+The fleet dashboard reads every runner, queue, failure and admission hold and
+orders them into one verdict. Ask it instead of rebuilding that from `gh`.
+Every way in asks the same API (`/api/v1`), so the answers match; use whichever
+this session has.
 
-## Before diagnosing CI
+<!-- generated:surfaces -->
+| Way in | Fleet verdict | One repository | Wait on a PR | Run an action |
+|---|---|---|---|---|
+| MCP tools | `fleet_status` | `diagnose_repo` | `wait_for_checks` | `run_action` |
+| `fleet` (Node) | `fleet status` | `fleet why owner/repo` | `fleet wait owner/repo --pr N` | `fleet run <action>` |
+| `cockpit` (macOS) | `cockpit status` | `cockpit why owner/repo` | `cockpit wait owner/repo --pr N` | `cockpit run <action>` |
+<!-- /generated:surfaces -->
 
-```bash
-cockpit why <repo>          # runners, queue with cause + ETA, failures, alerts for one repo
-cockpit status              # the whole-fleet verdict
-```
+`fleet` talks to `FLEET_URL` (default `http://localhost:7878`) and sends
+`FLEET_TOKEN` for actions. `cockpit` finds the dashboard itself, from the menu
+bar app's snapshot or its own SSH tunnel. `fleet` prints JSON; `cockpit` takes
+`--json`.
 
-Read the verdict before anything else. It is ordered so the first rung makes the others
-meaningless:
+## Order
 
+<!-- generated:order -->
+1. `fleet status` or `cockpit status`: the whole-fleet verdict. Read it before anything else.
+2. `fleet why owner/repo` or `cockpit why owner/repo`: one repository's runners, queue with cause and ETA, recent failures, orphaned jobs and checks.
+3. `fleet wait owner/repo --pr N` or `cockpit wait owner/repo --pr N`: wait on a PR's checks until green, red, or pointless.
+<!-- /generated:order -->
+
+## Verdicts
+
+The ladder is ordered so that the first rung makes the ones below it meaningless.
+
+<!-- generated:verdicts -->
 | Verdict | Meaning | Do |
 |---|---|---|
-| `host-down` / `blind` | host asleep, rebooted with nobody logged in, or this Mac offline | stop; tell the user — only a person can wake the host |
-| `disk-floor` | jobs held at "Set up runner" because disk is under the floor; looks like load | tell the user; cleanup is theirs to approve |
-| `dead-service` | a runner service died; launchd will not revive it | `cockpit run fleet.healthRepair --yes` only if the user allowed repairs |
-| `shm-low` | the host's System V shared memory table is (nearly) full; Postgres suites fail with `could not create shared memory segment: No space left on device` | not the code; do not "fix" the test; tell the user, and re-run once the table has room |
-| `saturated` | jobs lost contact mid-step: host starvation, not code | do not re-run or "fix" the test; wait or tell the user |
+| `unknown` | the dashboard has not read GitHub yet, or cannot | wait a minute and ask again; if it persists, tell the user — nothing it shows is current |
+| `host-down` | the host is asleep, rebooted with nobody logged in, or offline (`blind`: this machine is offline) | stop and tell the user; only a person can wake the host |
+| `disk-floor` | jobs held at "Set up runner" because free disk is under the floor; it looks like load | tell the user; cleanup is theirs to approve |
+| `dead-service` | a runner service died and launchd will not revive it | tell the user; run the `fleet.healthRepair` action only if they ask |
+| `shm-low` | the host's shared memory table is (nearly) full; Postgres suites fail with `could not create shared memory segment: No space left on device` | not the code: do not "fix" the test; tell the user and re-run once there is room |
+| `saturated` | jobs lost contact mid-step: host starvation, not code | do not re-run or "fix" the test; wait, or tell the user |
 | `account-blocked` | GitHub refused jobs (billing) or a storage quota is full | not the code; tell the user |
-| `config-drift` | labels match no runner / repo unserved | fix `runs-on:` or ask for a runner |
-| `waiting` | queued behind a busy runner; a queue is not a stall | wait (below) |
-| `clear` | nothing wrong | the failure is likely real |
-
-A failed run marked **not your code** (`runner-lost`, `account-blocked`, `account-quota`,
-`no-runner`) was the host's or the account's doing. Do not change code to fix it.
+| `config-drift` | a workflow's labels match no runner, or a repo has none | fix `runs-on:` or ask the user for a runner |
+| `waiting` | queued behind a busy runner; a queue is not a stall | wait on the checks |
+| `clear` | nothing wrong with the fleet | the failure is probably real; read its log |
+<!-- /generated:verdicts -->
 
 ## Waiting on checks
 
-```bash
-cockpit wait <repo> --pr <n> [--timeout 45m]
-```
+A wait ends in one of four states. The command lines exit with the code in
+brackets:
 
-Exit codes: `0` green, `1` red (failed checks listed), `2` waiting is pointless (host
-down, disk floor, billing block, a check queued with a cause that never clears, or a job
-orphaned by a draining runner) — stop and report the reason, `3` timed out or nothing readable. Prefer this to
-`gh pr checks --watch`, which waits forever on a check that will never start. `--pr`
-judges the PR's head commit only, so a red from a commit you pushed over (or force-pushed
-off) does not end the wait.
-With `--pr` it also asks GitHub directly when cockpit's view is stale (a stalled
-collector), so it returns when GitHub's checks finish; a result marked `(from GitHub; …)`
-means cockpit's own view had frozen — mention it, it is a daemon problem, not your PR's.
-"Collector stalled" from `status`/`why` means the same: the rows on screen are old.
+- **green** (0).
+- **red** (1), with the failed checks listed. Only the PR's head commit
+  counts, so a red from a commit you pushed over does not end the wait.
+  Cancelled is red.
+- **pointless** (2): waiting cannot end well. The host is down, the disk floor
+  is holding jobs, GitHub is refusing jobs, a check is queued for a reason that
+  never clears, or a job was orphaned. Stop and report the reason.
+- **pending** (3): time ran out. Over MCP, `wait_for_checks` holds the call up
+  to `wait` seconds and then says `pending`; call it again.
 
-**Orphaned by a draining runner — not your code**: the job passed every step, then its
-runner stopped before reporting, so GitHub keeps it in progress forever (`gh run cancel`
-does nothing). The output gives the `force-cancel` and `gh run rerun` commands. For the
-PR you are waiting on, `cockpit wait <repo> --pr <n> --recover` runs both itself (logged).
-Never force-cancel other runs or cancel fleet-wide: that kills other sessions' runs.
+**Orphaned by a draining runner, not your code.** The job passed every step,
+then its runner stopped before reporting, so GitHub keeps it in progress
+forever and `gh run cancel` does nothing. Each orphan lists its recovery: a
+force-cancel, then a re-run. For the PR you are waiting on,
+`cockpit wait owner/repo --pr N --recover` or the `run.recoverOrphan` action
+runs both.
 
-## When the dashboard itself does not answer
-
-```bash
-cockpit sentinel            # SSH reachability, GitHub's view of the host's runners, another machine
-```
+`cockpit wait --pr` also asks GitHub directly when the dashboard is unreachable
+or stale. A result marked `(from GitHub; …)` means the dashboard's view had
+frozen; mention it.
 
 ## Rules
 
-- Never run an action that changes the fleet (`--yes`) unless the user asked for it.
+<!-- generated:rules -->
+- Never watch checks with `gh pr checks --watch` or a `gh run view` loop: it waits forever on a check that will never start. Use `fleet wait owner/repo --pr N`, which says when waiting is pointless and why.
+- Never change code or tests for a failure marked not your code (`notYourCode`: `runner-lost`, `account-blocked`, `account-quota`, `no-runner`) or for an orphaned job whose work passed (`workPassed`). The host or the account caused it.
+- Never cancel or force-cancel runs other than the PR you are waiting on, and never cancel fleet-wide: those runs are other sessions' work. Recover only your own PR's orphan.
+- Actions (`fleet run <action>` or `cockpit run <action>`) preview first. Show the user the preview, and confirm (`--yes`) only an action they asked for. If the token lacks the scope (`insufficient_scope`), report it; do not look for another token.
+- A stale view (`freshness.stale`, "Collector stalled") is the dashboard's problem, not the PR's: say so.
+<!-- /generated:rules -->
+
+## When the dashboard does not answer
+
+- `cockpit sentinel` checks SSH reachability, GitHub's view of the host's
+  runners, and another machine.
+- `fleet` reports `unreachable`: check `FLEET_URL`, or forward the port with
+  `ssh -L 7878:localhost:7878 <runner-host>`.
 - `cockpit brief` prints a markdown incident brief to paste into a report.
-- Everything supports `--json`.
