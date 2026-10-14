@@ -96,6 +96,9 @@
 !dashboard/lib/*.js
 !dashboard/scripts/
 !dashboard/scripts/*.mjs
+# The `fleet` command line (package.json bin).
+!dashboard/bin/
+!dashboard/bin/*.mjs
 !dashboard/public/*.js
 !dashboard/public/*.css
 !dashboard/public/*.html
