@@ -9,14 +9,12 @@
 
 import { readFileSync } from 'node:fs';
 import { ROUTES, API_PREFIX, ApiError, handleApi } from './api.js';
+import { instructions } from './guide.js';
 
 export const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'];
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
-export const INSTRUCTIONS = `Tools for a self-hosted GitHub Actions runner fleet.
-Order: fleet_status first; diagnose_repo for one repository; wait_for_checks to wait on a PR instead of polling gh.
-A failure marked notYourCode, or an orphan with workPassed, is the fleet's fault: never change code for it.
-run_action previews first and returns a confirm token; show the preview and confirm only what the person asked for.`;
+export const INSTRUCTIONS = instructions();
 
 function propertyOf(spec) {
   return {

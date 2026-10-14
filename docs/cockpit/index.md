@@ -20,8 +20,8 @@ report — that host's own absence.
 | **Widgets** | Small, medium and large desktop widgets | `cockpit/App/FleetCockpitWidgets/` |
 | **Shortcuts and Focus** | *Fleet Status*, *Why Is a Repo Queued*, *Repair Fleet*, and a Focus filter | `cockpit/App/FleetCockpit/Intents.swift` |
 | **`cockpit` CLI** | The verdict, a repo's story, the queue, a blocking wait on checks | `cockpit/Sources/cockpit/` |
-| **MCP server** | `cockpit mcp`: four read-only tools for agent sessions | `cockpit/Sources/cockpit/MCP.swift` |
-| **Claude Code skill** | Teaches an agent session to ask the fleet before blaming the code | `cockpit/skills/fleet-cockpit/` |
+| **MCP server** | `cockpit mcp`: the dashboard's MCP tools over stdio, read-only unless given an API token | `cockpit/Sources/cockpit/MCP.swift` |
+| **Agent skill** | Teaches a Claude Code or Cursor session to ask the fleet before blaming the code | `cockpit/skills/fleet-cockpit/` |
 | **Host sentinel** | A one-minute probe on *another* machine that notices the host going away | `scripts/host-sentinel.sh` |
 | **CockpitCore** | Everything testable: models, transport, stream, presenter, sentinel table | `cockpit/Sources/CockpitCore/` |
 

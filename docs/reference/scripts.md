@@ -1206,6 +1206,19 @@ Source: [`dashboard/scripts/make-glance-fixtures.mjs`](https://github.com/addisd
 node dashboard/scripts/make-glance-fixtures.mjs
 ```
 
+### `dashboard/scripts/make-skill.mjs`
+
+Fills the generated blocks of `cockpit/skills/fleet-cockpit/SKILL.md` (the
+table of ways in, the order to ask in, the verdict table and the rules) from
+`dashboard/lib/guide.js`. The MCP server's `instructions` come from the same
+functions. The prose between the blocks is edited by hand. `--check` exits
+non-zero when the skill is out of date; CI runs it.
+Source: [`dashboard/scripts/make-skill.mjs`](https://github.com/addisdev/actions-runners/blob/main/dashboard/scripts/make-skill.mjs).
+
+```bash
+node dashboard/scripts/make-skill.mjs
+```
+
 ### `scripts/host-sentinel.sh`
 
 Runs on a machine other than the runner host and posts to ntfy when the host

@@ -137,9 +137,11 @@ The ladder is the product. Change it in this order:
    normal: pressure "warning", a stale hold reason, a public repo's queue.
 3. **Regenerate the fixtures.**
 4. **Check every surface reads the new rung**: the Swift `Ladder` (its title
-   and blurb), the presenter's mark and cause labels, the skill's table in
-   `cockpit/skills/fleet-cockpit/SKILL.md`, and the tables in
+   and blurb), the presenter's mark and cause labels, and the tables in
    [Verdict reference](verdict.md) and [`api.md`](../api.md#get-apiglance).
+   Give the rung an entry in `AGENT_GUIDE` in `verdict.js` (a test fails
+   until you do), then run `node dashboard/scripts/make-skill.mjs`: the skill's
+   table and the MCP instructions are generated from it.
 5. **Deploy the daemon** to the runner host. Restart it only when no job is
    running: a restart under load drops the stream every client is reading.
 

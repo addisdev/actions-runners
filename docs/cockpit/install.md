@@ -153,7 +153,9 @@ The CLI pairs separately, with its own token: `cockpit pair`. See
 
 ```bash
 claude mcp add --scope user fleet-cockpit -- ~/.local/bin/cockpit mcp
-mkdir -p ~/.claude/skills && cp -R cockpit/skills/fleet-cockpit ~/.claude/skills/
+mkdir -p ~/.claude/skills ~/.cursor/skills
+ln -sfn "$PWD/cockpit/skills/fleet-cockpit" ~/.claude/skills/fleet-cockpit
+ln -sfn "$PWD/cockpit/skills/fleet-cockpit" ~/.cursor/skills/fleet-cockpit
 ```
 
 What these give a session is on [Agent sessions](agents.md).
@@ -182,7 +184,7 @@ defaults delete io.github.addisdev.fleetcockpit
 rm -rf ~/Library/Application\ Support/FleetCockpit
 security delete-generic-password -s io.github.addisdev.fleetcockpit 2>/dev/null
 rm -f ~/.local/bin/cockpit && rm -rf ~/.local/lib/fleet-cockpit
-claude mcp remove fleet-cockpit -s user; rm -rf ~/.claude/skills/fleet-cockpit
+claude mcp remove fleet-cockpit -s user; rm -rf ~/.claude/skills/fleet-cockpit ~/.cursor/skills/fleet-cockpit
 ```
 
 Then revoke the app's and the CLI's device tokens on the host with

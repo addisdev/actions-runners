@@ -38,6 +38,13 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
   Connectors are listed by `fleetctl.sh devices` and revoked like a device.
   The dashboard itself is still never public. See
   [Chat tools](docs/remote-access.md#chat-tools-claudeai-chatgpt).
+- **One agent guide for the skill and the MCP server.** The fleet-cockpit
+  skill now covers all three ways in (MCP tools, `fleet`, `cockpit`): the
+  order to ask in, what each verdict means for an agent, and what never to
+  do. Its tables are generated from `dashboard/lib/guide.js` and the new
+  `AGENT_GUIDE` in `verdict.js` by `dashboard/scripts/make-skill.mjs`,
+  checked in CI, and the MCP server's `instructions` are the same text. The
+  docs install it for Cursor (`~/.cursor/skills`) as well as Claude Code.
 - **`cockpit why`, `wait`, `run` and `mcp` ask `/api/v1`.** The daemon
   now diagnoses the repo, decides when checks are done and finds orphaned
   jobs, so the command line prints its answer instead of rebuilding it from a
