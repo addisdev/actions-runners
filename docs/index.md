@@ -9,6 +9,11 @@ local history in SQLite, and serves a single page: Fleet, Runs, Analytics, Lint,
 Alerts, Capacity, Hosts and Control. Optional two-replica HA adds managed
 PostgreSQL through one locked driver dependency.
 
+It starts on one Mac and grows to more: a second host joins in one command,
+[standby tiers](design/tiers.md) keep it idle until the first is full, and a
+switch takes any host out of rotation. [Fleet Cockpit](cockpit/index.md) puts
+one verdict for the whole fleet in the menu bar.
+
 ![One macOS host running the runner LaunchAgents, the job hooks and local probes alongside the fleetd daemon, whose collector and server share one in-memory snapshot backed by SQLite; GitHub above it, and below it a browser dashboard reading over SSE and a second Mac's agent reporting inbound over a heartbeat](img/architecture.png)
 
 ## Start here
@@ -42,6 +47,20 @@ PostgreSQL through one locked driver dependency.
 
     Health checks, draining a runner for maintenance, disk cleanup, and the
     incident checklist.
+
+-   __[More than one Mac](federation.md#adding-a-second-runner-host)__
+
+    ---
+
+    Join a second host with `scripts/join-host.sh`, run CI on a primary host
+    first with standby tiers, and switch a host off for maintenance.
+
+-   __[Fleet Cockpit](cockpit/index.md)__
+
+    ---
+
+    The menu bar app, the `cockpit` command line and an MCP server: why a job
+    is queued, and when a PR's checks are really done.
 
 -   __[Design notes](design/index.md)__
 
@@ -101,8 +120,8 @@ routes to the network; every action still needs the bearer token, and
 
 ## What runs where
 
-**macOS 14 or later on Apple Silicon.** One Mac, no Kubernetes, no cloud
-control plane. The runner binary is `osx-arm64` only and the scripts assume
+**macOS 14 or later on Apple Silicon.** One Mac or a few, no Kubernetes, no
+cloud control plane. The runner binary is `osx-arm64` only and the scripts assume
 Homebrew at `/opt/homebrew`; there is no Intel support and no plan to add it.
 If you want cloud autoscaling, use
 [actions-runner-controller](https://github.com/actions/actions-runner-controller)
@@ -111,3 +130,6 @@ instead.
 A second Mac joins by running [`agent.js`](federation.md), which reports
 outbound on a heartbeat. No inbound port is opened on it, and it computes its
 own headroom, because it is the only machine that knows its own load.
+`scripts/join-host.sh` sets that up from a clone: preflight, the agent, a
+mirrored runner for each label set, and the health timer, as a dry run until
+`--apply`.

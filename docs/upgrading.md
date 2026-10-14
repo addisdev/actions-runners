@@ -40,6 +40,32 @@ scripts/install-hooks.sh --apply --restart
 cd .. && ./health.sh
 ```
 
+## Upgrading from v0.1 or v0.2 to v0.3
+
+The procedure above covers the code and the schema. A host that ran an earlier
+version also needs these, once:
+
+1. **Reinstall the hooks** (step 5 above). The job hooks now remove System V
+   shared memory that killed Postgres clusters leave behind
+   (`hooks/shm-reap.sh`); a host on the old hooks keeps leaking segments.
+2. **Give every runner the same job PATH.** Runners registered before v0.3 took
+   their PATH from whatever shell registered them:
+   ```bash
+   scripts/runner-path.sh            # which runners differ
+   scripts/runner-path.sh --apply    # rewrite the idle ones and restart them
+   ```
+3. **Check the CLI tools jobs call.** `./preflight.sh` now checks the tools in
+   `scripts/cli-tools.txt` (shellcheck, jq, make, and deno or ruby when a
+   workflow uses them) on the runners' PATH.
+4. **Remove the autofix bridge** if this host ran it. It was removed in v0.3:
+   unload and delete `~/Library/LaunchAgents/<prefix>.fleet-autofix.plist`, and
+   delete `~/.cursor/sdk/auth.json` or `dashboard/.cursor-api-key`.
+5. **New runners use runner 2.337.0.** `register.sh` pins it; existing runners
+   update themselves through GitHub.
+6. **Nothing new turns itself on.** Standby tiers default to
+   `FLEET_TIERS_MODE=off`. To try them, start with `observe`; see
+   [Standby tiers](design/tiers.md).
+
 ## Verifying migration success
 
 ```bash

@@ -61,6 +61,11 @@ state. Shown on the Fleet tab. Categories: `launchd-missing`, `launchd-dead`,
 A runner that registers for a single job, runs it in a fresh directory, and
 then self-destructs. Created by `scripts/ephemeral-runner.sh`.
 
+**Drain owner**  
+Who drained a runner: the `by=` line in its `.drain` marker (`tiers`, `host`,
+or none for an operator). A resume with `--by=<owner>` clears only that
+owner's drains, so a controller never resumes a drain an operator made.
+
 **Fast loop**  
 The collection cycle that runs every 15 s while anything is building, and every
 45 s when the fleet is at rest. Fetches runs and runners from the GitHub API,
@@ -77,6 +82,13 @@ install, start, stop, restart, status, logs, token.
 **fleetd**  
 The dashboard daemon process (`dashboard/fleetd.js`).
 
+**Host switch**  
+The on/off switch beside a host's name in the Fleet and Hosts tabs, or
+`scripts/host-drain.sh --off/--on`. Off drains every runner on the host with
+owner `host`; on resumes exactly those. Different from **Pause new runners**,
+which keeps existing runners taking jobs and only stops new ones being placed.
+See [Taking a host out of rotation](federation.md#taking-a-host-out-of-rotation).
+
 **LaunchAgent**  
 A macOS launchd job loaded in the user's session. Each runner is managed by one
 LaunchAgent plist in `~/Library/LaunchAgents/`.
@@ -85,6 +97,12 @@ LaunchAgent plist in `~/Library/LaunchAgents/`.
 The `FLEET_MAX_TOTAL_RUNNERS` / `maxTotalRunners` setting: hard cap on the
 total number of runners a host may hold. Different from `ceiling` — this is the
 hard limit, not the "not right now" gate.
+
+**Orphaned job**  
+A job whose work steps all passed but whose runner was drained or stopped
+before the result reached GitHub, so it stays `in_progress` until the run is
+force-cancelled. The cockpit names it as "orphaned by a draining runner — not
+your code".
 
 **Persistent runner**  
 A runner that keeps its working directory (`_work/`) across jobs, retaining
@@ -106,6 +124,11 @@ When a repo has more than one runner, they are distinguished by instance number
 (`RUNNER_INSTANCE=2`, etc.). The first runner is always instance 1. The
 autoscaler adds instance 2, 3, etc.
 
+**Shared memory (shm)**  
+The System V shared memory table Postgres uses. macOS's is small, and a killed
+cluster's segments stay in it until removed. The job hooks remove orphaned
+segments, and the `shm-low` verdict opens when few are free.
+
 **Slow loop**  
 The collection cycle that runs every 15 minutes. Updates the repo roster and
 directory sizes.
@@ -113,3 +136,15 @@ directory sizes.
 **SSE (Server-Sent Events)**  
 The live update mechanism: the browser subscribes to `/api/stream` and receives
 a full snapshot payload on every fast-loop tick.
+
+**Standby tiers**  
+Primary host first, standby host only when needed. The controller
+(`lib/tiers.js`) keeps a standby host's runners drained until the primary is
+at its admission cap, has stuck work, or is unfit, and drains them again after
+ten quiet minutes. See [Standby tiers](design/tiers.md).
+
+**Verdict**  
+One answer for the whole fleet, from an ordered ladder: cannot read GitHub,
+host down, disk floor, dead service, shm low, saturated, account blocked,
+config drift, waiting, clear. Each comes with its evidence and one next move.
+See the [verdict reference](cockpit/verdict.md).

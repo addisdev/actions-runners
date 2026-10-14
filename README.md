@@ -11,7 +11,8 @@ Register, supervise and observe a fleet of self-hosted GitHub Actions runners
 across one or more Apple Silicon Macs — one runner per repo, each its own
 directory and its own LaunchAgent. One Node daemon per coordinator has no build
 step, keeps local history in SQLite, and serves a single page; optional
-two-replica HA adds managed PostgreSQL and its locked `pg` driver.
+two-replica HA adds managed PostgreSQL and its locked `pg` driver. A second
+Mac joins in one command, and a menu bar app gives the whole fleet one verdict.
 
 The dashboard exists because GitHub has no cross-repo Actions view, and half of
 the question — *is that runner even alive* — is not answerable from GitHub at
@@ -23,8 +24,8 @@ all.
 |---|---|
 | **Problem** | GitHub shows workflow runs; macOS shows processes. Neither can tell you when the two disagree, why a job is queued, or whether the host can safely take more work. |
 | **System** | One dependency-free Node daemon reconciles GitHub, launchd and the host, stores the history in SQLite, and streams one dashboard over SSE. |
-| **Operating shape** | One Apple Silicon Mac, one isolated runner per private repository, supervised by launchd. |
-| **Evidence** | Built from a live 27-runner fleet and 7,631 observed jobs, including failures reproduced against the real host rather than fixtures alone. |
+| **Operating shape** | One Apple Silicon Mac or a few, one isolated runner per private repository, supervised by launchd. Extra Macs report outbound to one coordinator. |
+| **Evidence** | Built from a live fleet (27 runners and 7,631 observed jobs when first measured in September 2026; two hosts since), including failures reproduced against the real host rather than fixtures alone. |
 | **Safety boundary** | Private repositories with trusted contributors. Destructive operations are dry-run by default. |
 
 **What this demonstrates:** CI/CD infrastructure, observability, macOS systems
@@ -40,6 +41,28 @@ work, failure modeling, operational safety, and pragmatic system design.
 > fork's pull request can execute code on your Mac. This project is built for
 > **private repos with trusted contributors**. Read the
 > [security guide](docs/security-hardening.md) before you register anything.
+
+## What's new in v0.3
+
+- **More than one Mac.** `scripts/join-host.sh` joins a second host in one
+  command, mirroring the coordinator's runners one per label set.
+  [Standby tiers](https://addisdev.github.io/actions-runners/design/tiers/) run
+  CI on a primary host first and wake the standby only when the primary is
+  full, stuck or unfit.
+- **A host on/off switch.** Take a whole Mac out of CI from the dashboard or
+  `scripts/host-drain.sh --off`; busy runners finish their job first, and the
+  confirm names any repo no other host serves.
+- **Fleet Cockpit.** A macOS menu bar app, a `cockpit` CLI and an MCP server
+  with one verdict for the fleet, queue ETAs, and `cockpit wait` for a PR's
+  checks.
+- **Failures that are not your code, named.** A full shared memory table
+  (`shm-low`), a job orphaned by a draining runner, and the account's spending
+  limit each get a verdict, instead of reading as a red test.
+- **Fewer surprises on a new host.** Preflight checks the Xcode license, the
+  fleet's Xcode version and the plain CLI tools jobs call; every runner gets
+  the same job PATH.
+
+The full list is in the [changelog](CHANGELOG.md).
 
 ## Fifteen seconds
 
@@ -72,6 +95,27 @@ answering it checks the host out of band (SSH, GitHub's view of the runners, a
 runner on another machine) and still tells you which of those it is. A
 `cockpit` command line and an MCP server give agent sessions the same answers.
 See [Fleet Cockpit](docs/cockpit/index.md).
+
+## More than one Mac
+
+A second Mac runs a small agent that reports outbound on a heartbeat, so it
+opens no port. One command sets it up from a clone, as a dry run until you say
+otherwise:
+
+```bash
+cp examples/fleet.env.second-host fleet.env   # edit the marked lines
+scripts/join-host.sh                          # preflight, and what it would register
+scripts/join-host.sh --apply                  # the agent, mirrored runners, the health timer
+```
+
+GitHub gives a job to the first idle runner whose labels match, and has no
+way to say "prefer this host". [Standby tiers](docs/design/tiers.md) do it with
+the one lever there is, which runners are online: the standby host's runners
+stay drained until the primary has been at its admission cap for a minute, has
+a run queued for two, or is unfit, and drain again after ten quiet minutes.
+`scripts/host-drain.sh --off` takes a host out of rotation for maintenance and
+`--on` brings back exactly the runners it stopped. See
+[Federation](docs/federation.md).
 
 ## Documentation
 
@@ -225,6 +269,13 @@ Issues and pull requests are welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) has
 the layout, the test commands and the release gates;
 [`SUPPORT.md`](SUPPORT.md) says where to ask a question. Security reports go
 through [`SECURITY.md`](SECURITY.md), not the issue tracker.
+
+New here? The
+[good first issues](https://github.com/addisdev/actions-runners/labels/good%20first%20issue)
+are scoped to one file with the verify command written down, and
+[Discussions](https://github.com/addisdev/actions-runners/discussions) is the
+place for fleet designs and questions. What comes next is discussed in
+[What's next after v0.3](https://github.com/addisdev/actions-runners/discussions/86).
 
 ## License
 
