@@ -47,6 +47,7 @@ without `--repair` — have no `--apply` because there is nothing to guard.
 | `scripts/check-tools.sh` | Check the CLI tools in `scripts/cli-tools.txt` on the runners' PATH | read-only |
 | `dashboard/fleetctl.sh` | Install, run, inspect, back up and restore the dashboard daemon | n/a — subcommands |
 | `dashboard/agentctl.sh` | Install, run and inspect the fleet agent on an agent Mac | n/a — subcommands |
+| `dashboard/bin/fleet.mjs` | The `fleet` command line for `/api/v1`, built from the daemon's OpenAPI document | reads; actions preview first and need `--yes` |
 | `install.sh` | One-command setup for coordinator or agent role | n/a — runs preflight then fleetctl/agentctl |
 | `dashboard/watch/watchctl.sh` | Install, run and inspect the watchdog | n/a — subcommands |
 
@@ -1111,6 +1112,22 @@ Source: [`dashboard/host-token.mjs`](https://github.com/addisdev/actions-runners
 node dashboard/host-token.mjs <stable-host-id>
 ```
 
+### `dashboard/bin/fleet.mjs`
+
+The `fleet` command line: `/api/v1` from a shell, in one file with no
+dependencies. Its commands are read from the daemon's
+`/api/v1/openapi.json` on each run, one per route. `FLEET_URL` and
+`FLEET_TOKEN` say where and as whom. See
+[API Reference](../api.md#command-line-fleet).
+Source: [`dashboard/bin/fleet.mjs`](https://github.com/addisdev/actions-runners/blob/main/dashboard/bin/fleet.mjs).
+
+```bash
+fleet status
+fleet why acme/comet-web
+fleet wait acme/comet-web --pr 96 --timeout 30m
+fleet run runner.drain --name build-host-comet-web-2 --yes
+```
+
 ### `dashboard/scripts/migrate-sqlite-to-pg.mjs`
 
 One-shot migration that streams every SQLite table into PostgreSQL as a
@@ -1178,7 +1195,8 @@ node dashboard/scripts/mirror-plan.mjs --coordinator http://coordinator-mac:7878
 Writes one `/api/glance` payload per scenario in
 `dashboard/test/fixtures/scenarios.js` into
 `cockpit/Sources/CockpitCore/Fixtures/`, so the macOS cockpit is tested against
-exactly what the daemon produces for each recorded incident. `--check` exits
+exactly what the daemon produces for each recorded incident. It also writes
+`Fixtures/v1/`, a set of `/api/v1` answers made by the route handler. `--check` exits
 non-zero when any fixture is out of date; CI runs it.
 Source: [`dashboard/scripts/make-glance-fixtures.mjs`](https://github.com/addisdev/actions-runners/blob/main/dashboard/scripts/make-glance-fixtures.mjs).
 
