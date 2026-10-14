@@ -21,6 +21,10 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
   progress because their runner was drained or lost during "Complete job",
   with the force-cancel and re-run commands that clear them. Until now only
   the Mac app could see these, by calling `gh` from the laptop.
+- **MCP over HTTP at `/mcp`.** The daemon serves its v1 routes as MCP tools,
+  each named by its route id and answered by the route itself, so a tool and
+  its REST route can't disagree. Actions go through the same preview and
+  confirmation. Stateless Streamable HTTP; checked against the MCP Inspector.
 - **Scoped tokens and confirmed actions.** Tokens now carry scopes: `read`,
   `act` (checks, previews, drain and resume, re-run, cancel, orphan recovery)
   and `act:danger` (everything else). `./fleetctl.sh api-token <name>
