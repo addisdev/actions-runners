@@ -5,6 +5,9 @@
   "description": "Actions Runners fleet dashboard, with optional PostgreSQL HA support.",
   "type": "module",
   "main": "fleetd.js",
+  "bin": {
+    "fleet": "bin/fleet.mjs"
+  },
   "engines": {
     "node": ">=22.5.0"
   },

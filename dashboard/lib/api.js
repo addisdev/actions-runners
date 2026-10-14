@@ -15,6 +15,10 @@
 //   - An unknown query parameter is a 400 rather than ignored: `?repository=`
 //     silently returning the whole fleet is a wrong answer that looks right.
 //   - Every response carries `fleet-api-version`.
+//   - `cli` names the route's command in bin/fleet.mjs, which builds itself
+//     from the OpenAPI document; `positional` says which parameters it takes
+//     in order ('owner/repo' is the two path parameters as GitHub writes them),
+//     and `confirms` marks the route that answers a preview to be confirmed.
 
 import { grants, parseScopes } from './scopes.js';
 import { checkSets } from './checks.js';
@@ -70,6 +74,7 @@ function freshness(g) {
 export const ROUTES = [
   {
     id: 'fleet_status',
+    cli: { name: 'status' },
     method: 'GET',
     path: '/status',
     scope: 'read',
@@ -87,6 +92,7 @@ export const ROUTES = [
   },
   {
     id: 'diagnose_repo',
+    cli: { name: 'why', positional: ['owner/repo'] },
     method: 'GET',
     path: '/repos/{owner}/{repo}/diagnosis',
     scope: 'read',
@@ -133,6 +139,7 @@ export const ROUTES = [
   },
   {
     id: 'wait_for_checks',
+    cli: { name: 'checks', positional: ['owner/repo'] },
     method: 'GET',
     path: '/repos/{owner}/{repo}/checks',
     scope: 'read',
@@ -166,6 +173,7 @@ export const ROUTES = [
   },
   {
     id: 'list_queue',
+    cli: { name: 'queue' },
     method: 'GET',
     path: '/queue',
     scope: 'read',
@@ -178,6 +186,7 @@ export const ROUTES = [
   },
   {
     id: 'list_orphans',
+    cli: { name: 'orphans' },
     method: 'GET',
     path: '/orphans',
     scope: 'read',
@@ -192,6 +201,7 @@ export const ROUTES = [
   },
   {
     id: 'list_runners',
+    cli: { name: 'runners' },
     method: 'GET',
     path: '/runners',
     scope: 'read',
@@ -210,6 +220,7 @@ export const ROUTES = [
   },
   {
     id: 'list_hosts',
+    cli: { name: 'hosts' },
     method: 'GET',
     path: '/hosts',
     scope: 'read',
@@ -222,6 +233,7 @@ export const ROUTES = [
   },
   {
     id: 'list_actions',
+    cli: { name: 'actions' },
     method: 'GET',
     path: '/actions',
     scope: 'read',
@@ -235,6 +247,7 @@ export const ROUTES = [
   },
   {
     id: 'run_action',
+    cli: { name: 'run', positional: ['id'], confirms: true },
     method: 'POST',
     path: '/actions/{id}',
     scope: 'act',
@@ -283,6 +296,7 @@ export const ROUTES = [
   },
   {
     id: 'whoami',
+    cli: { name: 'me' },
     method: 'GET',
     path: '/me',
     scope: 'read',
@@ -300,6 +314,7 @@ export const ROUTES = [
   },
   {
     id: 'create_token',
+    cli: { name: 'token', positional: ['name'] },
     method: 'POST',
     path: '/tokens',
     scope: 'act:danger',
@@ -329,6 +344,7 @@ export const ROUTES = [
   },
   {
     id: 'openapi',
+    cli: { name: 'openapi' },
     method: 'GET',
     path: '/openapi.json',
     scope: 'read',
@@ -531,6 +547,7 @@ export function openApi() {
     paths[key] ??= {};
     paths[key][r.method.toLowerCase()] = {
       operationId: r.id,
+      'x-fleet-cli': r.cli,
       summary: r.summary,
       description: r.description,
       'x-fleet-scope': r.scope,
