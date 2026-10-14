@@ -5,8 +5,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { classifyJob, findOrphans, trimJob } from '../lib/orphans.js';
 
-// The same three jobs cockpit's OrphanedJobTests reads, case for case, so the
-// daemon and the Mac app cannot disagree about what an orphan is.
+// lake-api PR #73's three jobs as GitHub recorded them. The fixture lives with
+// the cockpit's because make-glance-fixtures.mjs builds the v1 orphan
+// fixtures the cockpit decodes from it.
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)),
   '../../cockpit/Sources/CockpitCore/Fixtures/orphaned-jobs.json');
 const JOBS = JSON.parse(readFileSync(FIXTURE, 'utf8'));

@@ -72,7 +72,7 @@ describe('responses', () => {
     assert.equal(out.status, 200);
     assert.equal(out.body.repo, repo);
     assert.equal(out.body.verdict.id, g.verdict.id);
-    for (const key of ['runners', 'queue', 'runs', 'recent', 'failures', 'incidents']) {
+    for (const key of ['runners', 'queue', 'runs', 'recent', 'failures', 'incidents', 'checks']) {
       assert.ok(Array.isArray(out.body[key]), key);
       assert.ok(out.body[key].every((x) => !x.repo || x.repo === repo), `${key} is only ${repo}`);
     }

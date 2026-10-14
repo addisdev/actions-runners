@@ -17,6 +17,7 @@
 //   - Every response carries `fleet-api-version`.
 
 import { grants, parseScopes } from './scopes.js';
+import { checkSets } from './checks.js';
 
 export const API_VERSION = 1;
 export const API_PREFIX = '/api/v1';
@@ -92,7 +93,8 @@ export const ROUTES = [
     summary: 'Why one repository\'s CI is queued, slow or red',
     description:
       'Everything the fleet knows about one repository: its runners and their states, its queued runs with '
-      + 'the classified cause and ETA, its active and recently finished runs, its recent failures (each '
+      + 'the classified cause and ETA, its active and recently finished runs, the checks of its latest '
+      + 'commits as green, red or pending, its recent failures (each '
       + 'marked notYourCode when the host or the account caused it), jobs orphaned by a runner that went '
       + 'away while they were finishing, and open incidents that mention it, beside the fleet verdict. '
       + 'A failure with notYourCode true, or an orphan with workPassed true, is never fixed by changing code.',
@@ -115,10 +117,14 @@ export const ROUTES = [
         const hay = `${i.key ?? ''} ${i.title ?? ''}`.toLowerCase();
         return needles.some((n) => n.test(hay));
       });
+      const checks = checkSets(g).filter((s) => sameRepo(s.repo, full)).slice(0, 5).map((s) => ({
+        prNumber: s.prNumber, branch: s.branch, sha: s.sha, title: s.title,
+        state: s.state, progress: s.progress, etaGreenMs: s.etaGreenMs,
+      }));
       return {
         repo: runners[0]?.repo ?? queue[0]?.repo ?? runs[0]?.repo ?? recent[0]?.repo ?? failures[0]?.repo,
         verdict: g.verdict,
-        runners, queue, runs, recent, failures,
+        runners, queue, runs, recent, failures, checks,
         orphans: byRepo(ctx.orphans(g), full),
         incidents,
         freshness: freshness(g),

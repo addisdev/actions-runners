@@ -1,0 +1,12 @@
+{
+ "status": "done",
+ "action": "runner.drain",
+ "args": {
+  "name": "build-host-comet-web-1"
+ },
+ "ok": true,
+ "code": 0,
+ "command": "./scripts/drain-runner.sh build-host-comet-web-1 --drain",
+ "output": "drain flag set",
+ "durationMs": 412
+}

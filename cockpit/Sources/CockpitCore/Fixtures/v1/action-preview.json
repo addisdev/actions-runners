@@ -1,0 +1,15 @@
+{
+ "status": "confirm_required",
+ "action": "runner.drain",
+ "label": "Drain runner",
+ "danger": "medium",
+ "scope": "act",
+ "args": {
+  "name": "build-host-comet-web-1"
+ },
+ "command": "./scripts/drain-runner.sh build-host-comet-web-1 --drain",
+ "effect": "Stops the runner after its current job.",
+ "confirm": "fixture-confirm",
+ "expiresAt": 1790782286956,
+ "hint": "Nothing has run. Send the same args again with this confirm to run it."
+}

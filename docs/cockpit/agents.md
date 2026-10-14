@@ -8,54 +8,70 @@ and the change made things worse.
 
 The cockpit gives a session three ways to ask the fleet first: the
 [command line](cli.md), an MCP server, and a Claude Code skill that says when to
-use them. All three are read-only unless a person says otherwise.
+use them. All three are read-only unless a person gives them a token that may act.
 
 ## The MCP server
 
-`cockpit mcp` is an MCP server over stdio (newline-delimited JSON-RPC 2.0) with
-no dependencies. Register it once for every project:
+`cockpit mcp` carries the dashboard's own [MCP server](../api.md#mcp-mcp) over
+stdio, through the same SSH tunnel as every other command. The tools, their
+descriptions and their answers all come from the daemon, generated from its
+`/api/v1` route table, so they can't drift from the API. Register it once for
+every project:
 
 ```bash
 claude mcp add --scope user fleet-cockpit -- ~/.local/bin/cockpit mcp
 claude mcp get fleet-cockpit        # Status: ✔ Connected
 ```
 
-Any MCP client that can launch a stdio server can use the same command.
+Any MCP client that can launch a stdio server can use the same command. On the
+host itself, or through an SSH forward of port 7878, a client can talk to
+`http://localhost:7878/mcp` directly instead.
 
 ### Tools
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `fleet_status` | none | `{ verdict, counts, route, posture }`: the [verdict](verdict.md) with evidence and next move, the counts, which route answered, and the standing-risk items |
-| `why_queued` | `repo` (required): name or `owner/name` | `{ verdict, runners, queue, checks, failures, incidents, orphaned }` for that repo, the same as `cockpit why --json` |
-| `fleet_queue` | none | The glance's `queue` array: every queued run with cause, confidence, evidence and ETA ranges |
-| `wait_for_checks` | `repo` (required), one of `pr`, `sha`, `branch`; `timeout_minutes` (default 10, max 30) | A line starting `green:`, `red:` (naming the checks that did not pass), `pointless:` (with the reason) or `timeout` |
+| `fleet_status` | none | The [verdict](verdict.md) with evidence and next move, the counts, standing risks and how fresh the view is |
+| `diagnose_repo` | `repo` as `owner/name` | The repo's runners, queue with causes and ETAs, runs, checks, failures (marked `notYourCode`), orphaned jobs and incidents; the same as `cockpit why --json` |
+| `wait_for_checks` | `repo`; one of `pr`, `sha`, `branch`; `wait` seconds (0 to 300) | `state`: `green`, `red` (with the failed runs), `pending` (ask again) or `pointless` (with `reason`, and `orphans` with their recovery commands) |
+| `list_queue`, `list_orphans`, `list_runners`, `list_hosts`, `list_actions` | optional filters | `{ items }` |
+| `run_action` | `id`, `args`, then `confirm` | A preview with a confirm token, then the result. Refused without a token (below) |
 
-`wait_for_checks` runs the same loop as `cockpit wait`, re-reading the fleet
-every 20 seconds and returning as soon as the answer is not "still waiting".
-With `pr` it judges the PR's head commit and also asks GitHub directly, so it
-returns even when the daemon's view has frozen; such an answer ends with
-`(from GitHub; cockpit's view was 27m old)`, which is a daemon problem to
-mention, not the PR's. `pointless` means the same as `cockpit wait`'s
-exit `2`: the host is down, the disk floor is holding jobs, GitHub is refusing
-jobs, a check is queued with a cause that never clears, or a job was
-[orphaned by a draining runner](cli.md#a-job-orphaned-by-a-draining-runner)
-(the text carries the force-cancel and re-run commands; the tool never runs
-them). The session should stop and report it, not keep waiting. The 30-minute cap keeps one tool call from
-holding a session hostage; call it again for longer waits.
+`wait_for_checks` is `cockpit wait`'s question: the daemon holds the call until
+the checks finish or `wait` runs out, judges a PR by its head commit, checks a
+red against the run's latest attempt, and asks GitHub when its own view is
+behind. `pointless` means the same as `cockpit wait`'s exit `2`. The host is
+down, the disk floor is holding jobs, GitHub is refusing jobs, a check is
+queued with a cause that never clears, or a job was
+[orphaned by a draining runner](cli.md#a-job-orphaned-by-a-draining-runner).
+The session should stop and report it, not keep waiting.
 
-Every tool reads the app's snapshot when it is under 90 seconds old and
-otherwise opens its own tunnel through `runner-host`, then `runner-ts`. An
-unreachable dashboard comes back as an `unreachable` verdict rather than an
-error, except from `why_queued` and `fleet_queue`, which have nothing to filter
-and set `isError`.
+A route's refusal (an unknown repo, a missing scope) comes back as a tool
+result with `isError` and the error's `hint`. A dashboard that doesn't answer
+comes back as a JSON-RPC error that points at `cockpit sentinel`.
 
-### Why there are no action tools
+### Actions need a scoped token
 
-The tools only read. Repairing, restarting, draining and cleaning up stay behind
-`cockpit run <action> --yes`, which a session can only run through its shell —
-where the person's permission rules see the exact command. An MCP tool that
-could restart runners would be one prompt-injected log line away from doing it.
+By default `cockpit mcp` sends no token, so every tool reads and `run_action`
+is refused. The token `cockpit pair` saves holds every scope, and an agent
+holding it could confirm its own preview of anything, switching a host off
+included. To let a session take the low-risk actions (checks, previews, drain
+and resume, re-run, cancel, orphan recovery), give it a token with only those:
+
+```bash
+# on the host
+./dashboard/fleetctl.sh api-token "claude code on laptop" --scopes read,act
+# where the session runs
+claude mcp add --scope user fleet-cockpit -e FLEET_API_TOKEN=<token> -- ~/.local/bin/cockpit mcp
+```
+
+Every action is previewed first. The preview returns the exact command and what
+it will do, and only a second call with the preview's single-use confirmation
+runs it. The daemon records each run in its action log under the token's name.
+Restarting, repairing, cleaning up and switching hosts off need `act:danger`,
+which an agent token shouldn't hold; those stay behind `cockpit run <action>
+--yes`, which a session can only run through its shell, where the person's
+permission rules see the exact command.
 
 ## The skill
 

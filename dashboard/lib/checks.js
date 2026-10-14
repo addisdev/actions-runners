@@ -1,9 +1,9 @@
 // A commit's or a PR's checks as one answer (green, red, pending, pointless),
-// and a wait for that answer. A port of cockpit's Rollup.swift, Waiter and
-// WaitLoop, so the CLI and the MCP server ask one question of the daemon
-// instead of each rebuilding it from a stream. The incidents behind each rule
-// are named where the rule is; test/checks.test.js holds the same cases as
-// cockpit's RollupTests.
+// and a wait for that answer. The CLI, `cockpit wait` and the MCP tool all
+// ask this one question of the daemon instead of each rebuilding it from a
+// stream. The incidents behind each rule are named where the rule is, and
+// test/checks.test.js holds a case for each. cockpit's Rollup.swift keeps the
+// menu bar's own copy of the rollup rules; RollupTests holds the same cases.
 
 const PASSED = new Set(['success', 'skipped', 'neutral']);
 

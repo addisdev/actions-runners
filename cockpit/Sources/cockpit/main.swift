@@ -12,24 +12,25 @@ usage: cockpit <command> [options]
 commands:
   status              the fleet verdict, one screen
   why <repo>          everything the fleet knows about one repo: its runners, queue with
-                      causes and ETAs, recent failures and open alerts
+                      causes and ETAs, checks, orphaned jobs, recent failures and open alerts
   queue               every queued run, oldest first, with cause and ETA
   wait <repo>         block until a commit's checks finish (--pr N | --sha S | --branch B,
                       --timeout 45m). Exit 0 green, 1 red, 2 waiting is pointless (host
                       down, disk floor, billing block, a check that will never start, a
                       job orphaned by a draining runner), 3 timed out or nothing readable.
-                      --recover (with --pr): force-cancel and re-run this PR's orphaned
-                      runs instead of stopping; logged to
-                      ~/Library/Logs/FleetCockpit/orphan-recover.ndjson
+                      --recover (with --pr): recover this PR's orphaned runs (force-cancel,
+                      then re-run) instead of stopping; recorded in the dashboard's action log
   top                 the host's top CPU users, naming Spotlight when it is the culprit
   sentinel            check the host out of band (SSH, GitHub, the other machine) —
                       what the app does when the dashboard does not answer
   brief               a markdown incident brief of the current state
   pair                pair this command line with the dashboard (its own revocable token)
   run <action>        run a catalogue action (e.g. fleet.health, fleet.healthRepair,
-                      runner.restart --name <runner>); anything but a read needs --yes
-  mcp                 run as an MCP server over stdio (fleet_status, why_queued,
-                      fleet_queue, wait_for_checks)
+                      runner.restart --name <runner>, run.recoverOrphan --repo o/r --run N);
+                      anything but a read needs --yes
+  mcp                 the dashboard's MCP tools over stdio (fleet_status, diagnose_repo,
+                      wait_for_checks, list_queue, …). Read-only unless FLEET_API_TOKEN
+                      holds a scoped token (./fleetctl.sh api-token <name> --scopes read,act)
   fixtures            list the bundled fixture names
 
 options:
@@ -165,20 +166,45 @@ final class RouteCache: @unchecked Sendable {
     }
 }
 
+let defaultAliases = ["runner-host", "runner-ts"]
+
+func transport(_ o: Options) -> Transport {
+    o.url.map { DirectTransport(url: $0) } ?? TunnelTransport(aliases: o.via.isEmpty ? defaultAliases : o.via)
+}
+
+/// The dashboard over the usual route, for /api/v1. Reads need no token: the
+/// tunnel arrives on the host's loopback.
+func connect(_ o: Options) async -> (FleetClient, Transport) {
+    let t = transport(o)
+    do {
+        return (FleetClient(base: try await t.open().baseURL), t)
+    } catch {
+        t.close()
+        fail("? dashboard unreachable (\(error.localizedDescription)) — try `cockpit sentinel`", code: 3)
+    }
+}
+
+/// The token `cockpit pair` saved for this dashboard.
+func pairedToken(_ c: FleetClient, _ o: Options) async -> String? {
+    let local = (try? await c.hosts())?.first { $0.local == true }?.id
+    return [local, o.via.first ?? defaultAliases[0]].compactMap { $0 }.lazy.compactMap { CLITokenFile.load(account: "cli:" + $0) }.first
+}
+
+func fail(_ e: Error, code: Int32 = 3) -> Never {
+    fail("✖ \(e)", code: code)
+}
+
+func printRaw(_ data: Data) {
+    print(String(decoding: data, as: UTF8.self))
+}
+
 func printJSON<T: Encodable>(_ v: T) {
     let enc = JSONEncoder()
     enc.outputFormatting = [.prettyPrinted, .sortedKeys]
     print(String(decoding: try! enc.encode(v), as: UTF8.self))
 }
 
-func mark(_ t: Tone) -> String {
-    switch t {
-    case .critical: "✖"
-    case .warning: "▲"
-    case .unknown: "?"
-    case .info, .ok: "✔"
-    }
-}
+func mark(_ t: Tone) -> String { t.mark }
 
 func printVerdict(_ v: Verdict, route: String, glance: Glance?) {
     print("\(mark(v.tone)) \(v.title)")
@@ -216,7 +242,7 @@ let opts = parse(Array(CommandLine.arguments.dropFirst()))
 
 switch opts.command {
 case "mcp":
-    await MCPServer.run()
+    await MCPBridge.run(transport(opts))
 case "fixtures":
     for n in Fixtures.names { print(n) }
 case "status":
@@ -259,91 +285,52 @@ case "pair":
     } catch { fail("pairing failed: \(error)") }
     src.transport?.close()
 case "run":
-    guard let action = opts.positional.first else { fail("usage: cockpit run <action> [--name <runner>] [--host <host id>] [--yes]", code: 64) }
-    var src = await obtain(Options(command: "status", fresh: true, positional: [], flags: [:]).with(via: opts.via, url: opts.url))
-    guard var client = src.client, let g = src.glance else { fail("cannot reach the dashboard") }
-    let account = "cli:" + (g.hosts.first { $0.local == true }?.id ?? "fleet")
-    guard let token = CLITokenFile.load(account: account) else { fail("not paired: run `cockpit pair` first") }
+    guard let action = opts.positional.first else {
+        fail("usage: cockpit run <action> [--name <runner>] [--host <host id>] [--repo o/r --run N] [--yes]", code: 64)
+    }
+    let (anon, link) = await connect(opts)
+    guard let token = await pairedToken(anon, opts) else { link.close(); fail("not paired: run `cockpit pair` first") }
+    var client = anon
     client.token = token
-    guard let def = (try? await client.actions())?.action(action) else {
-        fail("\(action) is not an action the cockpit offers (see GET /api/actions)")
-    }
-    // Anything that changes the fleet needs an explicit --yes: an agent
-    // exploring the CLI must not repair or restart by accident.
-    if (def.danger ?? "none") != "none" && opts.flags["yes"] == nil {
-        fail("\(def.label) (\(def.danger ?? "?") danger): \(def.confirm ?? "changes the fleet"). Re-run with --yes to proceed.", code: 2)
-    }
+    // Flags are the action's arguments, under the daemon's names; it refuses
+    // any the action does not take and says which it does. Host actions
+    // without --host act on the dashboard's own host.
+    let renamed = ["host": "hostId", "run": "runId"]
     var args: [String: Any] = [:]
-    if let n = opts.flags["name"] { args["name"] = n }
-    // Host actions without --host act on the dashboard's own host.
-    if let h = opts.flags["host"] { args["hostId"] = h }
-    let r = await (try? client.perform(action, args: args)) ?? ActionResult(ok: false, error: "request failed")
-    if opts.json { printJSON(r) } else { print(r.ok ? "✔ \(def.label)" : "✖ \(def.label)"); if !r.summary.isEmpty { print(r.summary) } }
-    src.transport?.close()
-    src.transport = nil
-    exit(r.ok ? 0 : 1)
+    for (k, v) in opts.flags where k != "yes" { args[renamed[k] ?? k] = v }
+    do {
+        let (preview, _) = try await client.action(action, args: args)
+        // Anything that changes the fleet needs an explicit --yes: an agent
+        // exploring the CLI must not repair or restart by accident.
+        if (preview.danger ?? "none") != "none" && opts.flags["yes"] == nil {
+            link.close()
+            var lines = ["\(preview.label ?? action) (\(preview.danger ?? "?") danger): \(preview.effect ?? "changes the fleet")"]
+            if let c = preview.command { lines.append("  would run: \(c)") }
+            lines.append("Re-run with --yes to proceed.")
+            fail(lines.joined(separator: "\n"), code: 2)
+        }
+        let (r, raw) = try await client.action(action, args: args, confirm: preview.confirm)
+        link.close()
+        if opts.json { printRaw(raw) } else {
+            print(r.ok == true ? "✔ \(r.label ?? preview.label ?? action)" : "✖ \(r.label ?? preview.label ?? action)")
+            if let o = r.output, !o.isEmpty { print(o) }
+        }
+        exit(r.ok == true ? 0 : 1)
+    } catch {
+        link.close()
+        fail(error, code: 1)
+    }
 case "why":
     guard let repo = opts.positional.first else { fail("usage: cockpit why <repo>", code: 64) }
-    let src = await obtain(opts)
-    src.transport?.close()
-    guard let g = src.glance else { printVerdict(src.verdict, route: src.route, glance: nil); exit(3) }
-    let match: (String?) -> Bool = { r in guard let r else { return false }; return r == repo || r.hasSuffix("/" + repo) }
-    let runners = g.runners.filter { match($0.repo) }
-    let queue = g.queue.filter { match($0.repo) }
-    let failures = (g.failures ?? []).filter { match($0.repo) }
-    let short = repo.split(separator: "/").last.map(String.init) ?? repo
-    let incidents = g.incidents.filter { $0.key.contains(short) || $0.title.contains(short) }
-    // Jobs a draining runner left unreported (lake-api PR #73): only GitHub's
-    // job steps show them, so ask about runs active past the threshold.
-    let longRuns = (g.runs ?? []).filter { match($0.repo) && $0.isActive && ($0.elapsedMs ?? .infinity) >= OrphanedJob.minStuckMs }
-    let orphans = opts.fixture != nil || longRuns.isEmpty ? []
-        : await GHJobsProbe.orphans(repo: longRuns[0].repo, runIds: longRuns.prefix(8).map(\.id), glance: g)
-    if opts.json {
-        struct Why: Encodable { let verdict: Verdict; let runners: [Runner]; let queue: [QueueItem]; let failures: [FailureRow]; let incidents: [Incident]; let checks: [String]; let orphaned: [OrphanedJob] }
-        printJSON(Why(verdict: src.verdict, runners: runners, queue: queue, failures: failures, incidents: incidents,
-                      checks: Rollup.checkSets(g).filter { match($0.repo) }.map { "\($0.label): \($0.progress)" },
-                      orphaned: orphans))
-    } else {
-        print("Fleet: \(mark(src.verdict.tone)) \(src.verdict.title)")
-        print("\n\(short): \(runners.count) runner(s)")
-        if runners.isEmpty { print("  none registered — jobs for this repo can only queue (unserved)") }
-        for r in runners { print("  \(r.state.rawValue.padding(toLength: 13, withPad: " ", startingAt: 0)) \(r.name)  \(r.detail ?? "")") }
-        if !queue.isEmpty {
-            print("\nQueued:")
-            for q in queue {
-                let eta = q.etaStartMs.map { "starts in \(Presenter.range($0))" } ?? (q.neverStarts ? "will not start on its own" : q.etaBasis ?? "no estimate")
-                print("  \(q.workflow ?? "?") — \(Format.short(ms: q.queuedMs ?? 0)), \(Presenter.causeLabel(q.cause)) (\(q.confidence ?? "?")); \(eta)")
-                for e in q.evidence ?? [] { print("    · \(e)") }
-                if let r = q.recommended { print("    → \(r)") }
-            }
-        }
-        let sets = Rollup.checkSets(g).filter { match($0.repo) }
-        if !sets.isEmpty {
-            print("\nChecks:")
-            for s in sets.prefix(5) { print("  \(s.label): \(s.progress)\(s.etaGreenMs.map { ", done in \(Presenter.range($0))" } ?? "")") }
-        }
-        if !orphans.isEmpty {
-            print("\nOrphaned by a draining runner — not your code:")
-            for o in orphans {
-                print("  \(o.summary)")
-                for c in o.recovery { print("    \(c)") }
-            }
-        }
-        if !failures.isEmpty {
-            print("\nFailed in the last 2 hours:")
-            for f in failures { print("  \(f.workflow ?? "?"): \(f.label)\(f.notYourCode == true ? "  [not your code]" : "")") }
-            // The shmget error is in the step log, which no failure class reads.
-            if let shm = src.verdict.open.first(where: { $0.id == "shm-low" }) {
-                print("  ! \(shm.title): a Postgres suite that failed in shmget is the host, not the code")
-                for e in (shm.evidence ?? []).prefix(2) { print("    · \(e)") }
-            }
-        }
-        if !incidents.isEmpty {
-            print("\nOpen alerts:")
-            for i in incidents { print("  [\(i.severity ?? "?")] \(i.title)") }
-        }
-    }
-    exit(exitCode(src.verdict))
+    if opts.fixture != nil { fail("why asks the live dashboard; fixtures cover status, queue and brief", code: 64) }
+    let (client, link) = await connect(opts)
+    let d: V1Diagnosis, raw: Data
+    do { (d, raw) = try await client.diagnosis(try await client.fullName(repo)) } catch { link.close(); fail(error) }
+    link.close()
+    let code = d.freshness.stale ? 3 : exitCode(d.verdict)
+    if opts.json { printRaw(raw); exit(code) }
+    print(Why.text(d, repo: repo))
+    exit(code)
 case "queue":
     let src = await obtain(opts)
     src.transport?.close()
@@ -364,62 +351,84 @@ case "wait":
         let n = Double(raw.dropLast()) ?? Double(raw) ?? 45
         return raw.hasSuffix("h") ? n * 3600 : raw.hasSuffix("s") ? n : n * 60
     }()
-    let transport: Transport = opts.url.map { DirectTransport(url: $0) }
-        ?? TunnelTransport(aliases: opts.via.isEmpty ? ["runner-host", "runner-ts"] : opts.via)
-    func report(_ o: WaitOutcome) -> Never {
-        transport.close()
-        // When GitHub decided, say how far behind cockpit was: that gap is a
-        // daemon problem worth knowing about, not part of the answer.
-        let note: String = {
-            guard o.source == .github else { return "" }
-            let age = o.cockpitAgeMs.map { "cockpit's view is \(Format.duration(ms: $0)) old" } ?? "cockpit had no view"
-            return " (from GitHub; \(age)\(o.cockpitSaid.map { ", it still read \($0)" } ?? ""))"
-        }()
-        switch o.decision {
-        case .green(let s): print("✔ \(target.label): \(s.progress)\(note)")
-        case .red(let s):
-            print("✖ \(target.label): \(s.progress)\(note)")
-            for f in s.failed { print("  \(f.workflow ?? "?")\(f.cancelled ? " (cancelled)" : "")\(f.url.map { " — \($0)" } ?? "")") }
-            if s.failed.contains(where: \.cancelled) { print("  \(WaitDecision.cancelledHint)") }
-        case .pointless(let why): print("⏹ \(target.label): not waiting — \(why)")
-        case .waiting(let s):
-            print("… \(target.label): timed out\(s.map { " at \($0.progress)" } ?? " (no runs seen)")\(note)")
-            if o.cockpitAgeMs == nil && o.source == .cockpit { print("? dashboard unreachable — try `cockpit sentinel`") }
-        }
-        exit(o.decision.exitCode)
-    }
-    // One route, reopened when the tunnel dies; an unreachable dashboard no
-    // longer ends the wait (2026-10-03/04: "Dashboard unreachable" at load
-    // 567) while GitHub can still answer.
+    if opts.fixture != nil { fail("wait asks the live dashboard; fixtures cover status, queue and brief", code: 64) }
+    let link = transport(opts)
+    let routes = RouteCache(link)
     // The last word on the deadline, outside Swift concurrency altogether: if
     // anything below still has not answered `timeout` + 30 s from now, say so
-    // and exit (2026-10-09: waits ran 1.5 h past --timeout, see WaitLoop).
+    // and exit (2026-10-09: waits ran 1.5 h past --timeout).
     DispatchQueue.global().asyncAfter(wallDeadline: .now() + timeout + 30) {
-        print("… \(target.label): timed out (no answer from cockpit or GitHub by the deadline)")
-        transport.close()
+        print("… \(target.label): timed out (no answer from the dashboard or GitHub by the deadline)")
+        link.close()
         exit(3)
     }
-    let routes = RouteCache(transport)
-    if target.pr == nil, (try? await routes.base()) == nil {
-        // Only a PR can be asked of GitHub directly; anything else needs the dashboard.
-        print("? dashboard unreachable — try `cockpit sentinel`"); exit(3)
+    let reachable = (try? await routes.base()) != nil
+    // Only a PR can be asked of GitHub directly; anything else needs the dashboard.
+    if !reachable, target.pr == nil { print("? dashboard unreachable — try `cockpit sentinel`"); exit(3) }
+    var full = repo.contains("/") ? repo : nil
+    if full == nil, reachable {
+        do { full = try await FleetClient(base: try await routes.base()).fullName(repo) } catch let e as APIError { link.close(); fail(e) } catch {}
     }
-    var loop = WaitLoop(
-        target: target, timeout: timeout,
-        connect: { FleetClient(base: try await routes.base()).stream() },
-        github: target.pr.map { pr in
-            { @Sendable g in
-                guard let full = await GHChecksProbe.fullName(repo, glance: g) else { return nil }
-                return await GHChecksProbe(repo: full, pr: pr).fetch()
+    if full == nil { full = await GHChecksProbe.fullName(repo, glance: nil) }
+    guard let full else { print("? cannot tell which repository \(repo) is: give it as owner/name"); exit(3) }
+    let goal = WaitTarget(repo: full, pr: target.pr, sha: target.sha, branch: target.branch)
+    var token: String?
+    if recover {
+        let base = try? await routes.base()
+        guard let base, let t = await pairedToken(FleetClient(base: base), opts) else {
+            link.close()
+            fail("--recover runs an action on the dashboard: pair first with `cockpit pair`", code: 64)
+        }
+        token = t
+    }
+    var wait = CheckWait(deadline: Format.nowMs() + timeout * 1000) { w in
+        try await FleetClient(base: try await routes.base()).checks(goal, wait: w)
+    }
+    if let pr = goal.pr {
+        wait.github = { await GHChecksProbe(repo: full, pr: pr).fetch()?.checkSet(repo: full, pr: pr) }
+    }
+    if let token {
+        wait.recover = { orphans in
+            do {
+                let c = FleetClient(base: try await routes.base(), token: token)
+                for o in orphans {
+                    let args: [String: Any] = ["repo": o.repo, "runId": o.runId]
+                    let (preview, _) = try await c.action("run.recoverOrphan", args: args)
+                    let (done, _) = try await c.action("run.recoverOrphan", args: args, confirm: preview.confirm)
+                    if done.ok != true { return done.output ?? "run.recoverOrphan failed for run \(o.runId)" }
+                }
+                return nil
+            } catch {
+                return "\(error)"
             }
         }
-    )
-    loop.latestRun = { r, g in await GHRunProbe.fetch(r, glance: g) }
-    loop.orphans = { ids, g in await GHJobsProbe.orphans(repo: repo, runIds: ids, glance: g) }
-    if recover { loop.recover = { o in await OrphanRecovery.recover(o, pr: target.pr) } }
-    loop.onDrop = { routes.invalidate() }
-    if !opts.json { loop.progress = { FileHandle.standardError.write(Data(($0 + "\n").utf8)) } }
-    report(await loop.run())
+    }
+    wait.onDrop = { routes.invalidate() }
+    if !opts.json { wait.progress = { FileHandle.standardError.write(Data("… \(target.label): \($0)\n".utf8)) } }
+    let recoverCommand = goal.pr.map { "cockpit wait \(repo) --pr \($0) --recover" }
+    let outcome = await wait.run()
+    link.close()
+    switch outcome {
+    case .answer(let a, let raw):
+        if opts.json { printRaw(raw) } else { print(CheckWait.text(a, label: target.label, recoverCommand: recover ? nil : recoverCommand)) }
+        exit(a.exitCode)
+    case .recoveryFailed(let a, let raw, let why):
+        if opts.json { printRaw(raw) } else { print(CheckWait.text(a, label: target.label)) }
+        fail("  recovery failed: \(why)", code: 2)
+    case .github(let s):
+        let mark = s.state == .green ? "✔" : "✖"
+        print("\(mark) \(target.label): \(s.progress) (from GitHub; the dashboard did not answer)")
+        for f in s.failed { print("  \(f.workflow ?? "?")\(f.cancelled ? " (cancelled)" : "")\(f.url.map { " — \($0)" } ?? "")") }
+        exit(s.state == .green ? 0 : 1)
+    case .timeout(let a, let raw, let reached):
+        if opts.json, let raw { printRaw(raw) } else {
+            print("… \(target.label): timed out\(a?.checks.map { " at \($0.progress)" } ?? " (no runs seen)")")
+            if !reached { print("? dashboard unreachable — try `cockpit sentinel`") }
+        }
+        exit(3)
+    case .refused(let e):
+        fail(e)
+    }
 case "top":
     let alias = opts.via.first ?? "runner-host"
     guard let top = await HostProbe.topCPU(alias: alias) else { fail("could not run ps on \(alias)", code: 3) }

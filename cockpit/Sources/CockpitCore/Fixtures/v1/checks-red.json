@@ -1,0 +1,63 @@
+{
+ "target": {
+  "repo": "acme/comet-web",
+  "pr": null,
+  "sha": "ec99782",
+  "branch": null
+ },
+ "state": "red",
+ "waitedMs": 0,
+ "source": "fleet",
+ "checks": {
+  "id": "acme/comet-web@ec99782",
+  "repo": "acme/comet-web",
+  "prNumber": null,
+  "branch": "sound-layer",
+  "sha": "ec99782",
+  "title": "(displayTitle removed)",
+  "runs": [
+   {
+    "id": 36732651278,
+    "repo": "acme/comet-web",
+    "workflow": "web-ci",
+    "status": "completed",
+    "conclusion": "failure",
+    "branch": "sound-layer",
+    "sha": "ec99782",
+    "runAttempt": 1,
+    "event": "pull_request",
+    "title": "(displayTitle removed)",
+    "url": "https://github.com/acme/comet-web/actions/runs/36732651278",
+    "startedAt": 1790780065000,
+    "updatedAt": 1790781635000
+   }
+  ],
+  "total": 1,
+  "done": 1,
+  "failed": [
+   {
+    "id": 36732651278,
+    "repo": "acme/comet-web",
+    "workflow": "web-ci",
+    "status": "completed",
+    "conclusion": "failure",
+    "branch": "sound-layer",
+    "sha": "ec99782",
+    "runAttempt": 1,
+    "event": "pull_request",
+    "title": "(displayTitle removed)",
+    "url": "https://github.com/acme/comet-web/actions/runs/36732651278",
+    "startedAt": 1790780065000,
+    "updatedAt": 1790781635000
+   }
+  ],
+  "queued": [],
+  "etaGreenMs": null,
+  "state": "red",
+  "superseded": [],
+  "progress": "1 failed · 1 of 1 done"
+ },
+ "reason": null,
+ "hint": null,
+ "fleetAgeMs": 0
+}
