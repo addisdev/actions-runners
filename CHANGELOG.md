@@ -6,9 +6,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project does not use Semantic Versioning — it uses simple sequential
 version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
-## [v0.3.0] — unreleased
+## [Unreleased]
 
-Portable, mobile-first dashboard.
+## [v0.3.0] — 2026-10-13
+
+More than one Mac, and one answer for the whole fleet. A second host joins in
+one command, standby tiers run CI on a primary host first, and a switch takes a
+host out of rotation. The fleet verdict reduces everything the dashboard knows
+to one ordered answer, and Fleet Cockpit, its CLI and MCP server carry it to
+the menu bar and to agent sessions. The dashboard also works away from the
+desk: LAN and Tailscale access, per-device pairing, and a mobile layout. The
+autofix bridge is removed.
 
 ### Added
 
@@ -27,7 +35,7 @@ Portable, mobile-first dashboard.
 
 - **Jobs orphaned by a draining runner are named, not waited on.** A job that
   passed every step but whose runner went away during "Complete runner" stays
-  `in_progress` on GitHub until someone force-cancels the run (addisdev/homelake
+  `in_progress` on GitHub until someone force-cancels the run (addisdev/lake-api
   PR #73, 2026-10-12/13: three jobs, 10-25 minutes each, while `cockpit why` said
   "0 of 1 done" and `cockpit wait` kept waiting). The cockpit now asks GitHub
   for the jobs of runs active past three minutes; a job whose work steps have
@@ -186,6 +194,64 @@ Portable, mobile-first dashboard.
   `fleet_queue` and `wait_for_checks`.
 - **Release workflow** for signed, notarized cockpit builds, gated on secrets.
 
+- **LAN access.** `./fleetctl.sh remote lan on|off` sets `FLEET_HOST` in
+  `fleet.env` and regenerates the LaunchAgent, which is where the bind address
+  actually lives. `./fleetctl.sh remote status` shows the running daemon's real
+  bind, every reachable URL, the Serve config, and the firewall state.
+- **Tailscale Serve integration.** `./fleetctl.sh remote tailscale on|off`
+  configures Tailscale Serve for HTTPS access on your tailnet, finding the CLI
+  in Homebrew or the Mac App Store app bundle. `off` removes only the
+  dashboard's listener. Never Funnel — the dashboard is never exposed to the
+  public internet.
+- **DNS-rebinding protection.** Browser requests are validated against the
+  server's own identity (hostname, Bonjour name, LAN IPs, Tailscale MagicDNS,
+  coordinator URLs, `FLEET_ALLOWED_HOSTS`). Unknown `Host` headers get 421
+  before any route logic runs, and the refused name is logged. Agent routes are
+  exempt; they are token-authenticated.
+- **Per-device pairing.** `./fleetctl.sh pair` generates a 6-digit pairing code
+  (+ terminal QR if `qrencode` is installed) and a link on an address the phone
+  can reach. It warns if no such address exists. Remote devices scan, tap, or
+  type the code to get their own revocable bearer token; the master token never
+  leaves the host. Guessing is capped per client and globally. The Control tab
+  shows a QR code with a countdown, notices when pairing succeeds, and detects a
+  revoked token. `./fleetctl.sh devices` and `./fleetctl.sh revoke <name>`
+  manage devices from the terminal.
+- **Mobile bottom nav.** Below 640 px: fixed bottom bar (Fleet, Runs, Alerts,
+  Hosts, More), More sheet for secondary tabs, collapsing top bar.
+- **Mobile glance card.** Busy / Idle / Queued / Alerts at the top of Fleet,
+  counted the same way as the KPI row, each tappable to its tab.
+- **Hash routing.** URLs like `#/runs`, `#/alerts`, `#/hosts` are bookmarkable,
+  restorable on refresh, and shareable. The Back gesture closes an open drawer
+  before it leaves the tab.
+- **Resilient SSE.** Jittered exponential backoff on reconnect (1s → 30s cap).
+  On return to a suspended tab it reconnects only if the stream has gone quiet.
+  The last snapshot stays on screen through an outage. Elapsed timers pause
+  while the tab is hidden.
+- **PWA improvements.** `viewport-fit=cover` + safe-area padding for notches.
+  `apple-touch-icon` PNG (180 px). Manifest shortcuts (Runs, Alerts). Service
+  worker (`sw.js`) registered only on secure contexts (localhost / Tailscale
+  HTTPS). It fetches the shell network-first, so upgrades reach phones
+  immediately, and keeps the last `/api/state` for offline launch.
+- **Touch-friendly controls.** Dismiss buttons always visible and 44 px targets
+  under `@media (hover: none)`. `tip.js` shows `title` text on tap, which touch
+  browsers otherwise never display.
+- **Scrolling tables.** Every table is wrapped in a `table-scroll` container
+  with edge shadows, so wide tables scroll inside their panel on a phone.
+- **Connection pill states.** "Offline", "Reconnecting…" (stream down, last
+  data shown), "Stale" / "Collector stalled" (health check), "Live".
+- **Access banner.** Non-local viewers see their connection context (LAN /
+  Tailscale user) and a link to the pairing flow.
+- **Alerts tab** now polls every 30 s while open, matching Hosts.
+- **`/api/access`** endpoint returns viewer context (via, tailscale user, URLs).
+- **`lib/remote.js`** — host allowlist, proxy-aware origin/sameOrigin, reachable
+  URL list. **`lib/devices.js`** — pairing codes, hashed device tokens, rate limiting.
+- **`dashboard/public/tip.js`** — tap-to-reveal popovers for touch devices.
+- **`dashboard/public/sw.js`** — service worker for offline/PWA support.
+- **`dashboard/public/vendor/qrcodegen.js`** — vendored Nayuki QR Code generator
+  (MIT licensed, no npm dependency, no build step).
+- **New docs:** `docs/remote-access.md` covering LAN, Tailscale, pairing, and
+  the security model. `mkdocs.yml` nav updated.
+
 ### Changed
 
 - **Hosts tile replaces the federation strip.** The one-line strip above the
@@ -197,11 +263,10 @@ Portable, mobile-first dashboard.
   narrow to a 132px minimum so all nine still fit one row at 1440px. The docs
   fixture fleet is now two hosts, so `fleet-tab.png` shows the tile.
 - **Automated agents stay off the operator's Waiting Board.** `register.sh`
-  writes `WB_SKIP=1` into each new runner's `.env`, and `autofixctl.sh install`
-  sets it for the bridge, so CI jobs and the Cursor SDK fix and escalation
-  agents, which load the same user-level Claude Code and Cursor hooks as
-  interactive sessions, never file waits or inbox items. Existing runners need
-  the line added once; `install-hooks.sh` preserves it.
+  writes `WB_SKIP=1` into each new runner's `.env`, so CI jobs, which load the
+  same user-level Claude Code and Cursor hooks as interactive sessions, never
+  file waits or inbox items. Existing runners need the line added once;
+  `install-hooks.sh` preserves it.
 - The `saturated` verdict no longer fires on a run the headroom gate is
   holding; on a busy host that is most of the day, and it is `waiting`.
 - **Offline alerts: one per host outage, one per flap episode.** Three or more
@@ -210,9 +275,15 @@ Portable, mobile-first dashboard.
   saturated", and every offline runner folds into it while it is open. One or
   two runners still alert on their own. Offline alerts stay open for
   `offlineDebounceMs` (15 min) after the runner reconnects and close dated at
-  the reconnect, so a runner that flaps is one alert; autofix skips an alert
-  that is only clearing. Replayed over the recorded intervals, 2026-09-20 goes
-  from 1,284 offline alerts (264 notifications) to 21 (41).
+  the reconnect, so a runner that flaps is one alert. Replayed over the
+  recorded intervals, 2026-09-20 goes from 1,284 offline alerts (264
+  notifications) to 21 (41).
+- `lib/auth.js` `authorize()` now accepts a `checkDevice` parameter so it can
+  validate device tokens alongside the master token.
+- `isLocalRequest()` and `sameOrigin()` moved from `lib/auth.js` to
+  `lib/remote.js`. They are re-imported in `fleetd.js` — no external API change.
+- `isLocalRequest()` now returns `false` when a loopback request carries proxy
+  headers (Tailscale Serve). Previously, Tailscale requests looked local.
 
 ### Removed
 
@@ -271,7 +342,7 @@ Portable, mobile-first dashboard.
   `dashboard/logs/shm.ndjson`. `FLEET_SHM_*`.
 - **`cockpit wait` read a failed attempt under its in-progress re-run.** It
   (and the MCP `wait_for_checks`) returned red at once while a re-run of the
-  failed run was in progress (jerv-ios PR #181, run 38163415231,
+  failed run was in progress (jot-ios PR #181, run 38163415231,
   2026-10-11: attempt 2 failed, `gh run rerun --failed` started attempt 3, and
   the wait printed "1 failed · 1 of 1 done" twice). A re-run keeps the run id,
   and the daemon's view still held attempt 2. Before a red ends the wait, each
@@ -297,8 +368,8 @@ Portable, mobile-first dashboard.
   only to a stalled collector or a dashboard with no open stream.
 
 - **`cockpit wait` outlived its deadline by hours.** On 2026-10-09 three
-  `cockpit wait --pr` sessions (aliquant-backend #54, aliquant-web #116,
-  homelab-map #11) ran 1 h 37 min with no timeout while all three PRs were
+  `cockpit wait --pr` sessions (quant-api #54, quant-web #116,
+  map-web #11) ran 1 h 37 min with no timeout while all three PRs were
   merged and green. `sample` put each one in `-[NSConcreteTask waitUntilExit]`
   inside the GitHub cross-check, with the `gh` child already gone: `gh` had
   overrun its 20 s budget, the timer called `terminate()` while a worker sat
@@ -361,7 +432,7 @@ Portable, mobile-first dashboard.
 - **`cockpit wait` sat on a frozen view and never returned.** On 2026-10-07
   runner-host's fast loop finished its last tick about 12:32Z under load.
   fleetd publishes only after a tick, so every client kept that glance
-  (greenfolio-ios PR #445 "0 of 1 done", greenfolio-android PR #280
+  (shop-ios PR #445 "0 of 1 done", shop-android PR #280
   "instrumentation · 12 min") while keepalives held the stream open, and both
   checks went green on GitHub minutes later. The wait decided, and checked its
   deadline, only when a glance arrived, so it could neither finish nor time
@@ -402,12 +473,12 @@ Portable, mobile-first dashboard.
 - **A cancelled job held by admission kept its runner for minutes.** The
   worker never signals the job-started hook, and GitHub keeps the run and the
   job `in_progress` until it force-completes the job, about four minutes later
-  (measured 2026-10-07, homelab-map run 37236945666), so the run-status poll
+  (measured 2026-10-07, map-web run 37236945666), so the run-status poll
   could not fire sooner. The hook now reads its worker's `_diag` log every
   poll and leaves as soon as the worker logs the cancel.
 - **`cockpit wait --pr` read red from a commit that was no longer the PR.** It
   picked whichever of the PR's commits had the latest update, and nothing said
-  which commit was the head. On taylab-launch-kit PR #79 (2026-10-03) the branch
+  which commit was the head. On site-web PR #79 (2026-10-03) the branch
   was force-pushed back off a failing commit, and before the daemon saw the new
   run, the wait answered "red" from the old commit. A wait on the re-pushed sha
   answered "cancelled" from that sha's first run. The glance's runs now carry
@@ -484,74 +555,7 @@ Portable, mobile-first dashboard.
   aged out it read as a second host that had stopped reporting.
 - `dashboard/.fleet-vapid.json`, the web-push private key, was not ignored.
 
-- **LAN access.** `./fleetctl.sh remote lan on|off` sets `FLEET_HOST` in
-  `fleet.env` and regenerates the LaunchAgent, which is where the bind address
-  actually lives. `./fleetctl.sh remote status` shows the running daemon's real
-  bind, every reachable URL, the Serve config, and the firewall state.
-- **Tailscale Serve integration.** `./fleetctl.sh remote tailscale on|off`
-  configures Tailscale Serve for HTTPS access on your tailnet, finding the CLI
-  in Homebrew or the Mac App Store app bundle. `off` removes only the
-  dashboard's listener. Never Funnel — the dashboard is never exposed to the
-  public internet.
-- **DNS-rebinding protection.** Browser requests are validated against the
-  server's own identity (hostname, Bonjour name, LAN IPs, Tailscale MagicDNS,
-  coordinator URLs, `FLEET_ALLOWED_HOSTS`). Unknown `Host` headers get 421
-  before any route logic runs, and the refused name is logged. Agent routes are
-  exempt; they are token-authenticated.
-- **Per-device pairing.** `./fleetctl.sh pair` generates a 6-digit pairing code
-  (+ terminal QR if `qrencode` is installed) and a link on an address the phone
-  can reach. It warns if no such address exists. Remote devices scan, tap, or
-  type the code to get their own revocable bearer token; the master token never
-  leaves the host. Guessing is capped per client and globally. The Control tab
-  shows a QR code with a countdown, notices when pairing succeeds, and detects a
-  revoked token. `./fleetctl.sh devices` and `./fleetctl.sh revoke <name>`
-  manage devices from the terminal.
-- **Mobile bottom nav.** Below 640 px: fixed bottom bar (Fleet, Runs, Alerts,
-  Hosts, More), More sheet for secondary tabs, collapsing top bar.
-- **Mobile glance card.** Busy / Idle / Queued / Alerts at the top of Fleet,
-  counted the same way as the KPI row, each tappable to its tab.
-- **Hash routing.** URLs like `#/runs`, `#/alerts`, `#/hosts` are bookmarkable,
-  restorable on refresh, and shareable. The Back gesture closes an open drawer
-  before it leaves the tab.
-- **Resilient SSE.** Jittered exponential backoff on reconnect (1s → 30s cap).
-  On return to a suspended tab it reconnects only if the stream has gone quiet.
-  The last snapshot stays on screen through an outage. Elapsed timers pause
-  while the tab is hidden.
-- **PWA improvements.** `viewport-fit=cover` + safe-area padding for notches.
-  `apple-touch-icon` PNG (180 px). Manifest shortcuts (Runs, Alerts). Service
-  worker (`sw.js`) registered only on secure contexts (localhost / Tailscale
-  HTTPS). It fetches the shell network-first, so upgrades reach phones
-  immediately, and keeps the last `/api/state` for offline launch.
-- **Touch-friendly controls.** Dismiss buttons always visible and 44 px targets
-  under `@media (hover: none)`. `tip.js` shows `title` text on tap, which touch
-  browsers otherwise never display.
-- **Scrolling tables.** Every table is wrapped in a `table-scroll` container
-  with edge shadows, so wide tables scroll inside their panel on a phone.
-- **Connection pill states.** "Offline", "Reconnecting…" (stream down, last
-  data shown), "Stale" / "Collector stalled" (health check), "Live".
-- **Access banner.** Non-local viewers see their connection context (LAN /
-  Tailscale user) and a link to the pairing flow.
-- **Alerts tab** now polls every 30 s while open, matching Hosts.
-- **`/api/access`** endpoint returns viewer context (via, tailscale user, URLs).
-- **`lib/remote.js`** — host allowlist, proxy-aware origin/sameOrigin, reachable
-  URL list. **`lib/devices.js`** — pairing codes, hashed device tokens, rate limiting.
-- **`dashboard/public/tip.js`** — tap-to-reveal popovers for touch devices.
-- **`dashboard/public/sw.js`** — service worker for offline/PWA support.
-- **`dashboard/public/vendor/qrcodegen.js`** — vendored Nayuki QR Code generator
-  (MIT licensed, no npm dependency, no build step).
-- **New docs:** `docs/remote-access.md` covering LAN, Tailscale, pairing, and
-  the security model. `mkdocs.yml` nav updated.
-
-### Changed
-
-- `lib/auth.js` `authorize()` now accepts a `checkDevice` parameter so it can
-  validate device tokens alongside the master token.
-- `isLocalRequest()` and `sameOrigin()` moved from `lib/auth.js` to
-  `lib/remote.js`. They are re-imported in `fleetd.js` — no external API change.
-- `isLocalRequest()` now returns `false` when a loopback request carries proxy
-  headers (Tailscale Serve). Previously, Tailscale requests looked local.
-
-## [v0.2.0] — unreleased
+## [v0.2.0] — 2026-09-22
 
 The documentation release, plus a dismiss button — writing the alerts page down
 made it obvious that the fleet had no way to say "yes, I know" about a condition
@@ -803,3 +807,8 @@ back up `fleet.db` before upgrading.
 Releases after v0.1.0 use the format `v0.1.N` for patches and `v0.N.0` for
 backwards-compatible feature releases. Tags are only applied to the public
 repository (`addisdev/actions-runners`).
+
+[Unreleased]: https://github.com/addisdev/actions-runners/compare/v0.3.0...HEAD
+[v0.3.0]: https://github.com/addisdev/actions-runners/compare/v0.2.0...v0.3.0
+[v0.2.0]: https://github.com/addisdev/actions-runners/compare/v0.1.0...v0.2.0
+[v0.1.0]: https://github.com/addisdev/actions-runners/releases/tag/v0.1.0
