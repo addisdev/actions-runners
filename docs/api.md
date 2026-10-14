@@ -176,6 +176,39 @@ already fetches for active runs, so this costs no extra GitHub calls. The Mac
 app's `cockpit` uses the same rules, and both are tested against the same
 fixture (`cockpit/Sources/CockpitCore/Fixtures/orphaned-jobs.json`).
 
+### MCP (`/mcp`)
+
+The daemon is also an MCP server, over Streamable HTTP at `/mcp`. Its tools
+are the v1 routes. Each tool has the route's id as its name, the route's
+description, and the route's parameters as its input. A tool call is answered
+by the route itself, so validation, scopes and errors are the same as REST:
+
+| Tool | Route |
+|---|---|
+| `fleet_status` | `GET /api/v1/status` |
+| `diagnose_repo` | `GET /api/v1/repos/{owner}/{repo}/diagnosis` |
+| `wait_for_checks` | `GET /api/v1/repos/{owner}/{repo}/checks` |
+| `list_queue`, `list_orphans`, `list_runners`, `list_hosts`, `list_actions` | the matching list |
+| `run_action` | `POST /api/v1/actions/{id}`, with the same preview and confirmation |
+
+`repo` may be given as `owner/name` in place of separate `owner` and `repo`.
+A route's error comes back as a tool result with `isError: true` and the v1
+error under `structuredContent.error`, so the model can read the hint.
+
+Access is the same as `/api/v1`. Reads need no token on loopback, and actions
+need `Authorization: Bearer` with a token holding the action's scope. For
+Claude Code on the host, or through an SSH forward of port 7878:
+
+```sh
+TOKEN=$(./dashboard/fleetctl.sh api-token "claude code" --scopes read,act)
+claude mcp add --transport http fleet http://localhost:7878/mcp \
+  --header "Authorization: Bearer $TOKEN"
+```
+
+The server is stateless. It answers each POST with one JSON response and
+opens no event stream, so `GET /mcp` is 405 and a daemon restart doesn't drop
+a client's session.
+
 ## Read endpoints
 
 ### `GET /api/state`

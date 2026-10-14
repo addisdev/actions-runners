@@ -38,6 +38,7 @@ import { RunStatus } from './lib/run-status.js';
 import { analytics, repoDetail } from './lib/analytics.js';
 import { buildActions, ActionError, ACTION_ARGS } from './lib/actions.js';
 import { handleApi, ApiError, API_PREFIX } from './lib/api.js';
+import { handleMcp } from './lib/mcp.js';
 import { findOrphans, trimJob } from './lib/orphans.js';
 import { waitForChecks, parseGitHubChecks } from './lib/checks.js';
 import { loadOrCreateToken, authorize, bearerToken, tokenMatches } from './lib/auth.js';
@@ -2834,6 +2835,28 @@ function logRejectedHost(host) {
   warn(`refused request for unrecognised Host "${host}" — if that is a real name for this machine, add it to FLEET_ALLOWED_HOSTS`);
 }
 
+// What /api/v1 and /mcp need from a request: who sent it, its body, and a
+// signal that fires when the caller hangs up, so a long-poll stops at its
+// next tick. Returns { error } instead when the request is refused.
+async function programRequest(req, res) {
+  const who = principalFor(req);
+  if (who.error) return { error: who.error };
+  let body = '';
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    // Same rule as the UI's write routes: a page in another tab cannot set
+    // Authorization, and this closes what is left.
+    const origin = sameOrigin(req, authConfig());
+    if (!origin.ok) return { error: { status: origin.status, code: 'cross_origin', message: origin.error, hint: null } };
+    for await (const chunk of req) {
+      body += chunk;
+      if (body.length > 16384) return { error: { status: 413, code: 'too_large', message: 'body too large', hint: null } };
+    }
+  }
+  const gone = new AbortController();
+  res.on('close', () => gone.abort());
+  return { principal: who.principal, body, signal: gone.signal };
+}
+
 const server = http.createServer(async (req, res) => {
   // DNS-rebinding defence: a browser request must carry a Host we recognise as
   // our own. Agent routes are exempt — they are bearer-authenticated machine
@@ -2851,24 +2874,22 @@ const server = http.createServer(async (req, res) => {
 
   if (url.pathname === API_PREFIX || url.pathname.startsWith(`${API_PREFIX}/`)) {
     const v1 = { 'fleet-api-version': '1' };
-    const who = principalFor(req);
-    if (who.error) return json(res, { error: who.error }, who.error.status, v1);
-    let body = '';
-    if (req.method !== 'GET' && req.method !== 'HEAD') {
-      // Same rule as the UI's write routes: a page in another tab cannot
-      // set Authorization, and this closes what is left.
-      const origin = sameOrigin(req, authConfig());
-      if (!origin.ok) return json(res, { error: { code: 'cross_origin', message: origin.error, hint: null } }, origin.status, v1);
-      for await (const chunk of req) {
-        body += chunk;
-        if (body.length > 16384) return json(res, { error: { code: 'too_large', message: 'body too large', hint: null } }, 413, v1);
-      }
-    }
-    // A long-poll whose caller hung up stops at its next tick.
-    const gone = new AbortController();
-    res.on('close', () => gone.abort());
-    const out = await handleApi({ method: req.method, url, signal: gone.signal, principal: who.principal, body }, API_CONTEXT);
+    const r = await programRequest(req, res);
+    if (r.error) return json(res, { error: r.error }, r.error.status, v1);
+    const out = await handleApi({ method: req.method, url, ...r }, API_CONTEXT);
     if (res.destroyed) return;
+    return json(res, out.body, out.status, out.headers);
+  }
+
+  if (url.pathname === '/mcp') {
+    const r = await programRequest(req, res);
+    if (r.error) return json(res, { error: r.error }, r.error.status);
+    const out = await handleMcp({ method: req.method, headers: req.headers, ...r }, API_CONTEXT);
+    if (res.destroyed) return;
+    if (!out.body) {
+      res.writeHead(out.status, SECURITY_HEADERS);
+      return res.end();
+    }
     return json(res, out.body, out.status, out.headers);
   }
 

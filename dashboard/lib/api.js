@@ -137,7 +137,8 @@ export const ROUTES = [
       + '(at most 300) until the checks finish; pending means the wait ran out, so ask again. pointless means '
       + 'waiting cannot end well: the host is down, the disk floor is holding jobs, GitHub is refusing jobs, '
       + 'a queued check will never start, or a job was orphaned; reason says which, and orphans carry their '
-      + 'recovery. Cancelled is red, not green. Use this instead of polling gh pr checks.',
+      + 'recovery. Cancelled is red, not green. Use this instead of polling gh pr checks. A client that gives '
+      + 'up on slow calls should use a shorter wait and ask again.',
     params: [
       ...repoPath,
       { name: 'pr', in: 'query', type: 'integer', min: 1, description: 'Pull request number.' },
@@ -265,7 +266,7 @@ export const ROUTES = [
         const c = ctx.confirmations.issue({ action: p.id, args, caller });
         return {
           status: 'confirm_required', ...preview, confirm: c.token, expiresAt: c.expiresAt,
-          hint: 'Nothing has run. POST again with the same args and this confirm to run it.',
+          hint: 'Nothing has run. Send the same args again with this confirm to run it.',
         };
       }
       const why = ctx.confirmations.consume(req.body.confirm, { action: p.id, args, caller });
@@ -340,7 +341,7 @@ export const ROUTES = [
 function requireScope(principal, needed) {
   if (!principal) {
     throw new ApiError(401, 'missing_token', `this needs a token with the ${needed} scope`,
-      'Send Authorization: Bearer <token>. ./dashboard/fleetctl.sh agent-token <name> --scopes read,act issues one.');
+      'Send Authorization: Bearer <token>. ./dashboard/fleetctl.sh api-token <name> --scopes read,act issues one.');
   }
   if (!grants(principal.scopes, needed)) {
     throw new ApiError(403, 'insufficient_scope',

@@ -227,6 +227,34 @@ describe('/api/v1', () => {
     assert.equal(pairing.status, 403);
   });
 
+  test('/mcp answers initialize, lists the tools and calls one through the v1 route', async () => {
+    await waitForFirstTick(daemon.port);
+    const rpc = async (msg, headers = {}) => fetch(url('/mcp'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...headers },
+      body: JSON.stringify({ jsonrpc: '2.0', ...msg }),
+    });
+    const init = await (await rpc({ id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } })).json();
+    assert.equal(init.result.protocolVersion, '2025-06-18');
+    assert.match(init.result.instructions, /fleet_status/);
+
+    const note = await rpc({ method: 'notifications/initialized' }, { 'mcp-protocol-version': '2025-06-18' });
+    assert.equal(note.status, 202);
+
+    const list = await (await rpc({ id: 2, method: 'tools/list' })).json();
+    assert.ok(list.result.tools.some((t) => t.name === 'wait_for_checks'));
+
+    const call = await (await rpc({ id: 3, method: 'tools/call', params: { name: 'fleet_status', arguments: {} } })).json();
+    assert.equal(call.result.isError, false);
+    assert.ok(call.result.structuredContent.verdict.id);
+
+    const act = await (await rpc({ id: 4, method: 'tools/call', params: { name: 'run_action', arguments: { id: 'fleet.status' } } })).json();
+    assert.equal(act.result.isError, true);
+    assert.equal(act.result.structuredContent.error.code, 'missing_token');
+
+    assert.equal((await fetch(url('/mcp'))).status, 405);
+  });
+
   test('a token that is not ours is refused even on a read', async () => {
     const r = await fetch(url('/api/v1/status'), { headers: { authorization: `Bearer ${'b'.repeat(64)}` } });
     assert.equal(r.status, 403);
