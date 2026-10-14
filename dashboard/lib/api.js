@@ -16,6 +16,8 @@
 //     silently returning the whole fleet is a wrong answer that looks right.
 //   - Every response carries `fleet-api-version`.
 
+import { grants, parseScopes } from './scopes.js';
+
 export const API_VERSION = 1;
 export const API_PREFIX = '/api/v1';
 
@@ -218,10 +220,105 @@ export const ROUTES = [
     scope: 'read',
     summary: 'The actions the dashboard can perform',
     description:
-      'The action catalogue: id, label, danger (none, medium, high) and the confirmation text a person sees. '
-      + 'Listing an action does not grant the right to run it.',
+      'The action catalogue: id, label, danger (none, medium, high), the scope a token needs to run it '
+      + '(act or act:danger), the arguments it takes, and what it does (confirm). Listing an action does not '
+      + 'grant the right to run it.',
     params: [],
     handler: (ctx) => ctx.actions(),
+  },
+  {
+    id: 'run_action',
+    method: 'POST',
+    path: '/actions/{id}',
+    scope: 'act',
+    summary: 'Preview an action, then run it with the confirmation the preview returned',
+    description:
+      'Two calls. The first, without confirm, changes nothing: it validates the arguments and returns the '
+      + 'exact command, what it will do, and a single-use confirm token valid for 5 minutes for this caller, '
+      + 'action and arguments. The second, with the same args and that confirm, runs it. Show the preview to '
+      + 'the person you are working for before confirming anything they did not ask for. dryRun: true returns '
+      + 'the preview without a token. Needs a token with the action\'s scope: act for checks, previews, drain, '
+      + 'resume, re-run, cancel and orphan recovery; act:danger for everything else.',
+    params: [
+      { name: 'id', in: 'path', type: 'string', required: true, pattern: '^[a-zA-Z]+\\.[a-zA-Z]+$', description: 'Action id from GET /api/v1/actions, e.g. runner.drain.' },
+    ],
+    body: [
+      { name: 'args', type: 'object', description: 'The action\'s arguments, as GET /api/v1/actions lists them.' },
+      { name: 'confirm', type: 'string', description: 'The confirm token from the preview; runs the action.' },
+      { name: 'dryRun', type: 'boolean', description: 'Preview only; no confirm token is issued.' },
+    ],
+    handler: async (ctx, p, req) => {
+      const def = ctx.actionInfo(p.id);
+      if (!def) {
+        throw new ApiError(404, 'unknown_action', `no action ${p.id}`, 'GET /api/v1/actions lists them.');
+      }
+      if (ctx.readOnly()) throw new ApiError(403, 'read_only', 'this daemon is running read-only');
+      requireScope(req.principal, def.scope);
+      const args = validateArgs(def, req.body.args ?? {});
+      const command = await ctx.previewAction(p.id, args);
+      const preview = {
+        action: p.id, label: def.label, danger: def.danger, scope: def.scope, args, command, effect: def.confirm,
+      };
+      if (req.body.dryRun) return { status: 'preview', ...preview };
+      const caller = req.principal.id;
+      if (!req.body.confirm) {
+        const c = ctx.confirmations.issue({ action: p.id, args, caller });
+        return {
+          status: 'confirm_required', ...preview, confirm: c.token, expiresAt: c.expiresAt,
+          hint: 'Nothing has run. POST again with the same args and this confirm to run it.',
+        };
+      }
+      const why = ctx.confirmations.consume(req.body.confirm, { action: p.id, args, caller });
+      if (why) throw new ApiError(409, 'confirmation_invalid', why);
+      const result = await ctx.runAction(p.id, args, req.principal);
+      return { status: result.ok ? 'done' : 'failed', action: p.id, args, ...result };
+    },
+  },
+  {
+    id: 'whoami',
+    method: 'GET',
+    path: '/me',
+    scope: 'read',
+    tool: false,
+    summary: 'Who this token is and what it may do',
+    description: 'The caller\'s name and scopes; authenticated false without a token.',
+    params: [],
+    handler: (ctx, p, req) => ({
+      authenticated: Boolean(req.principal),
+      caller: req.principal?.name ?? null,
+      kind: req.principal?.kind ?? null,
+      scopes: req.principal?.scopes ?? [],
+      readOnly: ctx.readOnly(),
+    }),
+  },
+  {
+    id: 'create_token',
+    method: 'POST',
+    path: '/tokens',
+    scope: 'act:danger',
+    tool: false,
+    summary: 'Issue a named token with chosen scopes',
+    description:
+      'For an agent or a script: a token that holds only the scopes named. Shown once; the daemon keeps its '
+      + 'hash. Revoke it like a paired device. Needs act:danger, so a scoped token cannot mint a wider one.',
+    params: [],
+    body: [
+      { name: 'name', type: 'string', required: true, description: 'Who will hold it, e.g. "claude code on laptop".' },
+      { name: 'scopes', type: 'string', required: true, description: 'Comma-separated: read, act, act:danger.' },
+    ],
+    handler: (ctx, p, req) => {
+      if (ctx.readOnly()) throw new ApiError(403, 'read_only', 'this daemon is running read-only');
+      requireScope(req.principal, 'act:danger');
+      const name = String(req.body.name ?? '').trim();
+      if (!name || name.length > 64) throw new ApiError(400, 'invalid_param', 'name must be 1 to 64 characters');
+      const scopes = parseScopes(req.body.scopes);
+      if (!scopes) throw new ApiError(400, 'invalid_param', 'scopes must be a comma-separated list of read, act, act:danger');
+      const t = ctx.issueToken({ name, scopes });
+      return {
+        token: t.token, name: t.name, key: t.key, scopes,
+        hint: `Shown once. Revoke with: ./dashboard/fleetctl.sh revoke ${t.key}`,
+      };
+    },
   },
   {
     id: 'openapi',
@@ -235,6 +332,72 @@ export const ROUTES = [
     handler: () => openApi(),
   },
 ];
+
+// --------------------------------------------------------------------- auth
+
+// principal is { id, name, kind, scopes } for a valid token, null for none.
+// A bad token never reaches here: fleetd answers 401/403 first.
+function requireScope(principal, needed) {
+  if (!principal) {
+    throw new ApiError(401, 'missing_token', `this needs a token with the ${needed} scope`,
+      'Send Authorization: Bearer <token>. ./dashboard/fleetctl.sh agent-token <name> --scopes read,act issues one.');
+  }
+  if (!grants(principal.scopes, needed)) {
+    throw new ApiError(403, 'insufficient_scope',
+      `${principal.name} holds ${principal.scopes.join(', ') || 'no scopes'}; this needs ${needed}`,
+      needed === 'act:danger' ? 'Ask the person you work for to run it, or to issue a token with act:danger.' : null);
+  }
+}
+
+const ARG_TYPES = {
+  string: (v) => typeof v === 'string' && v.length <= 200,
+  integer: (v) => Number.isInteger(v) || (typeof v === 'string' && /^\d{1,15}$/.test(v)),
+  boolean: (v) => typeof v === 'boolean',
+};
+
+// Only the arguments the action declares, of the declared types. The action
+// itself still checks each value against what the daemon knows (a runner it
+// discovered, a repo it polls).
+function validateArgs(def, args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) {
+    throw new ApiError(400, 'invalid_args', 'args must be an object');
+  }
+  const spec = def.args ?? [];
+  const names = spec.map((s) => s.name);
+  for (const k of Object.keys(args)) {
+    if (!names.includes(k)) {
+      throw new ApiError(400, 'invalid_args', `${def.id} does not take ${k}`,
+        names.length ? `It takes ${names.join(', ')}.` : 'It takes no arguments.');
+    }
+  }
+  const out = {};
+  for (const s of spec) {
+    const v = args[s.name];
+    if (v === undefined || v === null || v === '') {
+      if (s.required) throw new ApiError(400, 'invalid_args', `${s.name} is required`, s.description);
+      continue;
+    }
+    if (!ARG_TYPES[s.type](v)) throw new ApiError(400, 'invalid_args', `${s.name} must be a ${s.type}`, s.description);
+    out[s.name] = s.type === 'integer' ? Number(v) : v;
+  }
+  return out;
+}
+
+function parseBody(route, text) {
+  if (!route.body) return {};
+  let body;
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    throw new ApiError(400, 'malformed_json', 'the request body is not JSON');
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new ApiError(400, 'malformed_json', 'the body must be a JSON object');
+  const names = route.body.map((s) => s.name);
+  for (const k of Object.keys(body)) {
+    if (!names.includes(k)) throw new ApiError(400, 'unknown_field', `${route.id} does not take ${k}`, `It takes ${names.join(', ')}.`);
+  }
+  return body;
+}
 
 // ------------------------------------------------------------------ matching
 
@@ -315,13 +478,15 @@ export function matchRoute(method, url) {
 // ctx supplies what the handlers read: glance() (the /api/glance payload),
 // orphans(glance) and actions() (the catalogue). They are functions so a
 // route that does not need the glance does not pay for building it.
-export async function handleApi({ method, url, signal = null }, ctx) {
+export async function handleApi({ method, url, signal = null, principal = null, body = '' }, ctx) {
   const headers = { 'fleet-api-version': String(API_VERSION) };
   try {
     const { route, params } = matchRoute(method, url);
+    if (route.scope === 'read' && principal) requireScope(principal, 'read');
+    const parsed = parseBody(route, body);
     let glance = null;
     const once = { ...ctx, glance: () => (glance ??= ctx.glance()) };
-    return { status: 200, headers, body: await route.handler(once, params, { signal }) };
+    return { status: 200, headers, body: await route.handler(once, params, { signal, principal, body: parsed }) };
   } catch (err) {
     if (!(err instanceof ApiError)) {
       return { status: 500, headers, body: { error: { code: 'internal', message: err.message, hint: 'Check the daemon log: ./fleetctl.sh logs' } } };
@@ -343,6 +508,15 @@ function schemaOf(spec) {
   };
 }
 
+export function bodySchema(fields) {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: Object.fromEntries(fields.map((s) => [s.name, { type: s.type, description: s.description }])),
+    required: fields.filter((s) => s.required).map((s) => s.name),
+  };
+}
+
 export function openApi() {
   const paths = {};
   for (const r of ROUTES) {
@@ -357,6 +531,8 @@ export function openApi() {
         name: s.name, in: s.in, required: Boolean(s.required || s.in === 'path'),
         description: s.description, schema: schemaOf(s),
       })),
+      ...(r.body ? { requestBody: { required: true, content: { 'application/json': { schema: bodySchema(r.body) } } } } : {}),
+      security: r.scope === 'read' ? [{}, { bearer: [] }] : [{ bearer: [] }],
       responses: {
         200: { description: r.summary, content: { 'application/json': { schema: { type: 'object' } } } },
         default: { description: 'An error', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
@@ -372,6 +548,9 @@ export function openApi() {
     },
     paths,
     components: {
+      securitySchemes: {
+        bearer: { type: 'http', scheme: 'bearer', description: 'The control token, a paired-device token, or a scoped token from POST /api/v1/tokens.' },
+      },
       schemas: {
         Error: {
           type: 'object',

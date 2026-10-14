@@ -415,6 +415,9 @@ export function openDb(path) {
   // needing a fetch; 'unknown' means looked at and GitHub had nothing left.
   addColumn(db, 'jobs', 'failure_class', 'TEXT');
   addColumn(db, 'jobs', 'failure_detail', 'TEXT');
+  // Who ran an action: the master token, a paired device or a scoped token,
+  // by name. NULL for the daemon's own actions (autoscale, standby tiers).
+  addColumn(db, 'action_log', 'caller', 'TEXT');
   // Partial index: only failed jobs are ever queried by class, and on this fleet
   // they are ~6% of rows.
   db.exec(

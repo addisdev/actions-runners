@@ -36,8 +36,8 @@ import { Backfill } from './lib/backfill.js';
 import { RunSettler } from './lib/settle.js';
 import { RunStatus } from './lib/run-status.js';
 import { analytics, repoDetail } from './lib/analytics.js';
-import { buildActions, ActionError } from './lib/actions.js';
-import { handleApi, API_PREFIX } from './lib/api.js';
+import { buildActions, ActionError, ACTION_ARGS } from './lib/actions.js';
+import { handleApi, ApiError, API_PREFIX } from './lib/api.js';
 import { findOrphans, trimJob } from './lib/orphans.js';
 import { waitForChecks, parseGitHubChecks } from './lib/checks.js';
 import { loadOrCreateToken, authorize, bearerToken, tokenMatches } from './lib/auth.js';
@@ -47,8 +47,11 @@ import {
 } from './lib/remote.js';
 import { hasHostToken, hostTokenMatches } from './lib/host-auth.js';
 import {
-  createPairingCode, exchangeCode, deviceTokenMatches, listDevices, revokeDevice, PAIRING_CODE_TTL_MS,
+  createPairingCode, exchangeCode, deviceTokenEntry, addToken, listDevices, revokeDevice,
+  PAIRING_CODE_TTL_MS,
 } from './lib/devices.js';
+import { ALL_SCOPES, scopeForAction, parseScopes } from './lib/scopes.js';
+import { issueConfirmation, consumeConfirmation } from './lib/confirm.js';
 import { Alerts, loadConfig as loadAlertConfig } from './lib/alerts.js';
 import { lintAll, isLintableRepo } from './lib/lint.js';
 import { adviseAll } from './lib/concurrency-advisor.js';
@@ -235,8 +238,26 @@ function checkDevice(token) {
   // Read-only mode has no control plane: a device paired before the switch must
   // not keep working where the master token no longer exists.
   if (CONFIG.readOnly) return false;
-  return deviceTokenMatches(CONFIG.deviceTokensFile, token);
+  // The UI's write routes predate scopes and can do anything, so only a
+  // token holding every scope gets through them. A scoped token's way in is
+  // /api/v1, which checks the scope each action needs.
+  const d = deviceTokenEntry(CONFIG.deviceTokensFile, token);
+  return Boolean(d) && (d.scopes === null || ALL_SCOPES.every((s) => d.scopes.includes(s)));
 }
+// Who a request's bearer token belongs to: { principal } (null without a
+// token), or { error } for a token that is not ours. A device paired before
+// scopes existed holds every scope, as it always has.
+function principalFor(req) {
+  const given = bearerToken(req);
+  if (!given) return { principal: null };
+  if (tokenMatches(given, CONTROL_TOKEN)) {
+    return { principal: { id: 'master', name: 'master token', kind: 'master', scopes: ALL_SCOPES } };
+  }
+  const d = CONFIG.readOnly ? null : deviceTokenEntry(CONFIG.deviceTokensFile, given);
+  if (d) return { principal: { id: `${d.kind}:${d.key}`, name: d.name, kind: d.kind, scopes: d.scopes ?? ALL_SCOPES } };
+  return { error: { status: 403, code: 'bad_token', message: 'bad token', hint: 'It may have been revoked. ./dashboard/fleetctl.sh devices lists the live ones.' } };
+}
+
 function authConfig() { return { port: CONFIG.port, host: CONFIG.host }; }
 function authorizeRequest(req) { return authorize(req, CONTROL_TOKEN, authConfig(), checkDevice); }
 
@@ -259,6 +280,12 @@ const ACTIONS = buildActions({
   // A function, not a value: an operator lowering the ceiling must affect the
   // very next action, not actions taken after the next restart.
   getLimits: () => settings.limits(),
+  getOrphans: () => findOrphans(activeRunJobs, currentGlance().runners),
+  onBackground: (result) => {
+    logCallerAction.run(Date.now(), 'run.recoverOrphan (re-run)', null, result.command ?? null, null,
+      result.ok ? 1 : 0, (result.output ?? '').slice(0, 4000), 'fleetd');
+    (result.ok ? log : warn)(`orphan recovery: ${result.command}: ${result.output}`);
+  },
 });
 const alerts = CONFIG.alertsEnabled
   ? new Alerts({
@@ -284,6 +311,9 @@ try {
 }
 const logAction = db.prepare(
   'INSERT INTO action_log (ts, action, args, command, exit_code, ok, output) VALUES (?,?,?,?,?,?,?)'
+);
+const logCallerAction = db.prepare(
+  'INSERT INTO action_log (ts, action, args, command, exit_code, ok, output, caller) VALUES (?,?,?,?,?,?,?,?)'
 );
 
 // Read fresh on every rebuild rather than captured once, so changing a grouping
@@ -451,16 +481,50 @@ const CHECKS_SOURCE = {
   run: async (repo, id) => compactRun(shapeRun(repo, await gh.run(repo, id)), Date.now()),
 };
 
+function actionInfo(id) {
+  if (!Object.prototype.hasOwnProperty.call(ACTIONS, id)) return null;
+  const a = ACTIONS[id];
+  return {
+    id, label: a.label, danger: a.danger, confirm: a.confirm ?? null,
+    scope: scopeForAction(id), args: ACTION_ARGS[id] ?? [],
+  };
+}
+
+// An action's refusal (unknown runner, busy runner, no headroom) is the
+// caller's to read, in the API's error shape.
+function asApiError(err) {
+  if (err instanceof ActionError) {
+    return new ApiError(err.status, err.status === 404 ? 'not_found' : err.status === 409 ? 'refused' : 'invalid_args', err.message);
+  }
+  return err;
+}
+
 const API_CONTEXT = {
   glance: () => currentGlance(),
   orphans: (glance) => findOrphans(activeRunJobs, glance.runners),
   waitForChecks: (target, opts) => waitForChecks(target, CHECKS_SOURCE, opts),
+  readOnly: () => CONFIG.readOnly,
   actions: () => ({
     readOnly: CONFIG.readOnly,
-    items: Object.entries(ACTIONS).map(([id, a]) => ({
-      id, label: a.label, danger: a.danger, confirm: a.confirm ?? null,
-    })),
+    items: Object.keys(ACTIONS).map(actionInfo),
   }),
+  actionInfo,
+  previewAction: async (id, args) => {
+    try {
+      return ACTIONS[id].summary?.(args) ?? id;
+    } catch (err) {
+      throw asApiError(err);
+    }
+  },
+  runAction: async (id, args, principal) => {
+    try {
+      return await runAction(id, args, principal.name);
+    } catch (err) {
+      throw asApiError(err);
+    }
+  },
+  confirmations: { issue: issueConfirmation, consume: consumeConfirmation },
+  issueToken: ({ name, scopes }) => addToken(CONFIG.deviceTokensFile, { name, scopes, kind: 'token' }),
 };
 
 // ---------------------------------------------------------------- persistence
@@ -677,6 +741,37 @@ function remoteTargetFor(action, args) {
   const hostId = String(args.hostId ?? '');
   if (!hostId || hostId === LOCAL_HOST_ID) return null;
   return { hostId, repo: null };
+}
+
+// Every way of running an action ends here (the UI's /api/action and
+// /api/v1/actions/{id}), so each is sent to the right host, logged with who
+// ran it, and followed by a refresh.
+async function runAction(id, args, caller) {
+  const def = ACTIONS[id];
+  const started = Date.now();
+  log(`action ${id} ${JSON.stringify(args)}${caller ? ` by ${caller}` : ''}`);
+  try {
+    const remote = await queueRemoteAction(id, args);
+    const result = remote ?? await def.exec(args);
+    // The action decides what counts as success — see okCodes in actions.js.
+    const ok = result.ok ?? result.code === 0;
+    logCallerAction.run(started, id, JSON.stringify(args), result.command ?? null,
+      result.code ?? null, ok ? 1 : 0, (result.output ?? '').slice(0, 20000), caller);
+    // Local actions change launchd state; refresh so the UI does not show a
+    // runner as dead for another 15 seconds after you restarted it.
+    if (ha.isLeader) {
+      fastTick().catch(() => {});
+    } else {
+      reportSelfToHa()
+        .then(() => refreshStandbySnapshot())
+        .catch(() => {});
+    }
+    return { ok, ...result, durationMs: Date.now() - started };
+  } catch (err) {
+    logCallerAction.run(started, id, JSON.stringify(args), null, null, 0, String(err.message).slice(0, 4000), caller);
+    warn(`action ${id} failed: ${err.message}`);
+    throw err;
+  }
 }
 
 async function queueRemoteAction(action, args) {
@@ -2755,10 +2850,24 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
 
   if (url.pathname === API_PREFIX || url.pathname.startsWith(`${API_PREFIX}/`)) {
+    const v1 = { 'fleet-api-version': '1' };
+    const who = principalFor(req);
+    if (who.error) return json(res, { error: who.error }, who.error.status, v1);
+    let body = '';
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      // Same rule as the UI's write routes: a page in another tab cannot
+      // set Authorization, and this closes what is left.
+      const origin = sameOrigin(req, authConfig());
+      if (!origin.ok) return json(res, { error: { code: 'cross_origin', message: origin.error, hint: null } }, origin.status, v1);
+      for await (const chunk of req) {
+        body += chunk;
+        if (body.length > 16384) return json(res, { error: { code: 'too_large', message: 'body too large', hint: null } }, 413, v1);
+      }
+    }
     // A long-poll whose caller hung up stops at its next tick.
     const gone = new AbortController();
     res.on('close', () => gone.abort());
-    const out = await handleApi({ method: req.method, url, signal: gone.signal }, API_CONTEXT);
+    const out = await handleApi({ method: req.method, url, signal: gone.signal, principal: who.principal, body }, API_CONTEXT);
     if (res.destroyed) return;
     return json(res, out.body, out.status, out.headers);
   }
@@ -3164,29 +3273,10 @@ const server = http.createServer(async (req, res) => {
     if (!def) return json(res, { error: `unknown action: ${parsed.action}` }, 404);
 
     const args = parsed.args ?? {};
-    const started = Date.now();
-    log(`action ${parsed.action} ${JSON.stringify(args)}`);
     try {
-      const remote = await queueRemoteAction(parsed.action, args);
-      const result = remote ?? await def.exec(args);
-      // The action decides what counts as success — see okCodes in actions.js.
-      const ok = result.ok ?? result.code === 0;
-      logAction.run(started, parsed.action, JSON.stringify(args), result.command ?? null,
-        result.code ?? null, ok ? 1 : 0, (result.output ?? '').slice(0, 20000));
-      // Local actions change launchd state; refresh so the UI does not show a
-      // runner as dead for another 15 seconds after you restarted it.
-      if (ha.isLeader) {
-        fastTick().catch(() => {});
-      } else {
-        reportSelfToHa()
-          .then(() => refreshStandbySnapshot())
-          .catch(() => {});
-      }
-      return json(res, { ok, ...result, durationMs: Date.now() - started });
+      return json(res, await runAction(parsed.action, args, principalFor(req).principal?.name ?? null));
     } catch (err) {
       const status = err instanceof ActionError ? err.status : 500;
-      logAction.run(started, parsed.action, JSON.stringify(args), null, null, 0, String(err.message).slice(0, 4000));
-      warn(`action ${parsed.action} failed: ${err.message}`);
       return json(res, { ok: false, error: err.message }, status);
     }
   }
@@ -3646,7 +3736,28 @@ const server = http.createServer(async (req, res) => {
     if (CONFIG.readOnly) return json(res, { error: 'read-only mode' }, 403);
     const pairAuth = authorizeRequest(req);
     if (!pairAuth.ok) return json(res, { error: pairAuth.error }, pairAuth.status);
-    const code = createPairingCode();
+    // Optional { scopes }: a code for a chat tool's OAuth sign-in can grant
+    // less than a browser pairing does. Only a session holding every scope
+    // may hand out every scope.
+    let scopes = null;
+    let startBody = '';
+    for await (const chunk of req) {
+      startBody += chunk;
+      if (startBody.length > 1024) return json(res, { error: 'body too large' }, 413);
+    }
+    if (startBody.trim()) {
+      let parsed;
+      try { parsed = JSON.parse(startBody); } catch { return json(res, { error: 'malformed JSON' }, 400); }
+      if (parsed.scopes != null) {
+        scopes = parseScopes(parsed.scopes);
+        if (!scopes) return json(res, { error: 'scopes must be a comma-separated list of read, act, act:danger' }, 400);
+      }
+    }
+    const pairer = principalFor(req).principal;
+    if (pairer && !ALL_SCOPES.every((s) => pairer.scopes.includes(s))) {
+      return json(res, { error: 'only the master token or a fully scoped device can start a pairing' }, 403);
+    }
+    const code = createPairingCode({ scopes });
     const target = pairingUrl(req, { port: CONFIG.port, bindHost: CONFIG.host });
     return json(res, {
       code,

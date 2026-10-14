@@ -12,9 +12,10 @@
 #   ./fleetctl.sh leader               # show this replica and the elected leader
 #   ./fleetctl.sh backup               # consistent SQLite backup (safe while daemon runs)
 #   ./fleetctl.sh restore <path>       # restore from backup (daemon must be stopped)
-#   ./fleetctl.sh pair                 # generate a pairing code for a remote device
-#   ./fleetctl.sh devices              # list paired devices
-#   ./fleetctl.sh revoke <name-or-key> # revoke a device token
+#   ./fleetctl.sh pair [--scopes read,act]  # pairing code for a device or a chat tool's sign-in
+#   ./fleetctl.sh devices              # list paired devices and API tokens
+#   ./fleetctl.sh revoke <name-or-key> # revoke a device or API token
+#   ./fleetctl.sh api-token <name> [--scopes read,act]  # a scoped /api/v1 token for an agent
 #   ./fleetctl.sh remote status        # show bind, LAN URLs, Tailscale state
 #   ./fleetctl.sh remote lan on|off    # bind to 0.0.0.0 / revert to loopback
 #   ./fleetctl.sh remote tailscale on|off  # configure Tailscale Serve (never Funnel)
@@ -341,7 +342,7 @@ api() {
   status="${out##*$'\n'}"
   out="${out%$'\n'*}"
   if [ "${status:0:1}" != "2" ]; then
-    echo "daemon refused $path (HTTP $status): $(echo "$out" | json_get error 2>/dev/null || echo "$out")" >&2
+    echo "daemon refused $path (HTTP $status): $(echo "$out" | json_get error.message 2>/dev/null || echo "$out" | json_get error 2>/dev/null || echo "$out")" >&2
     return 1
   fi
   printf '%s\n' "$out"
@@ -350,8 +351,15 @@ api() {
 # Generate a pairing code via the running daemon and display it (+ terminal QR
 # if qrencode is installed). The code is single-use and expires in 5 minutes.
 cmd_pair() {
-  local result code url warning alts
-  result="$(api POST /api/pair/start)" || return 1
+  local result code url warning alts scopes="" body=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --scopes) scopes="${2:-}"; shift 2 ;;
+      *) echo "usage: $0 pair [--scopes read,act]" >&2; return 1 ;;
+    esac
+  done
+  [ -n "$scopes" ] && body="$("$(node_bin)" -e 'console.log(JSON.stringify({ scopes: process.argv[1] }))' "$scopes")"
+  result="$(api POST /api/pair/start "$body")" || return 1
   code="$(echo "$result" | json_get code)"
   url="$(echo "$result" | json_get url)"
   warning="$(echo "$result" | json_get warning 2>/dev/null || true)"
@@ -372,6 +380,25 @@ cmd_pair() {
   fi
 }
 
+# A named token holding only the scopes given, for an agent or a script that
+# talks to /api/v1 (docs/api.md). Printed once on stdout, so it can be piped
+# into a keychain; the daemon keeps only its hash.
+cmd_api_token() {
+  local name="${1:-}" scopes="read" body result
+  [ $# -gt 0 ] && shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --scopes) scopes="${2:-}"; shift 2 ;;
+      *) name="" ; break ;;
+    esac
+  done
+  [ -n "$name" ] || { echo "usage: $0 api-token <name> [--scopes read,act,act:danger]" >&2; return 1; }
+  body="$("$(node_bin)" -e 'console.log(JSON.stringify({ name: process.argv[1], scopes: process.argv[2] }))' "$name" "$scopes")"
+  result="$(api POST /api/v1/tokens "$body")" || return 1
+  echo "$result" | json_get token
+  echo "scopes $(echo "$result" | json_get scopes); revoke with: $0 revoke $(echo "$result" | json_get key)" >&2
+}
+
 cmd_devices() {
   api GET /api/devices | "$(node_bin)" -e '
     let s = "";
@@ -379,7 +406,10 @@ cmd_devices() {
       const devs = JSON.parse(s).devices ?? [];
       if (!devs.length) return console.log("no devices paired");
       const at = (ms) => (ms ? new Date(ms).toLocaleString() : "never");
-      for (const d of devs) console.log(`  ${d.key}  ${String(d.name).padEnd(30)}  paired ${at(d.createdAt)}  seen ${at(d.lastSeenAt)}`);
+      for (const d of devs) {
+        const scopes = (d.scopes ?? ["all scopes"]).join(",");
+        console.log(`  ${d.key}  ${String(d.name).padEnd(30)}  ${String(d.kind ?? "device").padEnd(6)}  ${scopes.padEnd(20)}  paired ${at(d.createdAt)}  seen ${at(d.lastSeenAt)}`);
+      }
     });'
 }
 
@@ -555,7 +585,8 @@ case "${1:-status}" in
   agent-token) cmd_agent_token "${2:-}" "${3:-}" ;;
   backup)      cmd_backup ;;
   restore)     cmd_restore "${2:-}" ;;
-  pair)        cmd_pair ;;
+  pair)        shift; cmd_pair "$@" ;;
+  api-token)   shift; cmd_api_token "$@" ;;
   devices)     cmd_devices ;;
   revoke)      cmd_revoke "${2:-}" ;;
   remote)      cmd_remote "${2:-status}" "${3:-}" ;;

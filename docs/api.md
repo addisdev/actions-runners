@@ -49,14 +49,81 @@ it needs (`read` for everything in this version).
 | `GET /api/v1/orphans?repo=` | Jobs orphaned by a runner that went away while they were finishing (see below). |
 | `GET /api/v1/runners?repo=&host=&state=` | Every runner across every host. |
 | `GET /api/v1/hosts` | Every host with `stale`, `off`, `drained` and vitals. |
-| `GET /api/v1/actions` | The action catalogue: `id`, `label`, `danger`, `confirm`. |
+| `GET /api/v1/actions` | The action catalogue: `id`, `label`, `danger`, `confirm`, the `scope` it needs and the `args` it takes. |
+| `POST /api/v1/actions/{id}` | Preview an action, then run it with the confirmation the preview returned (see below). |
+| `GET /api/v1/me` | Who the token is, and its scopes. |
+| `POST /api/v1/tokens` | Issue a named token with chosen scopes (needs `act:danger`). |
 
 v1 reads follow the same rules as the routes below: no token on loopback.
+A token sent with a read must still be valid. A revoked or mistyped token gets
+`403 bad_token`, so a client finds out at once rather than on its first
+action.
 For example:
 
 ```sh
 curl -s localhost:7878/api/v1/repos/acme/comet-web/diagnosis | jq '.verdict.id, .failures'
 ```
+
+### Tokens and scopes
+
+A token holds one or more of three scopes:
+
+| Scope | Allows |
+|---|---|
+| `read` | Every `GET` under `/api/v1`. |
+| `act` | Actions an agent may take on its own judgement: `fleet.health`, `fleet.status`, `fleet.preflight`, `fleet.cleanupPreview`, `runner.deregisterPreview`, `runner.drain`, `runner.resume`, `host.drain`, `host.resume`, `run.rerun`, `run.cancel`, `run.recoverOrphan`. |
+| `act:danger` | Every other action: restart, repair, switching a host off or on, cleanup apply, register, duplicate, deregister, workflow dispatch. Also minting tokens. |
+
+`act:danger` includes `act`, and both include `read`. The master token and
+devices paired before scopes existed hold all three.
+
+Issue a token for an agent:
+
+```sh
+./dashboard/fleetctl.sh api-token "claude code on laptop" --scopes read,act
+```
+
+The token is printed once on stdout. `./fleetctl.sh devices` lists it beside
+paired devices, and `./fleetctl.sh revoke <key>` revokes it.
+
+### Running an action
+
+An action takes two calls. The first changes nothing:
+
+```sh
+curl -s -X POST localhost:7878/api/v1/actions/runner.drain \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"args":{"name":"build-host-comet-web-2"}}'
+```
+
+```json
+{
+  "status": "confirm_required",
+  "action": "runner.drain",
+  "command": "./scripts/drain-runner.sh build-host-comet-web-2 --drain",
+  "effect": "This will stop the runner after its current job finishes…",
+  "confirm": "q3k…",
+  "expiresAt": 1791234567890
+}
+```
+
+The second call sends the same `args` plus `"confirm": "q3k…"` and runs it.
+The confirmation:
+
+- works once;
+- expires after 5 minutes;
+- is tied to the caller, the action and the exact arguments, so a preview for
+  one runner can't be spent on another.
+
+`"dryRun": true` returns the preview without a confirmation. Arguments the
+action doesn't declare are refused. Every run is written to the action log
+with the caller's name.
+
+`run.recoverOrphan` (`repo`, `runId`) is for a job listed by
+`/api/v1/orphans`. It refuses a run that isn't orphaned, or whose work had
+already failed. It force-cancels the run and returns. Once GitHub has
+completed the run, about a minute later, the daemon requests the re-run
+itself.
 
 ### Waiting on checks
 

@@ -15,6 +15,9 @@ import {
   listDevices,
   revokeDevice,
   resetPairingState,
+  deviceTokenEntry,
+  addToken,
+  redeemCode,
   PAIRING_CODE_TTL_MS,
 } from '../lib/devices.js';
 
@@ -227,5 +230,57 @@ describe('revokeDevice', () => {
     try {
       assert.equal(revokeDevice(path, 'nonexistent'), false);
     } finally { cleanup(); }
+  });
+});
+
+describe('scopes', () => {
+  test('a code made with scopes yields a token holding only those', () => {
+    const { path, cleanup } = tmpStore();
+    try {
+      const { token } = exchangeCode(path, createPairingCode({ scopes: ['read', 'act'] }), 'claude', '127.0.0.1');
+      const e = deviceTokenEntry(path, token);
+      assert.deepEqual(e.scopes, ['read', 'act']);
+      assert.equal(e.kind, 'device');
+      assert.equal(e.name, 'claude');
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('a device paired without scopes holds every scope (null), as before', () => {
+    const { path, cleanup } = tmpStore();
+    try {
+      const { token } = exchangeCode(path, createPairingCode(), 'phone', '127.0.0.1');
+      assert.equal(deviceTokenEntry(path, token).scopes, null);
+      assert.ok(deviceTokenMatches(path, token));
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('addToken issues a named, scoped token that lists and revokes like a device', () => {
+    const { path, cleanup } = tmpStore();
+    try {
+      const t = addToken(path, { name: 'ci script', scopes: ['read'], kind: 'token' });
+      assert.match(t.token, /^[0-9a-f]{64}$/);
+      assert.deepEqual(deviceTokenEntry(path, t.token), { key: t.key, name: 'ci script', kind: 'token', scopes: ['read'] });
+      assert.deepEqual(listDevices(path).map((d) => [d.name, d.kind, d.scopes]), [['ci script', 'token', ['read']]]);
+      assert.ok(revokeDevice(path, t.key));
+      assert.equal(deviceTokenEntry(path, t.token), null);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('redeemCode spends a code once and returns its scopes without issuing a token', () => {
+    const { path, cleanup } = tmpStore();
+    try {
+      const code = createPairingCode({ scopes: ['read'] });
+      assert.deepEqual(redeemCode(code, '1.2.3.4'), { scopes: ['read'] });
+      assert.match(redeemCode(code, '1.2.3.4').error, /invalid or expired/);
+      assert.deepEqual(listDevices(path), []);
+    } finally {
+      cleanup();
+    }
   });
 });

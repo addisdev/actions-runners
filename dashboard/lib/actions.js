@@ -73,7 +73,49 @@ function run(file, args, { cwd, timeout = 120000, env, okCodes = [0] } = {}) {
   });
 }
 
-export function buildActions({ root, gh, getSnapshot, getLimits = () => ({}) }) {
+// What each action takes, for callers that did not write the UI: /api/v1
+// refuses anything not listed here, and an agent reads it from the catalogue.
+const RUNNER = { name: 'name', type: 'string', required: true, description: 'Runner name, as GET /api/v1/runners lists it.' };
+const HOST = { name: 'hostId', type: 'string', description: 'Host id from GET /api/v1/hosts; omit for the host this daemon runs on.' };
+const REPO = { name: 'repo', type: 'string', required: true, description: 'Repository, owner/repo.' };
+const RUN_ID = { name: 'runId', type: 'integer', required: true, description: 'Workflow run id.' };
+const FORCE = { name: 'force', type: 'boolean', description: 'Add the runner even without headroom.' };
+export const ACTION_ARGS = {
+  'runner.restart': [RUNNER],
+  'fleet.health': [HOST],
+  'fleet.healthRepair': [HOST],
+  'host.off': [HOST],
+  'host.on': [HOST],
+  'host.drain': [HOST],
+  'host.resume': [HOST],
+  'fleet.status': [],
+  'fleet.preflight': [],
+  'fleet.cleanupPreview': [],
+  'fleet.cleanupApply': [],
+  'runner.register': [
+    REPO,
+    { name: 'label', type: 'string', description: 'Extra labels, comma-separated.' },
+    { name: 'instance', type: 'integer', description: 'Instance number; 1 for the repo\'s first runner.' },
+    FORCE,
+  ],
+  'runner.duplicate': [RUNNER, FORCE],
+  'runner.drain': [RUNNER],
+  'runner.resume': [RUNNER],
+  'runner.deregisterPreview': [RUNNER],
+  'runner.deregister': [RUNNER],
+  'run.cancel': [REPO, RUN_ID],
+  'run.rerun': [REPO, RUN_ID, { name: 'failedOnly', type: 'boolean', description: 'Re-run only the failed jobs.' }],
+  'run.recoverOrphan': [REPO, RUN_ID],
+  'workflow.dispatch': [
+    REPO,
+    { name: 'workflowId', type: 'integer', required: true, description: 'Workflow id.' },
+    { name: 'ref', type: 'string', required: true, description: 'Branch or tag to run on.' },
+  ],
+};
+
+export function buildActions({
+  root, gh, getSnapshot, getLimits = () => ({}), getOrphans = () => [], onBackground = () => {},
+}) {
   const knownRunner = (name) => {
     const r = getSnapshot().runners.find((x) => x.name === name);
     if (!r) throw new ActionError(`unknown runner: ${name}`, 404);
@@ -104,6 +146,20 @@ export function buildActions({ root, gh, getSnapshot, getLimits = () => ({}) }) 
     if (!Number.isInteger(n) || n <= 0) throw new ActionError(`${name} must be a positive integer`);
     return n;
   };
+
+  // A re-run is refused while the run is still in progress.
+  async function rerunWhenCompleted(repo, id, { settleMs = 180_000, everyMs = 5_000 } = {}) {
+    const deadline = Date.now() + settleMs;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, everyMs));
+      const run = await gh.run(repo, id).catch(() => null);
+      if (run?.status === 'completed') {
+        await gh.post(`repos/${repo}/actions/runs/${id}/rerun`);
+        return { ok: true, command: `rerun ${repo} run ${id}`, output: 're-run requested after force-cancel' };
+      }
+    }
+    return { ok: false, command: `rerun ${repo} run ${id}`, output: `force-cancelled, still not completed after ${settleMs / 1000} s` };
+  }
 
   // Everything a duplicate needs, worked out from the runner you clicked: which
   // repo, which instance number is free, and which labels the new one must carry.
@@ -447,6 +503,39 @@ export function buildActions({ root, gh, getSnapshot, getLimits = () => ({}) }) 
         const path = failedOnly ? 'rerun-failed-jobs' : 'rerun';
         await gh.post(`repos/${repo}/actions/runs/${id}/${path}`);
         return { code: 0, ok: true, command: `${path} ${repo} run ${id}`, output: 're-run requested' };
+      },
+    },
+
+    // A job orphaned by a runner that went away during "Complete job"
+    // (lib/orphans.js). Plain cancel does nothing to it; force-cancel completes
+    // the run in about a minute, and only then does GitHub accept a re-run.
+    // Returns once the force-cancel is accepted, so a caller is not held for
+    // that minute; the re-run is requested in the background and logged.
+    'run.recoverOrphan': {
+      label: 'Recover orphaned run',
+      danger: 'medium',
+      confirm: 'Force-cancels the run, then re-runs it once GitHub has completed it (about a minute).',
+      summary: (a) => `POST /repos/${a.repo}/actions/runs/${a.runId}/force-cancel, then re-run`,
+      async exec({ repo, runId }) {
+        knownRepo(repo);
+        const id = intArg(runId, 'runId');
+        const o = getOrphans().find((x) => x.repo.toLowerCase() === repo.toLowerCase() && x.runId === id);
+        if (!o) throw new ActionError(`run ${id} has no orphaned job right now`, 409);
+        if (!o.workPassed) {
+          throw new ActionError(
+            `refusing: "${o.failedStep ?? 'a step'}" failed before the runner went away, so a re-run would repeat it. Cancel the run instead.`,
+            409,
+          );
+        }
+        await gh.post(`repos/${repo}/actions/runs/${id}/force-cancel`);
+        rerunWhenCompleted(repo, id).then(onBackground, (err) =>
+          onBackground({ ok: false, command: `rerun ${repo} run ${id}`, output: err.message }));
+        return {
+          code: 0,
+          ok: true,
+          command: `force-cancel ${repo} run ${id}`,
+          output: 'force-cancel accepted; the re-run is requested once GitHub completes the run (about a minute). Wait on the checks.',
+        };
       },
     },
 

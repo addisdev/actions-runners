@@ -188,6 +188,57 @@ describe('/api/v1', () => {
     assert.equal((await r.json()).error.code, 'unknown_repo');
   });
 
+  test('a scoped token, end to end: minted by the master token, it previews act actions and is refused the rest', async () => {
+    const master = { authorization: `Bearer ${'a'.repeat(64)}`, 'content-type': 'application/json' };
+    const minted = await fetch(url('/api/v1/tokens'), {
+      method: 'POST', headers: master, body: JSON.stringify({ name: 'routes test agent', scopes: 'read,act' }),
+    });
+    assert.equal(minted.status, 200);
+    const { token, key } = await minted.json();
+    const agent = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
+
+    const me = await (await fetch(url('/api/v1/me'), { headers: agent })).json();
+    assert.deepEqual([me.caller, me.scopes], ['routes test agent', ['read', 'act']]);
+
+    const preview = await fetch(url('/api/v1/actions/fleet.status'), { method: 'POST', headers: agent, body: '{}' });
+    const p = await preview.json();
+    assert.equal(p.status, 'confirm_required');
+    assert.equal(p.command, './status.sh');
+    assert.ok(p.confirm);
+
+    const danger = await fetch(url('/api/v1/actions/fleet.cleanupApply'), { method: 'POST', headers: agent, body: '{}' });
+    assert.equal(danger.status, 403);
+    assert.equal((await danger.json()).error.code, 'insufficient_scope');
+
+    const wider = await fetch(url('/api/v1/tokens'), {
+      method: 'POST', headers: agent, body: JSON.stringify({ name: 'escalate', scopes: 'act:danger' }),
+    });
+    assert.equal(wider.status, 403);
+
+    const devices = await (await fetch(url('/api/devices'), { headers: master })).json();
+    assert.ok(devices.devices.some((d) => d.key === key && d.kind === 'token'));
+
+    // The UI's unscoped write routes do not take it at all.
+    const legacy = await fetch(url('/api/action'), {
+      method: 'POST', headers: agent, body: JSON.stringify({ action: 'fleet.cleanupApply', args: {} }),
+    });
+    assert.equal(legacy.status, 403);
+    const pairing = await fetch(url('/api/pair/start'), { method: 'POST', headers: agent, body: '{}' });
+    assert.equal(pairing.status, 403);
+  });
+
+  test('a token that is not ours is refused even on a read', async () => {
+    const r = await fetch(url('/api/v1/status'), { headers: { authorization: `Bearer ${'b'.repeat(64)}` } });
+    assert.equal(r.status, 403);
+    assert.equal((await r.json()).error.code, 'bad_token');
+  });
+
+  test('an action without a token is a 401 in the v1 shape', async () => {
+    const r = await fetch(url('/api/v1/actions/fleet.status'), { method: 'POST', body: '{}' });
+    assert.equal(r.status, 401);
+    assert.equal((await r.json()).error.code, 'missing_token');
+  });
+
   test('a wrong method is a 405 with Allow', async () => {
     const r = await fetch(url('/api/v1/status'), { method: 'DELETE' });
     assert.equal(r.status, 405);
