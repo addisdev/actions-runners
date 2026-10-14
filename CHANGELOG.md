@@ -16,6 +16,11 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
   `{ error: { code, message, hint } }` shape, unknown query parameters are
   refused, and `GET /api/v1/openapi.json` is generated from the same route
   table that validates requests. See [API Reference](docs/api.md#version-1-apiv1).
+- **Orphaned jobs, detected by the daemon.** `GET /api/v1/orphans` and the
+  repository diagnosis list jobs that passed every step but were left in
+  progress because their runner was drained or lost during "Complete job",
+  with the force-cancel and re-run commands that clear them. Until now only
+  the Mac app could see these, by calling `gh` from the laptop.
 
 ## [v0.3.0] — 2026-10-13
 

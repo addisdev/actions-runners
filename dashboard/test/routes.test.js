@@ -167,7 +167,7 @@ describe('/api/v1', () => {
   });
 
   test('lists are wrapped in items', async () => {
-    for (const path of ['/api/v1/runners', '/api/v1/hosts', '/api/v1/queue', '/api/v1/actions']) {
+    for (const path of ['/api/v1/runners', '/api/v1/hosts', '/api/v1/queue', '/api/v1/orphans', '/api/v1/actions']) {
       const body = await (await fetch(url(path))).json();
       assert.ok(Array.isArray(body.items), `${path} has items`);
     }
