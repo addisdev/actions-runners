@@ -37,6 +37,7 @@ import { RunSettler } from './lib/settle.js';
 import { RunStatus } from './lib/run-status.js';
 import { analytics, repoDetail } from './lib/analytics.js';
 import { buildActions, ActionError } from './lib/actions.js';
+import { handleApi, API_PREFIX } from './lib/api.js';
 import { loadOrCreateToken, authorize, bearerToken, tokenMatches } from './lib/auth.js';
 import {
   initAllowedHosts, refreshNetworkIdentity, reachableUrls, ensureHostAllowed, pairingUrl,
@@ -412,6 +413,16 @@ function currentGlance(now = Date.now()) {
     posture: postureCache,
   });
 }
+
+const API_CONTEXT = {
+  glance: () => currentGlance(),
+  actions: () => ({
+    readOnly: CONFIG.readOnly,
+    items: Object.entries(ACTIONS).map(([id, a]) => ({
+      id, label: a.label, danger: a.danger, confirm: a.confirm ?? null,
+    })),
+  }),
+};
 
 // ---------------------------------------------------------------- persistence
 
@@ -2650,9 +2661,9 @@ const SECURITY_HEADERS = {
   // proxy that sets a stricter CSP.
 };
 
-function json(res, body, status = 200) {
+function json(res, body, status = 200, headers = {}) {
   const text = JSON.stringify(body);
-  res.writeHead(status, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+  res.writeHead(status, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers });
   res.end(text);
 }
 
@@ -2699,6 +2710,11 @@ const server = http.createServer(async (req, res) => {
     }
   }
   const url = new URL(req.url, 'http://localhost');
+
+  if (url.pathname === API_PREFIX || url.pathname.startsWith(`${API_PREFIX}/`)) {
+    const out = await handleApi({ method: req.method, url }, API_CONTEXT);
+    return json(res, out.body, out.status, out.headers);
+  }
 
   if (url.pathname === '/api/access') {
     const ctx = viewerContext(req);

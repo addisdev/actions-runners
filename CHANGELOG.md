@@ -8,6 +8,15 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ## [Unreleased]
 
+### Added
+
+- **Versioned API (`/api/v1`).** A stable read API for scripts and agent
+  tools: fleet status, a per-repository diagnosis, the queue, runners, hosts
+  and the action catalogue. Lists are wrapped in `items`, errors share one
+  `{ error: { code, message, hint } }` shape, unknown query parameters are
+  refused, and `GET /api/v1/openapi.json` is generated from the same route
+  table that validates requests. See [API Reference](docs/api.md#version-1-apiv1).
+
 ## [v0.3.0] — 2026-10-13
 
 More than one Mac, and one answer for the whole fleet. A second host joins in
