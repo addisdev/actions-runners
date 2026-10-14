@@ -43,8 +43,9 @@ it needs (`read` for everything in this version).
 | Route | What it returns |
 |---|---|
 | `GET /api/v1/status` | The fleet verdict, counts, standing risks (`posture`) and `freshness` (`generatedAt`, `ageMs`, `stale`). |
-| `GET /api/v1/repos/{owner}/{repo}/diagnosis` | One repository: its runners, queued runs with cause and ETA, active and recent runs, recent failures (each with `notYourCode`) and incidents that mention it, beside the fleet verdict. `404 unknown_repo` if the fleet has never seen it. |
+| `GET /api/v1/repos/{owner}/{repo}/diagnosis` | One repository: its runners, queued runs with cause and ETA, active and recent runs, recent failures (each with `notYourCode`), orphaned jobs and incidents that mention it, beside the fleet verdict. `404 unknown_repo` if the fleet has never seen it. |
 | `GET /api/v1/queue?repo=` | Queued runs, each with its cause, confidence, evidence and ETA range. |
+| `GET /api/v1/orphans?repo=` | Jobs orphaned by a runner that went away while they were finishing (see below). |
 | `GET /api/v1/runners?repo=&host=&state=` | Every runner across every host. |
 | `GET /api/v1/hosts` | Every host with `stale`, `off`, `drained` and vitals. |
 | `GET /api/v1/actions` | The action catalogue: `id`, `label`, `danger`, `confirm`. |
@@ -55,6 +56,28 @@ For example:
 ```sh
 curl -s localhost:7878/api/v1/repos/acme/comet-web/diagnosis | jq '.verdict.id, .failures'
 ```
+
+### Orphaned jobs
+
+A job is orphaned when its runner was drained or lost while the job was
+finishing. Every work step passed, but GitHub still shows the job in progress,
+stuck at "Complete runner" or "Complete job". Anything waiting on that check
+waits forever, and `gh run cancel` doesn't clear it. The way out is a
+force-cancel, then a re-run about a minute later. Each orphan lists the exact
+commands under `recovery`.
+
+The daemon flags a job when all of these hold:
+
+- every work step has completed;
+- a "Complete …" step has been cancelled or unfinished for at least 3 minutes;
+- the runner is draining, offline, dead, lost or on a down host, or a
+  "Complete …" step was cancelled.
+
+`workPassed: false` means a work step had already failed, so a re-run would
+only repeat the failure. The daemon reads the steps from the job lists it
+already fetches for active runs, so this costs no extra GitHub calls. The Mac
+app's `cockpit` uses the same rules, and both are tested against the same
+fixture (`cockpit/Sources/CockpitCore/Fixtures/orphaned-jobs.json`).
 
 ## Read endpoints
 

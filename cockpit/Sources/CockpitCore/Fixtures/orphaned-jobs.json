@@ -1,0 +1,325 @@
+{
+ "_comment": "addisdev/lake-api PR #73, 2026-10-12/13. Each is gh api repos/addisdev/lake-api/actions/jobs/<id> with the steps exactly as GitHub recorded them; status/conclusion/completed_at are put back to what GitHub showed while it was stuck. Read by cockpit's OrphanedJobTests and dashboard/test/orphans.test.js, so both classifiers are held to the same jobs.",
+ "docsBuild1": {
+  "completed_at": null,
+  "conclusion": null,
+  "head_sha": "ac14128a1787744532bef60da7334a0a8df33637",
+  "html_url": "https://github.com/addisdev/lake-api/actions/runs/38318681067/job/115041321171",
+  "id": 115041321171,
+  "labels": [
+   "self-hosted",
+   "macOS",
+   "lake-api"
+  ],
+  "name": "build",
+  "run_attempt": 1,
+  "run_id": 38318681067,
+  "runner_id": 2,
+  "runner_name": "MACSERIAL0-lake-api",
+  "started_at": "2026-10-12T22:47:52Z",
+  "status": "in_progress",
+  "steps": [
+   {
+    "completed_at": "2026-10-12T22:48:19Z",
+    "conclusion": "success",
+    "name": "Set up job",
+    "number": 1,
+    "started_at": "2026-10-12T22:47:53Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-12T22:59:33Z",
+    "conclusion": "success",
+    "name": "Set up runner",
+    "number": 2,
+    "started_at": "2026-10-12T22:48:19Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-12T23:00:07Z",
+    "conclusion": "success",
+    "name": "Run actions/checkout@v4",
+    "number": 3,
+    "started_at": "2026-10-12T22:59:33Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-12T23:00:08Z",
+    "conclusion": "success",
+    "name": "Run astral-sh/setup-uv@v10.2.0",
+    "number": 4,
+    "started_at": "2026-10-12T23:00:07Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-12T23:00:13Z",
+    "conclusion": "success",
+    "name": "Build",
+    "number": 5,
+    "started_at": "2026-10-12T23:00:08Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-12T23:00:13Z",
+    "conclusion": "skipped",
+    "name": "Run actions/upload-pages-artifact@v3",
+    "number": 6,
+    "started_at": "2026-10-12T23:00:13Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-12T23:00:13Z",
+    "conclusion": "success",
+    "name": "Post Run astral-sh/setup-uv@v10.2.0",
+    "number": 10,
+    "started_at": "2026-10-12T23:00:13Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-12T23:00:33Z",
+    "conclusion": "success",
+    "name": "Post Run actions/checkout@v4",
+    "number": 11,
+    "started_at": "2026-10-12T23:00:13Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-12T23:00:39Z",
+    "conclusion": "cancelled",
+    "name": "Complete runner",
+    "number": 12,
+    "started_at": "2026-10-12T23:00:33Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": null,
+    "conclusion": null,
+    "name": "Complete job",
+    "number": 13,
+    "started_at": "2026-10-12T23:00:39Z",
+    "status": "in_progress"
+   }
+  ],
+  "workflow_name": "docs"
+ },
+ "docsBuild2": {
+  "completed_at": null,
+  "conclusion": null,
+  "head_sha": "980be16f1dad9766d7df4a9483857c9680d5ae75",
+  "html_url": "https://github.com/addisdev/lake-api/actions/runs/38331315857/job/115081448360",
+  "id": 115081448360,
+  "labels": [
+   "self-hosted",
+   "macOS",
+   "lake-api"
+  ],
+  "name": "build",
+  "run_attempt": 1,
+  "run_id": 38331315857,
+  "runner_id": 2,
+  "runner_name": "MACSERIAL0-lake-api",
+  "started_at": "2026-10-13T01:16:14Z",
+  "status": "in_progress",
+  "steps": [
+   {
+    "completed_at": "2026-10-13T01:16:18Z",
+    "conclusion": "success",
+    "name": "Set up job",
+    "number": 1,
+    "started_at": "2026-10-13T01:16:15Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-13T01:21:55Z",
+    "conclusion": "success",
+    "name": "Set up runner",
+    "number": 2,
+    "started_at": "2026-10-13T01:16:18Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-13T01:22:33Z",
+    "conclusion": "success",
+    "name": "Run actions/checkout@v4",
+    "number": 3,
+    "started_at": "2026-10-13T01:21:55Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-13T01:22:34Z",
+    "conclusion": "success",
+    "name": "Run astral-sh/setup-uv@v10.2.0",
+    "number": 4,
+    "started_at": "2026-10-13T01:22:33Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-13T01:22:37Z",
+    "conclusion": "success",
+    "name": "Build",
+    "number": 5,
+    "started_at": "2026-10-13T01:22:34Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-13T01:22:37Z",
+    "conclusion": "skipped",
+    "name": "Run actions/upload-pages-artifact@v3",
+    "number": 6,
+    "started_at": "2026-10-13T01:22:37Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-13T01:22:38Z",
+    "conclusion": "success",
+    "name": "Post Run astral-sh/setup-uv@v10.2.0",
+    "number": 10,
+    "started_at": "2026-10-13T01:22:37Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-13T01:22:59Z",
+    "conclusion": "success",
+    "name": "Post Run actions/checkout@v4",
+    "number": 11,
+    "started_at": "2026-10-13T01:22:38Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": null,
+    "conclusion": null,
+    "name": "Complete runner",
+    "number": 12,
+    "started_at": "2026-10-13T01:22:59Z",
+    "status": "in_progress"
+   }
+  ],
+  "workflow_name": "docs"
+ },
+ "siteJob": {
+  "completed_at": null,
+  "conclusion": null,
+  "head_sha": "980be16f1dad9766d7df4a9483857c9680d5ae75",
+  "html_url": "https://github.com/addisdev/lake-api/actions/runs/38331315807/job/115081447989",
+  "id": 115081447989,
+  "labels": [
+   "self-hosted",
+   "macOS",
+   "ci"
+  ],
+  "name": "site",
+  "run_attempt": 1,
+  "run_id": 38331315807,
+  "runner_id": 23,
+  "runner_name": "MACSERIAL0-lake-api-2",
+  "started_at": "2026-10-13T01:16:14Z",
+  "status": "in_progress",
+  "steps": [
+   {
+    "completed_at": "2026-10-13T01:16:16Z",
+    "conclusion": "success",
+    "name": "Set up job",
+    "number": 1,
+    "started_at": "2026-10-13T01:16:15Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-13T01:18:23Z",
+    "conclusion": "success",
+    "name": "Set up runner",
+    "number": 2,
+    "started_at": "2026-10-13T01:16:16Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-13T01:18:58Z",
+    "conclusion": "success",
+    "name": "Run actions/checkout@v4",
+    "number": 3,
+    "started_at": "2026-10-13T01:18:23Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-13T01:18:59Z",
+    "conclusion": "success",
+    "name": "Run actions/setup-node@v4",
+    "number": 4,
+    "started_at": "2026-10-13T01:18:58Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-13T01:19:01Z",
+    "conclusion": "success",
+    "name": "Built site matches its inputs",
+    "number": 5,
+    "started_at": "2026-10-13T01:18:59Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-13T01:19:01Z",
+    "conclusion": "success",
+    "name": "Deploy script pins the same wrangler",
+    "number": 6,
+    "started_at": "2026-10-13T01:19:01Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-13T01:19:02Z",
+    "conclusion": "success",
+    "name": "Relay and Worker unit tests",
+    "number": 7,
+    "started_at": "2026-10-13T01:19:01Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-13T01:19:04Z",
+    "conclusion": "success",
+    "name": "Nothing loaded from another host",
+    "number": 8,
+    "started_at": "2026-10-13T01:19:02Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-13T01:19:20Z",
+    "conclusion": "success",
+    "name": "Wrangler dry run (no credentials)",
+    "number": 9,
+    "started_at": "2026-10-13T01:19:04Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-13T01:19:21Z",
+    "conclusion": "success",
+    "name": "Post Run actions/setup-node@v4",
+    "number": 16,
+    "started_at": "2026-10-13T01:19:20Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-13T01:19:41Z",
+    "conclusion": "success",
+    "name": "Post Run actions/checkout@v4",
+    "number": 17,
+    "started_at": "2026-10-13T01:19:21Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": "2026-10-13T01:19:48Z",
+    "conclusion": "cancelled",
+    "name": "Complete runner",
+    "number": 18,
+    "started_at": "2026-10-13T01:19:41Z",
+    "status": "completed"
+   },
+   {
+    "completed_at": null,
+    "conclusion": null,
+    "name": "Complete job",
+    "number": 19,
+    "started_at": "2026-10-13T01:19:48Z",
+    "status": "in_progress"
+   }
+  ],
+  "workflow_name": "site-ci"
+ }
+}

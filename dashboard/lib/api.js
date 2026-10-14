@@ -80,8 +80,9 @@ export const ROUTES = [
     description:
       'Everything the fleet knows about one repository: its runners and their states, its queued runs with '
       + 'the classified cause and ETA, its active and recently finished runs, its recent failures (each '
-      + 'marked notYourCode when the host or the account caused it), and open incidents that mention it, '
-      + 'beside the fleet verdict. A failure with notYourCode true is never fixed by changing code.',
+      + 'marked notYourCode when the host or the account caused it), jobs orphaned by a runner that went '
+      + 'away while they were finishing, and open incidents that mention it, beside the fleet verdict. '
+      + 'A failure with notYourCode true, or an orphan with workPassed true, is never fixed by changing code.',
     params: repoPath,
     handler: (ctx, p) => {
       const full = `${p.owner}/${p.repo}`;
@@ -96,13 +97,21 @@ export const ROUTES = [
           `the fleet has no runner, queued run, recent run or failure for ${full}`,
           'Repositories are owner/repo and match GitHub. GET /api/v1/runners lists the ones the fleet serves.');
       }
-      const short = p.repo.toLowerCase();
-      const incidents = (g.incidents ?? []).filter((i) =>
-        `${i.key ?? ''} ${i.title ?? ''}`.toLowerCase().includes(short));
+      // Incident keys name a repository in full (newfail:owner/repo:…) or a
+      // runner (runner:unused:<name>). A bare repository name would match
+      // every incident about a repo whose name contains it.
+      const needles = [full, ...runners.map((r) => r.name)].map((s) =>
+        new RegExp(`(^|[^a-z0-9_.-])${s.toLowerCase().replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}($|[^a-z0-9_.-])`));
+      const incidents = (g.incidents ?? []).filter((i) => {
+        const hay = `${i.key ?? ''} ${i.title ?? ''}`.toLowerCase();
+        return needles.some((n) => n.test(hay));
+      });
       return {
         repo: runners[0]?.repo ?? queue[0]?.repo ?? runs[0]?.repo ?? recent[0]?.repo ?? failures[0]?.repo,
         verdict: g.verdict,
-        runners, queue, runs, recent, failures, incidents,
+        runners, queue, runs, recent, failures,
+        orphans: byRepo(ctx.orphans(g), full),
+        incidents,
         freshness: freshness(g),
       };
     },
@@ -118,6 +127,20 @@ export const ROUTES = [
       + 'estimated start and finish ranges. A queue is not a stall: `waiting`-class causes clear on their own.',
     params: [repoQuery],
     handler: (ctx, p) => ({ items: byRepo(ctx.glance().queue, p.repo) }),
+  },
+  {
+    id: 'list_orphans',
+    method: 'GET',
+    path: '/orphans',
+    scope: 'read',
+    summary: 'Jobs whose runner went away while they were finishing',
+    description:
+      'Jobs GitHub still shows in progress although every work step completed, because the runner was '
+      + 'drained or lost during "Complete job". Waiting on them never ends: they need a force-cancel, then '
+      + 'a re-run about a minute later (each orphan lists the commands under recovery). workPassed true '
+      + 'means the result was lost, not failed.',
+    params: [repoQuery],
+    handler: (ctx, p) => ({ items: byRepo(ctx.orphans(ctx.glance()), p.repo) }),
   },
   {
     id: 'list_runners',
@@ -246,9 +269,9 @@ export function matchRoute(method, url) {
   return { route, params };
 }
 
-// ctx supplies what the handlers read: glance() (the /api/glance payload) and
-// actions() (the catalogue). Both are functions so a route that does not need
-// the glance does not pay for building it.
+// ctx supplies what the handlers read: glance() (the /api/glance payload),
+// orphans(glance) and actions() (the catalogue). They are functions so a
+// route that does not need the glance does not pay for building it.
 export async function handleApi({ method, url }, ctx) {
   const headers = { 'fleet-api-version': String(API_VERSION) };
   try {

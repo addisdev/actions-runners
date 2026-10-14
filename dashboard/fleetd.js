@@ -38,6 +38,7 @@ import { RunStatus } from './lib/run-status.js';
 import { analytics, repoDetail } from './lib/analytics.js';
 import { buildActions, ActionError } from './lib/actions.js';
 import { handleApi, API_PREFIX } from './lib/api.js';
+import { findOrphans, trimJob } from './lib/orphans.js';
 import { loadOrCreateToken, authorize, bearerToken, tokenMatches } from './lib/auth.js';
 import {
   initAllowedHosts, refreshNetworkIdentity, reachableUrls, ensureHostAllowed, pairingUrl,
@@ -414,8 +415,14 @@ function currentGlance(now = Date.now()) {
   });
 }
 
+// Every active run's jobs with their steps, as the last fast tick fetched
+// them. The snapshot keeps shaped jobs without steps; orphan detection needs
+// the steps, and keeping them here costs no extra GitHub call.
+let activeRunJobs = [];
+
 const API_CONTEXT = {
   glance: () => currentGlance(),
+  orphans: (glance) => findOrphans(activeRunJobs, glance.runners),
   actions: () => ({
     readOnly: CONFIG.readOnly,
     items: Object.entries(ACTIONS).map(([id, a]) => ({
@@ -1771,12 +1778,15 @@ async function fastTick(progress = null) {
   // Which runner claimed each active run is a per-job fact, so it costs an extra
   // call. Spend it only on active runs — that is where the question is live.
   stage(progress, `jobs for ${active.length} active runs`);
+  const stepsByRun = new Map();
   await mapWithConcurrency(
     active,
     CONFIG.jobFetchConcurrency,
     async (run) => {
       try {
-        const jobs = (await gh.jobsForRun(run.repo, run.id)).map((j) => shapeJob(run.repo, j));
+        const raw = await gh.jobsForRun(run.repo, run.id);
+        stepsByRun.set(run.id, { repo: run.repo, runId: run.id, jobs: raw.map(trimJob) });
+        const jobs = raw.map((j) => shapeJob(run.repo, j));
         run.jobs = jobs;
         for (const j of jobs) persistJob(j);
         const claimed = jobs.find((j) => j.runnerName);
@@ -1788,6 +1798,7 @@ async function fastTick(progress = null) {
       }
     }
   );
+  activeRunJobs = [...stepsByRun.values()];
 
   // A busy runner with no timeout can block its repo indefinitely. Compare each
   // live run with the p95 of its own workflow (falling back to repo/fleet

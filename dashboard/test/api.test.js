@@ -11,9 +11,10 @@ import { handleApi, matchRoute, openApi, ROUTES, ApiError } from '../lib/api.js'
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), '../../cockpit/Sources/CockpitCore/Fixtures');
 const glance = (name) => JSON.parse(readFileSync(join(FIXTURES, `${name}.json`), 'utf8'));
 
-function ctx(g = glance('live')) {
+function ctx(g = glance('live'), orphans = []) {
   return {
     glance: () => g,
+    orphans: () => orphans,
     actions: () => ({ readOnly: false, items: [{ id: 'fleet.health', label: 'Health check', danger: 'none', confirm: null }] }),
   };
 }
@@ -83,6 +84,30 @@ describe('responses', () => {
     assert.equal(out.status, 404);
     assert.equal(out.body.error.code, 'unknown_repo');
     assert.match(out.body.error.hint, /\/api\/v1\/runners/);
+  });
+
+  test('a diagnosis carries the repository\'s orphans, and /orphans filters by repo', async () => {
+    const g = glance('live');
+    const repo = g.runs[0].repo;
+    const orphans = [{ repo, runId: 1, workPassed: true }, { repo: 'acme/other', runId: 2, workPassed: true }];
+    const diag = await get(`/api/v1/repos/${repo}/diagnosis`, ctx(g, orphans));
+    assert.deepEqual(diag.body.orphans.map((o) => o.runId), [1]);
+    assert.equal((await get('/api/v1/orphans', ctx(g, orphans))).body.items.length, 2);
+    assert.deepEqual((await get('/api/v1/orphans?repo=acme/other', ctx(g, orphans))).body.items.map((o) => o.runId), [2]);
+  });
+
+  test('incidents match the full repository or one of its runners, not a bare name', async () => {
+    const g = glance('live');
+    const r = g.runners[0];
+    const [owner, name] = r.repo.split('/');
+    g.incidents = [
+      { key: `newfail:${r.repo}:ci:1`, title: 'newly failing' },
+      { key: `runner:unused:${r.name}`, title: 'unused runner' },
+      { key: `newfail:${owner}/${name}-extra:ci:2`, title: 'a different repo' },
+      { key: 'host:pressure', title: `Kernel pressure, mentions ${name}` },
+    ];
+    const keys = (await get(`/api/v1/repos/${r.repo}/diagnosis`, ctx(g))).body.incidents.map((i) => i.key);
+    assert.deepEqual(keys, [`newfail:${r.repo}:ci:1`, `runner:unused:${r.name}`]);
   });
 
   test('actions come from the catalogue', async () => {
