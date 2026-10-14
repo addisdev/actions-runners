@@ -154,6 +154,47 @@ test('GET /api/actions returns 200 without auth', async () => {
   assert.equal(r.status, 200);
 });
 
+describe('/api/v1', () => {
+  test('GET /api/v1/status returns the verdict and the version header', async () => {
+    await waitForFirstTick(daemon.port);
+    const r = await fetch(url('/api/v1/status'));
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('fleet-api-version'), '1');
+    assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
+    const body = await r.json();
+    assert.ok(body.verdict?.id);
+    assert.equal(typeof body.freshness.stale, 'boolean');
+  });
+
+  test('lists are wrapped in items', async () => {
+    for (const path of ['/api/v1/runners', '/api/v1/hosts', '/api/v1/queue', '/api/v1/actions']) {
+      const body = await (await fetch(url(path))).json();
+      assert.ok(Array.isArray(body.items), `${path} has items`);
+    }
+  });
+
+  test('an unknown route is a 404 in the error shape', async () => {
+    const r = await fetch(url('/api/v1/nope'));
+    assert.equal(r.status, 404);
+    assert.equal(r.headers.get('fleet-api-version'), '1');
+    const body = await r.json();
+    assert.equal(body.error.code, 'not_found');
+    assert.match(body.error.hint, /openapi\.json/);
+  });
+
+  test('a wrong method is a 405 with Allow', async () => {
+    const r = await fetch(url('/api/v1/status'), { method: 'DELETE' });
+    assert.equal(r.status, 405);
+    assert.equal(r.headers.get('allow'), 'GET');
+  });
+
+  test('GET /api/v1/openapi.json describes every route', async () => {
+    const doc = await (await fetch(url('/api/v1/openapi.json'))).json();
+    assert.equal(doc.openapi, '3.1.0');
+    assert.ok(doc.paths['/api/v1/repos/{owner}/{repo}/diagnosis'].get);
+  });
+});
+
 test('POST /api/settings applies a valid setting', async () => {
   const r = await fetch(url('/api/settings'), {
     method: 'POST',

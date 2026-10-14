@@ -16,6 +16,46 @@ Authorization: Bearer <token>
 
 Print the token: `cd dashboard && ./fleetctl.sh token`
 
+## Version 1 (`/api/v1`)
+
+Use the routes under `/api/v1` when you write a script, a CLI or an agent tool.
+The unversioned routes further down belong to the browser UI and can change
+whenever the UI does.
+
+Every v1 route follows the same rules:
+
+- A repository is always `owner/repo`, in the path or as `?repo=owner/repo`,
+  never a bare name. Names are compared case-insensitively, as GitHub does.
+- A list comes back as `{ "items": [...] }`.
+- An error comes back as `{ "error": { "code", "message", "hint" } }` with a
+  4xx or 5xx status. `code` is stable and meant for programs. `hint` says what
+  to try next.
+- A query parameter the route does not take is refused with
+  `400 unknown_param`, not ignored.
+- Every response carries a `fleet-api-version: 1` header.
+
+`GET /api/v1/openapi.json` is the full description as OpenAPI 3.1. It is
+generated from the same route table (`dashboard/lib/api.js`) that validates
+requests, so it can't drift from what the daemon accepts. Each operation's
+`operationId` is a stable snake_case name, and `x-fleet-scope` is the scope
+it needs (`read` for everything in this version).
+
+| Route | What it returns |
+|---|---|
+| `GET /api/v1/status` | The fleet verdict, counts, standing risks (`posture`) and `freshness` (`generatedAt`, `ageMs`, `stale`). |
+| `GET /api/v1/repos/{owner}/{repo}/diagnosis` | One repository: its runners, queued runs with cause and ETA, active and recent runs, recent failures (each with `notYourCode`) and incidents that mention it, beside the fleet verdict. `404 unknown_repo` if the fleet has never seen it. |
+| `GET /api/v1/queue?repo=` | Queued runs, each with its cause, confidence, evidence and ETA range. |
+| `GET /api/v1/runners?repo=&host=&state=` | Every runner across every host. |
+| `GET /api/v1/hosts` | Every host with `stale`, `off`, `drained` and vitals. |
+| `GET /api/v1/actions` | The action catalogue: `id`, `label`, `danger`, `confirm`. |
+
+v1 reads follow the same rules as the routes below: no token on loopback.
+For example:
+
+```sh
+curl -s localhost:7878/api/v1/repos/acme/comet-web/diagnosis | jq '.verdict.id, .failures'
+```
+
 ## Read endpoints
 
 ### `GET /api/state`
