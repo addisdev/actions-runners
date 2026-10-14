@@ -44,7 +44,7 @@ describe('mergeRunPages', () => {
     assert.deepEqual(merged.map((r) => r.id).sort((a, b) => a - b), [10, 11, 12]);
   });
 
-  // jerv-ios PR #181, 2026-10-11: attempt 2 failed, `gh run rerun --failed`
+  // jot-ios PR #181, 2026-10-11: attempt 2 failed, `gh run rerun --failed`
   // started attempt 3 under the same run id. Whichever page arrives first,
   // the merged run is the re-run, not the failure it retries.
   test('keeps the latest attempt of a re-run, in either page order', () => {

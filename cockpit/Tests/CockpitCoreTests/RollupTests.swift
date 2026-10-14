@@ -41,7 +41,7 @@ struct RollupTests {
         #expect(Rollup.checkSets(g).first?.state == .green)
     }
 
-    /// jerv-ios PR #181, 2026-10-11: a re-run keeps the run id. Attempt 2's
+    /// jot-ios PR #181, 2026-10-11: a re-run keeps the run id. Attempt 2's
     /// failure and attempt 3, running, are one run; the rollup is pending,
     /// whichever list each copy arrives in.
     @Test func anInProgressRerunOfAFailedAttemptIsPending() throws {
@@ -67,7 +67,7 @@ struct RollupTests {
         #expect(s.state == .red && s.failed.map(\.workflow) == ["e2e"])
     }
 
-    /// greenfolio-web PR #399, 2026-10-02: both checks were cancelled (timed out
+    /// shop-web PR #399, 2026-10-02: both checks were cancelled (timed out
     /// in the admission wait) and the rollup read "2 of 2 green".
     @Test func cancelledChecksAreRedNotGreen() throws {
         let g = try glance(recent: [run(1, "QA Tests", conclusion: "cancelled"), run(2, "Web E2E", conclusion: "cancelled")])
@@ -172,7 +172,7 @@ struct WaiterTests {
     }
 }
 
-/// taylab-launch-kit PR #79, 2026-10-03, run ids as GitHub gave them. 16c0536
+/// site-web PR #79, 2026-10-03, run ids as GitHub gave them. 16c0536
 /// was pushed (kit-ci 37124998303), caf600e on top cancelled it and failed
 /// (37125005925), then the branch was force-pushed back to 16c0536. Until the
 /// daemon saw the new run (37125411032), a wait on the PR read "red" from
@@ -182,12 +182,12 @@ struct PRHeadTests {
     let head = "16c0536773bc"
     var cancelledFirst: RunRow { run(37124998303, "kit-ci", conclusion: "cancelled", sha: "16c0536", pr: 79, updated: 1_000, head: head) }
     var failedOnTop: RunRow { run(37125005925, "kit-ci", conclusion: "failure", sha: "caf600e", pr: 79, updated: 2_000, head: head) }
-    let pr = WaitTarget(repo: "taylab-launch-kit", pr: 79)
-    let headSha = WaitTarget(repo: "taylab-launch-kit", sha: "16c0536773bcd1c6cb6aa99ac3aeb6a0d269114c")
+    let pr = WaitTarget(repo: "site-web", pr: 79)
+    let headSha = WaitTarget(repo: "site-web", sha: "16c0536773bcd1c6cb6aa99ac3aeb6a0d269114c")
 
     private func g(_ runs: [RunRow] = [], _ recent: [RunRow]) throws -> Glance {
-        try glance(runs: runs.map { var r = $0; r.repo = "addisdev/taylab-launch-kit"; return r },
-                   recent: recent.map { var r = $0; r.repo = "addisdev/taylab-launch-kit"; return r })
+        try glance(runs: runs.map { var r = $0; r.repo = "addisdev/site-web"; return r },
+                   recent: recent.map { var r = $0; r.repo = "addisdev/site-web"; return r })
     }
 
     @Test func aWaitOnThePRDoesNotReadAnOlderCommitsRed() throws {
@@ -224,7 +224,7 @@ struct PRHeadTests {
     @Test func aCommitTheBranchMovedPastKeepsItsCancel() throws {
         let g = try g([], [run(1, "ci", conclusion: "cancelled", sha: "aaaaaaa", pr: 79, head: "bbbbbbbbbbbb"),
                            run(2, "ci", status: "in_progress", sha: "bbbbbbb", pr: 79, head: "bbbbbbbbbbbb")])
-        guard case .red = Waiter.decide(g, verdict: g.verdict, target: WaitTarget(repo: "taylab-launch-kit", sha: "aaaaaaa")) else {
+        guard case .red = Waiter.decide(g, verdict: g.verdict, target: WaitTarget(repo: "site-web", sha: "aaaaaaa")) else {
             Issue.record("expected red"); return
         }
         guard case .waiting = Waiter.decide(g, verdict: g.verdict, target: pr) else { Issue.record("expected the head, pending"); return }

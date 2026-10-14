@@ -46,11 +46,11 @@ describe('repo upsert SQL', () => {
 
   test('the repo upsert refreshes visibility and name', () => {
     const upsert = db.prepare(UPSERT_REPO);
-    upsert.run('o/fleet-runner', 'fleet-runner', 0, 1, '2026-09-01', 2, 1, 1);
-    upsert.run('o/fleet-runner', 'fleet-runner2', 0, 0, '2026-10-01', 2, 1, 2);
-    const row = db.prepare('SELECT name, private, pushed_at FROM repos WHERE full_name = ?').get('o/fleet-runner');
+    upsert.run('o/tool-repo', 'tool-repo', 0, 1, '2026-09-01', 2, 1, 1);
+    upsert.run('o/tool-repo', 'tool-repo2', 0, 0, '2026-10-01', 2, 1, 2);
+    const row = db.prepare('SELECT name, private, pushed_at FROM repos WHERE full_name = ?').get('o/tool-repo');
     assert.equal(row.private, 0);
-    assert.equal(row.name, 'fleet-runner2');
+    assert.equal(row.name, 'tool-repo2');
     assert.equal(row.pushed_at, '2026-10-01');
   });
 });

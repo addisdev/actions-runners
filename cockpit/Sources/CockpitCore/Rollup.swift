@@ -20,7 +20,7 @@ public struct CheckSet: Identifiable, Sendable, Equatable {
     public var state: State
     /// This commit's own result for these checks is stale: the PR's branch
     /// moved to another commit after they ran and has since come back, so a
-    /// new run is due (taylab-launch-kit PR #79, 2026-10-03).
+    /// new run is due (site-web PR #79, 2026-10-03).
     public var superseded: [RunRow] = []
 
     public var label: String {
@@ -122,7 +122,7 @@ public enum Rollup {
 
     /// A PR's checks are its HEAD commit's checks. Until the head has a run
     /// this is nil (still waiting), never an older commit's result: on
-    /// taylab-launch-kit PR #79 a wait read "red" from a commit the branch had
+    /// site-web PR #79 a wait read "red" from a commit the branch had
     /// been force-pushed off. Without a known head (an older daemon), the
     /// commit with the newest run stands in for it.
     public static func find(_ g: Glance, repo: String, pr: Int? = nil, sha: String? = nil, branch: String? = nil) -> CheckSet? {

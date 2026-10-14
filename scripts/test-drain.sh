@@ -156,7 +156,7 @@ echo "drain-stop-when-idle.sh — the worker is its own ancestor"
 # The completion hook runs under Runner.Worker and starts this script, so the
 # worker it waits for is an ancestor. macOS pgrep skips ancestors without -a,
 # which stopped the service mid-hook and orphaned the job on GitHub
-# (addisdev/homelake PR #73, 2026-10-12/13). Here the "worker" is a bash whose
+# (addisdev/lake-api PR #73, 2026-10-12/13). Here the "worker" is a bash whose
 # argv[0] is the worker path, running the script as its child.
 make_runner app-anc testowner/app-anc host-app-anc
 touch "$TMP/app-anc/.drain-stop"

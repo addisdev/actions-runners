@@ -284,7 +284,7 @@ public struct RunRow: Codable, Sendable, Equatable, Identifiable {
     public var passed: Bool { ["success", "skipped", "neutral"].contains(conclusion ?? "") }
     /// Finished without passing. This includes `cancelled`, which used to count
     /// as neither failed nor active and so rolled up as green. That happened on
-    /// greenfolio-web PR #399 (2026-10-02), where both checks timed out in the
+    /// shop-web PR #399 (2026-10-02), where both checks timed out in the
     /// admission wait on a saturated host. `action_required`, `stale` and any
     /// conclusion GitHub adds later land here too.
     public var failed: Bool { !isActive && !passed }
@@ -292,7 +292,7 @@ public struct RunRow: Codable, Sendable, Equatable, Identifiable {
 
     /// Of two rows for one run, the one describing its latest attempt: the
     /// higher `runAttempt`, else the later `updatedAt`; a tie keeps `a`.
-    /// jerv-ios PR #181 (2026-10-11): attempt 2 had failed and attempt 3 was
+    /// jot-ios PR #181 (2026-10-11): attempt 2 had failed and attempt 3 was
     /// running under the same id, and a wait read attempt 2.
     public static func latest(_ a: RunRow, _ b: RunRow) -> RunRow {
         if let x = a.runAttempt, let y = b.runAttempt, x != y { return y > x ? b : a }

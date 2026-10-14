@@ -28,7 +28,7 @@
 # invisible: the first poll read "no worker", and svc.sh stop ran while the hook
 # was still running. The listener then cancelled the job before it could report,
 # and GitHub kept the job in_progress ("Complete runner" cancelled, "Complete
-# job" stuck) until someone force-cancelled the run: addisdev/homelake PR #73,
+# job" stuck) until someone force-cancelled the run: addisdev/lake-api PR #73,
 # 2026-10-12/13, three jobs, 10-25 minutes each. runner-host's worker logs show
 # 40 jobs on 15+ runners shut down inside this hook from 10-10 to 10-13.
 #
