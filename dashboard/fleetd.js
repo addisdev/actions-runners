@@ -39,6 +39,7 @@ import { analytics, repoDetail } from './lib/analytics.js';
 import { buildActions, ActionError } from './lib/actions.js';
 import { handleApi, API_PREFIX } from './lib/api.js';
 import { findOrphans, trimJob } from './lib/orphans.js';
+import { waitForChecks, parseGitHubChecks } from './lib/checks.js';
 import { loadOrCreateToken, authorize, bearerToken, tokenMatches } from './lib/auth.js';
 import {
   initAllowedHosts, refreshNetworkIdentity, reachableUrls, ensureHostAllowed, pairingUrl,
@@ -75,7 +76,7 @@ import { classifyAnnotations } from './lib/failures.js';
 import { HaCoordinator } from './lib/ha.js';
 import { collectHostReport } from './lib/host-report.js';
 import { createShmSampler, lowFreeFromEnv } from './lib/shm.js';
-import { createVerdictTracker, computeVerdict, buildGlance, loadFailureFacts } from './lib/verdict.js';
+import { createVerdictTracker, computeVerdict, buildGlance, loadFailureFacts, compactRun } from './lib/verdict.js';
 import { createEtaBaselines, estimateQueue } from './lib/eta.js';
 import { createDiskForecaster } from './lib/disk-forecast.js';
 import { checkPosture } from './lib/posture.js';
@@ -420,9 +421,40 @@ function currentGlance(now = Date.now()) {
 // the steps, and keeping them here costs no extra GitHub call.
 let activeRunJobs = [];
 
+// GitHub's own checks for a wait's target, asked when the fleet view is stale
+// or has nothing for it. Shared for 20 s, so ten agents waiting on one PR
+// cost GitHub what one does.
+const githubChecksCache = new Map();
+async function githubChecksFor(target) {
+  const key = `${target.repo}|${target.pr ?? ''}|${target.sha ?? ''}|${target.branch ?? ''}`;
+  const hit = githubChecksCache.get(key);
+  if (hit && Date.now() - hit.at < 20_000) return hit.value;
+  let head = target.sha ?? null;
+  if (target.pr != null) head = (await gh.get(`repos/${target.repo}/pulls/${target.pr}`)).data?.head?.sha ?? null;
+  const ref = head ?? target.branch;
+  if (!ref) return null;
+  const enc = encodeURIComponent(ref);
+  const [runs, status] = await Promise.all([
+    gh.get(`repos/${target.repo}/commits/${enc}/check-runs?per_page=100`),
+    gh.get(`repos/${target.repo}/commits/${enc}/status`),
+  ]);
+  const value = parseGitHubChecks(head ?? ref, runs.data, status.data);
+  if (githubChecksCache.size > 200) githubChecksCache.clear();
+  githubChecksCache.set(key, { at: Date.now(), value });
+  return value;
+}
+
+const CHECKS_SOURCE = {
+  glance: () => currentGlance(),
+  orphans: (glance) => findOrphans(activeRunJobs, glance.runners),
+  prChecks: githubChecksFor,
+  run: async (repo, id) => compactRun(shapeRun(repo, await gh.run(repo, id)), Date.now()),
+};
+
 const API_CONTEXT = {
   glance: () => currentGlance(),
   orphans: (glance) => findOrphans(activeRunJobs, glance.runners),
+  waitForChecks: (target, opts) => waitForChecks(target, CHECKS_SOURCE, opts),
   actions: () => ({
     readOnly: CONFIG.readOnly,
     items: Object.entries(ACTIONS).map(([id, a]) => ({
@@ -2723,7 +2755,11 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
 
   if (url.pathname === API_PREFIX || url.pathname.startsWith(`${API_PREFIX}/`)) {
-    const out = await handleApi({ method: req.method, url }, API_CONTEXT);
+    // A long-poll whose caller hung up stops at its next tick.
+    const gone = new AbortController();
+    res.on('close', () => gone.abort());
+    const out = await handleApi({ method: req.method, url, signal: gone.signal }, API_CONTEXT);
+    if (res.destroyed) return;
     return json(res, out.body, out.status, out.headers);
   }
 

@@ -49,6 +49,17 @@ function byRepo(list, full) {
   return full ? (list ?? []).filter((x) => sameRepo(x.repo, full)) : (list ?? []);
 }
 
+// The daemon answers only for repositories it serves: its GitHub token must
+// not become a way to read any repository the token can see.
+function knownRepo(g, full) {
+  const sections = [g.runners, g.queue, g.runs, g.recent, g.failures];
+  if (!sections.some((list) => (list ?? []).some((x) => sameRepo(x.repo, full)))) {
+    throw new ApiError(404, 'unknown_repo',
+      `the fleet has no runner, queued run, recent run or failure for ${full}`,
+      'Repositories are owner/repo and match GitHub. GET /api/v1/runners lists the ones the fleet serves.');
+  }
+}
+
 function freshness(g) {
   return { generatedAt: g.generatedAt ?? null, ageMs: g.ageMs ?? null, stale: Boolean(g.stale) };
 }
@@ -92,11 +103,7 @@ export const ROUTES = [
       const runs = byRepo(g.runs, full);
       const recent = byRepo(g.recent, full);
       const failures = byRepo(g.failures, full);
-      if (!runners.length && !queue.length && !runs.length && !recent.length && !failures.length) {
-        throw new ApiError(404, 'unknown_repo',
-          `the fleet has no runner, queued run, recent run or failure for ${full}`,
-          'Repositories are owner/repo and match GitHub. GET /api/v1/runners lists the ones the fleet serves.');
-      }
+      knownRepo(g, full);
       // Incident keys name a repository in full (newfail:owner/repo:…) or a
       // runner (runner:unused:<name>). A bare repository name would match
       // every incident about a repo whose name contains it.
@@ -114,6 +121,38 @@ export const ROUTES = [
         incidents,
         freshness: freshness(g),
       };
+    },
+  },
+  {
+    id: 'wait_for_checks',
+    method: 'GET',
+    path: '/repos/{owner}/{repo}/checks',
+    scope: 'read',
+    summary: 'A PR\'s or commit\'s checks as green, red, pending or pointless, optionally waiting',
+    description:
+      'The checks of a PR (its head commit only, never an older commit\'s result), a commit or a branch, '
+      + 'rolled up as green, red, pending or pointless. With wait=N the request is held open up to N seconds '
+      + '(at most 300) until the checks finish; pending means the wait ran out, so ask again. pointless means '
+      + 'waiting cannot end well: the host is down, the disk floor is holding jobs, GitHub is refusing jobs, '
+      + 'a queued check will never start, or a job was orphaned; reason says which, and orphans carry their '
+      + 'recovery. Cancelled is red, not green. Use this instead of polling gh pr checks.',
+    params: [
+      ...repoPath,
+      { name: 'pr', in: 'query', type: 'integer', min: 1, description: 'Pull request number.' },
+      { name: 'sha', in: 'query', type: 'string', pattern: '^[0-9a-fA-F]{7,40}$', description: 'Commit SHA, 7 to 40 hex digits.' },
+      { name: 'branch', in: 'query', type: 'string', pattern: '^[A-Za-z0-9._/-]{1,200}$', description: 'Branch name.' },
+      { name: 'wait', in: 'query', type: 'integer', min: 0, max: 300, description: 'Seconds to wait for the checks to finish (0 to 300, default 0).' },
+    ],
+    handler: async (ctx, p, req) => {
+      const full = `${p.owner}/${p.repo}`;
+      const g = ctx.glance();
+      knownRepo(g, full);
+      if ([p.pr, p.sha, p.branch].filter((x) => x != null).length > 1) {
+        throw new ApiError(400, 'invalid_param', 'give one of pr, sha or branch', 'A PR\'s checks are its head commit\'s; pr alone is enough.');
+      }
+      const target = { repo: full, pr: p.pr ?? null, sha: p.sha ?? null, branch: p.branch ?? null };
+      const out = await ctx.waitForChecks(target, { waitS: p.wait ?? 0, signal: req?.signal ?? null });
+      return { target, ...out };
     },
   },
   {
@@ -213,8 +252,12 @@ const COMPILED = ROUTES.map((r) => ({ route: r, ...compile(r) }));
 function coerce(spec, raw) {
   let value = raw;
   if (spec.type === 'integer') {
-    if (!/^-?\d+$/.test(raw)) throw new ApiError(400, 'invalid_param', `${spec.name} must be an integer`);
+    if (!/^-?\d{1,15}$/.test(raw)) throw new ApiError(400, 'invalid_param', `${spec.name} must be an integer`);
     value = Number(raw);
+    if ((spec.min != null && value < spec.min) || (spec.max != null && value > spec.max)) {
+      throw new ApiError(400, 'invalid_param',
+        `${spec.name} must be ${spec.max != null ? `between ${spec.min ?? '-∞'} and ${spec.max}` : `at least ${spec.min}`}`);
+    }
   } else if (spec.type === 'boolean') {
     if (raw !== 'true' && raw !== 'false') throw new ApiError(400, 'invalid_param', `${spec.name} must be true or false`);
     value = raw === 'true';
@@ -272,13 +315,13 @@ export function matchRoute(method, url) {
 // ctx supplies what the handlers read: glance() (the /api/glance payload),
 // orphans(glance) and actions() (the catalogue). They are functions so a
 // route that does not need the glance does not pay for building it.
-export async function handleApi({ method, url }, ctx) {
+export async function handleApi({ method, url, signal = null }, ctx) {
   const headers = { 'fleet-api-version': String(API_VERSION) };
   try {
     const { route, params } = matchRoute(method, url);
     let glance = null;
     const once = { ...ctx, glance: () => (glance ??= ctx.glance()) };
-    return { status: 200, headers, body: await route.handler(once, params) };
+    return { status: 200, headers, body: await route.handler(once, params, { signal }) };
   } catch (err) {
     if (!(err instanceof ApiError)) {
       return { status: 500, headers, body: { error: { code: 'internal', message: err.message, hint: 'Check the daemon log: ./fleetctl.sh logs' } } };
@@ -295,6 +338,8 @@ function schemaOf(spec) {
     type: spec.type,
     ...(spec.pattern ? { pattern: spec.pattern } : {}),
     ...(spec.enum ? { enum: spec.enum } : {}),
+    ...(spec.min != null ? { minimum: spec.min } : {}),
+    ...(spec.max != null ? { maximum: spec.max } : {}),
   };
 }
 

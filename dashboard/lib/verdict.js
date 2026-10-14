@@ -729,7 +729,7 @@ function compactTiers(t) {
   });
 }
 
-function compactRun(r, now) {
+export function compactRun(r, now) {
   return strip({
     id: r.id,
     repo: r.repo,

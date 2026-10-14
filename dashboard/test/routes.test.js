@@ -182,6 +182,12 @@ describe('/api/v1', () => {
     assert.match(body.error.hint, /openapi\.json/);
   });
 
+  test('checks for a repository the fleet does not serve are refused before GitHub is asked', async () => {
+    const r = await fetch(url('/api/v1/repos/someone/unrelated/checks?pr=1&wait=5'));
+    assert.equal(r.status, 404);
+    assert.equal((await r.json()).error.code, 'unknown_repo');
+  });
+
   test('a wrong method is a 405 with Allow', async () => {
     const r = await fetch(url('/api/v1/status'), { method: 'DELETE' });
     assert.equal(r.status, 405);

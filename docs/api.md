@@ -44,6 +44,7 @@ it needs (`read` for everything in this version).
 |---|---|
 | `GET /api/v1/status` | The fleet verdict, counts, standing risks (`posture`) and `freshness` (`generatedAt`, `ageMs`, `stale`). |
 | `GET /api/v1/repos/{owner}/{repo}/diagnosis` | One repository: its runners, queued runs with cause and ETA, active and recent runs, recent failures (each with `notYourCode`), orphaned jobs and incidents that mention it, beside the fleet verdict. `404 unknown_repo` if the fleet has never seen it. |
+| `GET /api/v1/repos/{owner}/{repo}/checks?pr=&wait=` | A PR's, commit's (`sha=`) or branch's (`branch=`) checks as `green`, `red`, `pending` or `pointless`, optionally held open until they finish (see below). |
 | `GET /api/v1/queue?repo=` | Queued runs, each with its cause, confidence, evidence and ETA range. |
 | `GET /api/v1/orphans?repo=` | Jobs orphaned by a runner that went away while they were finishing (see below). |
 | `GET /api/v1/runners?repo=&host=&state=` | Every runner across every host. |
@@ -56,6 +57,35 @@ For example:
 ```sh
 curl -s localhost:7878/api/v1/repos/acme/comet-web/diagnosis | jq '.verdict.id, .failures'
 ```
+
+### Waiting on checks
+
+`GET /api/v1/repos/{owner}/{repo}/checks?pr=73&wait=300` holds the request
+open until the PR's checks finish, for at most `wait` seconds (300 at most).
+It returns one of four states:
+
+- `green`: every check passed. Only `success`, `skipped` and `neutral` count
+  as a pass.
+- `red`: a check finished without passing. `cancelled` is red, and `hint`
+  says so.
+- `pending`: the wait ran out. Ask again.
+- `pointless`: waiting can't end well. `reason` says why: the host is down,
+  the disk floor is holding jobs, GitHub is refusing the account's jobs, a
+  queued check has a cause that never clears on its own, the repo's only
+  runner is dead, or a job was orphaned (`orphans` lists them with their
+  recovery).
+
+A PR's checks are its head commit's checks. An older commit's result never
+answers for the PR, even after a force-push.
+
+The answer comes from the fleet view (`source: "fleet"`) unless the view is
+stale, has no runs for the target, or is behind a re-run. In those cases the
+daemon asks GitHub directly (`source: "github"`), at most every 30 seconds per
+target. Before a red ends the wait, each failed run is checked on GitHub in
+case it is already running again.
+
+A CLI that wants to wait longer than 300 seconds calls again with the same
+query.
 
 ### Orphaned jobs
 
