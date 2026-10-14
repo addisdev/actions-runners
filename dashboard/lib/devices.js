@@ -177,13 +177,27 @@ export function exchangeCode(path, code, name, ip) {
   return addToken(path, { name, scopes: entry.scopes });
 }
 
+// Expired OAuth grants, dropped whenever the store is written anyway.
+function prune(store, now) {
+  for (const [key, entry] of Object.entries(store)) {
+    if (entry.refreshExpiresAt && entry.refreshExpiresAt < now) delete store[key];
+  }
+}
+
 // Issues a token straight into the store: the pairing exchange above, and
 // `fleetctl.sh agent-token`, which an authorised session calls for a named,
 // scoped token. Returns { token, name, key }; the token is never stored.
-export function addToken(path, { name, scopes = null, kind = 'device' }) {
+//
+// An OAuth grant also passes ttlMs, refreshTtlMs and clientId: the token then
+// expires, and a refresh token (returned as refreshToken) replaces it.
+export function addToken(path, {
+  name, scopes = null, kind = 'device', ttlMs = null, refreshTtlMs = null, clientId = null,
+}) {
   const now = Date.now();
   const token = randomBytes(32).toString('hex');
+  const refreshToken = refreshTtlMs ? randomBytes(32).toString('hex') : null;
   const store = readStore(path);
+  prune(store, now);
   const safeName = String(name ?? 'device')
     .replace(/[^\p{L}\p{N} ()._·'’-]/gu, ' ')
     .replace(/\s+/g, ' ')
@@ -206,9 +220,47 @@ export function addToken(path, { name, scopes = null, kind = 'device' }) {
     lastSeenAt: now,
     ...(kind !== 'device' ? { kind } : {}),
     ...(scopes ? { scopes } : {}),
+    ...(ttlMs ? { expiresAt: now + ttlMs } : {}),
+    ...(refreshToken ? { refreshHash: DIGEST(refreshToken), refreshExpiresAt: now + refreshTtlMs, clientId } : {}),
   };
   writeStore(path, store);
-  return { token, name: deviceName, key };
+  return {
+    token,
+    name: deviceName,
+    key,
+    ...(ttlMs ? { expiresAt: now + ttlMs } : {}),
+    ...(refreshToken ? { refreshToken } : {}),
+  };
+}
+
+// Trades a refresh token for a new token pair on the same entry, so revoking
+// the entry ends the grant however many times it has been refreshed. The old
+// pair stops working. Returns { token, refreshToken, expiresAt, scopes, key }
+// or null for a token that is unknown, expired or another client's.
+export function refreshGrant(path, refreshToken, { clientId, ttlMs, refreshTtlMs }) {
+  if (!refreshToken || typeof refreshToken !== 'string') return null;
+  const now = Date.now();
+  const store = readStore(path);
+  const actual = Buffer.from(DIGEST(refreshToken));
+  for (const [key, entry] of Object.entries(store)) {
+    const expected = Buffer.from(String(entry.refreshHash ?? ''));
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) continue;
+    if (entry.clientId !== clientId || !(entry.refreshExpiresAt > now)) return null;
+    const token = randomBytes(32).toString('hex');
+    const next = randomBytes(32).toString('hex');
+    store[key] = {
+      ...entry,
+      hash: DIGEST(token),
+      refreshHash: DIGEST(next),
+      expiresAt: now + ttlMs,
+      refreshExpiresAt: now + refreshTtlMs,
+      lastSeenAt: now,
+    };
+    prune(store, now);
+    writeStore(path, store);
+    return { token, refreshToken: next, expiresAt: now + ttlMs, scopes: entry.scopes ?? null, key };
+  }
+  return null;
 }
 
 // ---- token validation -------------------------------------------------------
@@ -225,6 +277,7 @@ export function deviceTokenEntry(path, token) {
       actual.length === expected.length
       && timingSafeEqual(actual, expected)
     ) {
+      if (entry.expiresAt && entry.expiresAt <= Date.now()) return null;
       // Avoid a synchronous disk rewrite on every authenticated API request.
       // Five-minute precision is enough for the device-management UI.
       try {
@@ -255,6 +308,7 @@ export function listDevices(path) {
     scopes: entry.scopes ?? null,
     createdAt: entry.createdAt,
     lastSeenAt: entry.lastSeenAt,
+    ...(entry.refreshExpiresAt ? { expiresAt: entry.refreshExpiresAt } : {}),
   }));
 }
 

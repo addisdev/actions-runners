@@ -18,7 +18,9 @@
 #   ./fleetctl.sh api-token <name> [--scopes read,act]  # a scoped /api/v1 token for an agent
 #   ./fleetctl.sh remote status        # show bind, LAN URLs, Tailscale state
 #   ./fleetctl.sh remote lan on|off    # bind to 0.0.0.0 / revert to loopback
-#   ./fleetctl.sh remote tailscale on|off  # configure Tailscale Serve (never Funnel)
+#   ./fleetctl.sh remote tailscale on|off  # configure Tailscale Serve (tailnet only)
+#   ./fleetctl.sh remote funnel on|off     # publish only /mcp to the internet with Tailscale Funnel
+#   ./fleetctl.sh remote cloudflare on <hostname>|off  # the same through a Cloudflare Tunnel
 #
 # The plist is generated rather than committed because the two machines have
 # different usernames, and a hardcoded /Users/<someone> is exactly the kind of
@@ -132,6 +134,10 @@ cmd_install() {
     <key>FLEET_HOST</key><string>${FLEET_HOST:-127.0.0.1}</string>
     <key>FLEET_ALLOWED_HOSTS</key><string>${FLEET_ALLOWED_HOSTS:-}</string>
     <key>FLEET_DEVICE_TOKENS_FILE</key><string>${FLEET_DEVICE_TOKENS_FILE:-$HERE/.fleet-device-tokens.json}</string>
+    <!-- Public MCP listener for chat tools (remote funnel / remote cloudflare). -->
+    <key>FLEET_PUBLIC_PORT</key><string>${FLEET_PUBLIC_PORT:-}</string>
+    <key>FLEET_PUBLIC_URL</key><string>${FLEET_PUBLIC_URL:-}</string>
+    <key>FLEET_OAUTH_CLIENTS_FILE</key><string>${FLEET_OAUTH_CLIENTS_FILE:-$HERE/.fleet-oauth-clients.json}</string>
     <key>FLEET_TAILSCALE</key><string>${FLEET_TAILSCALE:-auto}</string>
     <key>FLEET_TAILSCALE_BIN</key><string>${FLEET_TAILSCALE_BIN:-}</string>
     <key>FLEET_AGENT_TOKEN_FILE</key><string>${agent_token_file}</string>
@@ -371,7 +377,8 @@ cmd_pair() {
   [ -n "$warning" ] && { echo ""; echo "Note: $warning"; }
   echo ""
   echo "Scan the QR, open the link, or choose \"Enter pairing code\" in the"
-  echo "dashboard's Control tab on the other device. Single use; expires in 5 minutes."
+  echo "dashboard's Control tab on the other device. Signing in a chat tool's"
+  echo "connector? Type the code on its sign-in page. Single use; expires in 5 minutes."
   if command -v qrencode >/dev/null 2>&1; then
     echo ""
     qrencode -t UTF8 "$url"
@@ -485,6 +492,8 @@ cmd_remote() {
             if (!urls.length) console.log("  (this machine only)");
             for (const u of urls) console.log(`  ${u.label.padEnd(22)} ${u.url}`);
           });'
+        echo ""
+        echo "Public MCP: $(echo "$access" | json_get publicUrl 2>/dev/null || echo "off (./fleetctl.sh remote funnel on, or remote cloudflare on <hostname>)")"
       else
         echo "Bind:  ${FLEET_HOST:-127.0.0.1}:$PORT (from fleet.env — daemon not answering)"
       fi
@@ -565,9 +574,171 @@ cmd_remote() {
       esac
       ;;
 
+    funnel)
+      local ts
+      ts="$(tailscale_bin)" || { echo "tailscale CLI not found — install Tailscale, or set FLEET_TAILSCALE_BIN" >&2; return 1; }
+      case "${2:-}" in
+        on)
+          "$ts" status >/dev/null 2>&1 || { echo "Tailscale is not connected — run: $ts up" >&2; return 1; }
+          local dns
+          dns="$("$ts" status --json 2>/dev/null | json_get Self.DNSName 2>/dev/null | sed 's/\.$//' || true)"
+          [ -n "$dns" ] || { echo "could not read this machine's tailnet name from: $ts status --json" >&2; return 1; }
+          # The Funnel port carries only the public listener. 443 is left to
+          # Serve, whose dashboard must never become public.
+          "$ts" funnel --bg --https="$FUNNEL_PORT" "http://127.0.0.1:$PUBLIC_PORT" || {
+            echo "tailscale funnel failed — if it printed a link, Funnel must first be enabled for this machine in the tailnet policy there." >&2
+            return 1
+          }
+          set_public "https://$dns:$FUNNEL_PORT"
+          ;;
+        off)
+          "$ts" funnel --https="$FUNNEL_PORT" off 2>/dev/null || {
+            echo "could not remove the Funnel config; inspect with: $ts funnel status" >&2
+            return 1
+          }
+          echo "Tailscale Funnel on port $FUNNEL_PORT is off."
+          set_public ""
+          ;;
+        *) echo "usage: $0 remote funnel on|off" >&2; return 1 ;;
+      esac
+      ;;
+
+    cloudflare)
+      case "${2:-}" in
+        on)
+          local hostname="${3:-}"
+          [ -n "$hostname" ] || { echo "usage: $0 remote cloudflare on <hostname, e.g. fleet-mcp.example.com>" >&2; return 1; }
+          cmd_cloudflare_on "$hostname"
+          ;;
+        off)
+          local tunnel_plist="$HOME/Library/LaunchAgents/$TUNNEL_LABEL.plist"
+          launchctl unload "$tunnel_plist" 2>/dev/null || true
+          rm -f "$tunnel_plist"
+          echo "Stopped the tunnel. The tunnel and its DNS record are kept; remove them with:"
+          echo "  cloudflared tunnel delete $CF_TUNNEL"
+          set_public ""
+          ;;
+        *) echo "usage: $0 remote cloudflare on <hostname>|off" >&2; return 1 ;;
+      esac
+      ;;
+
     *)
-      echo "usage: $0 remote status|lan on|off|tailscale on|off" >&2; return 1 ;;
+      echo "usage: $0 remote status|lan on|off|tailscale on|off|funnel on|off|cloudflare on <hostname>|off" >&2; return 1 ;;
   esac
+}
+
+FUNNEL_PORT="${FLEET_FUNNEL_PORT:-8443}"
+PUBLIC_PORT="${FLEET_PUBLIC_PORT:-7879}"
+CF_TUNNEL="${FLEET_CLOUDFLARE_TUNNEL:-fleet-mcp}"
+TUNNEL_LABEL="${FLEET_LABEL_PREFIX:-com.runner-fleet}.fleet-tunnel"
+
+# Turns the public listener on at <url> (or off, given ""). One public URL at
+# a time: it is the OAuth issuer, and a connector signed in through one
+# tunnel would not recognise the other.
+set_public() {
+  local url="$1"
+  if [ -n "$url" ]; then
+    [ -n "${FLEET_PUBLIC_URL:-}" ] && [ "$FLEET_PUBLIC_URL" != "$url" ] && \
+      echo "Replacing the public URL $FLEET_PUBLIC_URL; connectors signed in through it must sign in again."
+    set_env_var FLEET_PUBLIC_PORT "$PUBLIC_PORT"
+    set_env_var FLEET_PUBLIC_URL "$url"
+    export FLEET_PUBLIC_PORT="$PUBLIC_PORT" FLEET_PUBLIC_URL="$url"
+    echo ""
+    echo "Public MCP server: $url/mcp"
+    echo "Only /mcp and its OAuth sign-in are published; the dashboard is not."
+    echo "Add that URL as a custom connector in the chat tool, then sign in with"
+    echo "a code from: $0 pair --scopes read,act"
+  else
+    set_env_var FLEET_PUBLIC_PORT ""
+    set_env_var FLEET_PUBLIC_URL ""
+    export FLEET_PUBLIC_PORT="" FLEET_PUBLIC_URL=""
+    echo "Public MCP listener off."
+  fi
+  echo ""
+  apply_env_change
+}
+
+cloudflared_bin() {
+  command -v cloudflared 2>/dev/null && return 0
+  for p in /opt/homebrew/bin/cloudflared /usr/local/bin/cloudflared; do
+    [ -x "$p" ] && { echo "$p"; return 0; }
+  done
+  return 1
+}
+
+cmd_cloudflare_on() {
+  local hostname="$1" cf id config
+  cf="$(cloudflared_bin)" || { echo "cloudflared not found — brew install cloudflared" >&2; return 1; }
+  [ -f "$HOME/.cloudflared/cert.pem" ] || {
+    echo "cloudflared is not logged in. Run this, and pick the zone that holds $hostname:" >&2
+    echo "  $cf tunnel login" >&2
+    return 1
+  }
+  id="$("$cf" tunnel list --output json 2>/dev/null | "$(node_bin)" -e '
+    let s = "";
+    process.stdin.on("data", (c) => (s += c)).on("end", () => {
+      const t = (JSON.parse(s || "[]") ?? []).find((x) => x.name === process.argv[1] && !x.deleted_at);
+      if (t) console.log(t.id);
+    });' "$CF_TUNNEL" || true)"
+  if [ -z "$id" ]; then
+    "$cf" tunnel create "$CF_TUNNEL" || return 1
+    id="$("$cf" tunnel list --output json | "$(node_bin)" -e '
+      let s = "";
+      process.stdin.on("data", (c) => (s += c)).on("end", () => {
+        const t = JSON.parse(s).find((x) => x.name === process.argv[1] && !x.deleted_at);
+        if (t) console.log(t.id);
+      });' "$CF_TUNNEL")"
+    [ -n "$id" ] || { echo "created tunnel $CF_TUNNEL but could not find its id" >&2; return 1; }
+  fi
+  # An existing record for this name is fine; anything else is not.
+  local route
+  if ! route="$("$cf" tunnel route dns "$CF_TUNNEL" "$hostname" 2>&1)"; then
+    echo "$route" | grep -qi "already exists" || { echo "$route" >&2; return 1; }
+    echo "DNS record for $hostname already exists; make sure it points at tunnel $CF_TUNNEL."
+  fi
+
+  # Cloudflare passes on only the paths the listener serves, so the tunnel is
+  # narrow even before the listener's own 404s.
+  config="$HOME/.cloudflared/$CF_TUNNEL.yml"
+  cat > "$config" <<CF_EOF
+tunnel: $id
+credentials-file: $HOME/.cloudflared/$id.json
+ingress:
+  - hostname: $hostname
+    path: '^/(mcp|oauth/.*|\.well-known/oauth-.*)$'
+    service: http://127.0.0.1:$PUBLIC_PORT
+  - service: http_status:404
+CF_EOF
+  "$cf" tunnel --config "$config" ingress validate >/dev/null || return 1
+
+  local tunnel_plist="$HOME/Library/LaunchAgents/$TUNNEL_LABEL.plist"
+  mkdir -p "$LOG_DIR" "$HOME/Library/LaunchAgents"
+  cat > "$tunnel_plist" <<PLIST_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$TUNNEL_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$cf</string>
+    <string>tunnel</string>
+    <string>--config</string>
+    <string>$config</string>
+    <string>run</string>
+  </array>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/tunnel.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/tunnel.log</string>
+</dict>
+</plist>
+PLIST_EOF
+  launchctl unload "$tunnel_plist" 2>/dev/null || true
+  launchctl load "$tunnel_plist"
+  echo "Cloudflare Tunnel $CF_TUNNEL is running as $TUNNEL_LABEL (log: $LOG_DIR/tunnel.log)."
+  set_public "https://$hostname"
 }
 
 case "${1:-status}" in
@@ -589,6 +760,6 @@ case "${1:-status}" in
   api-token)   shift; cmd_api_token "$@" ;;
   devices)     cmd_devices ;;
   revoke)      cmd_revoke "${2:-}" ;;
-  remote)      cmd_remote "${2:-status}" "${3:-}" ;;
-  *) sed -n '2,22p' "$0"; exit 1 ;;
+  remote)      cmd_remote "${2:-status}" "${3:-}" "${4:-}" ;;
+  *) sed -n '2,24p' "$0"; exit 1 ;;
 esac

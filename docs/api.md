@@ -210,6 +210,10 @@ The server is stateless. It answers each POST with one JSON response and
 opens no event stream, so `GET /mcp` is 405 and a daemon restart doesn't drop
 a client's session.
 
+For a chat tool's connector (claude.ai, ChatGPT), the same server is published
+through a tunnel on a separate listener that requires OAuth sign-in. See
+[Chat tools](remote-access.md#chat-tools-claudeai-chatgpt).
+
 ### Command line (`fleet`)
 
 `dashboard/bin/fleet.mjs` is `/api/v1` from a shell: one file, Node 22, no

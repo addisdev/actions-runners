@@ -1,0 +1,41 @@
+{
+  "uF4kmP2PX7_djra2rctib7wt_MORZifCWrX14QCmFdM": {
+    "name": "test",
+    "redirectUris": [
+      "https://chat.example/cb"
+    ],
+    "authMethod": "none",
+    "grantTypes": [
+      "authorization_code",
+      "refresh_token"
+    ],
+    "createdAt": 1791947525937,
+    "lastUsedAt": 1791947525943
+  },
+  "XPfXkHL9QUHS-EIvg2vrxFZuQxMbC0gpuzYdsYTHwLc": {
+    "name": "test",
+    "redirectUris": [
+      "https://chat.example/cb"
+    ],
+    "authMethod": "none",
+    "grantTypes": [
+      "authorization_code",
+      "refresh_token"
+    ],
+    "createdAt": 1791947729700,
+    "lastUsedAt": 1791947729706
+  },
+  "m_Zw4_c21M57nvXcwiykeSlRcp2IFKFT3iAy8_ZfcHA": {
+    "name": "test",
+    "redirectUris": [
+      "https://chat.example/cb"
+    ],
+    "authMethod": "none",
+    "grantTypes": [
+      "authorization_code",
+      "refresh_token"
+    ],
+    "createdAt": 1791947769230,
+    "lastUsedAt": 1791947769236
+  }
+}

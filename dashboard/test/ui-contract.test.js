@@ -397,9 +397,21 @@ describe('fleetctl remote-access contracts', () => {
     assert.match(fleetctl, /apply_env_change\(\) \{[\s\S]*?cmd_install/);
   });
 
-  test('remote tailscale off removes only our listener, and Funnel is never used', () => {
+  test('remote tailscale off removes only our listener, and Serve never uses Funnel', () => {
     assert.doesNotMatch(fleetctl, /"\$ts" serve reset|tailscale serve reset/);
-    assert.doesNotMatch(fleetctl, /"\$ts" funnel|tailscale funnel/);
+    const serve = fleetctl.slice(fleetctl.indexOf('    tailscale)'), fleetctl.indexOf('    funnel)'));
+    assert.doesNotMatch(serve, /"\$ts" funnel/);
+  });
+
+  test('Funnel publishes only the public MCP listener, never the dashboard or Serve\'s port', () => {
+    const funnels = [...fleetctl.matchAll(/"\$ts" funnel [^\n]*/g)].map((m) => m[0]);
+    assert.ok(funnels.length >= 2);
+    for (const line of funnels) {
+      assert.match(line, /--https="\$FUNNEL_PORT"/);
+      assert.doesNotMatch(line, /\$PORT\b|443\b/);
+    }
+    assert.match(fleetctl, /"\$ts" funnel --bg --https="\$FUNNEL_PORT" "http:\/\/127\.0\.0\.1:\$PUBLIC_PORT"/);
+    assert.match(fleetctl, /FUNNEL_PORT="\$\{FLEET_FUNNEL_PORT:-8443\}"/);
   });
 });
 

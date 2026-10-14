@@ -28,6 +28,16 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
   `fleet wait owner/repo --pr N`, `fleet run <action> [--yes]`, and one
   command for every other route. Each route names its command in the route
   table (`x-fleet-cli`).
+- **The MCP server for chat tools, over a tunnel, with OAuth sign-in.**
+  `fleetctl.sh remote funnel on` (Tailscale Funnel) or `remote cloudflare on
+  <hostname>` (Cloudflare Tunnel) publishes a second, loopback-bound listener
+  that serves only `/mcp` and an OAuth 2.1 authorization server in front of
+  it: discovery (RFC 9728, RFC 8414), dynamic client registration, PKCE, and
+  rotating refresh tokens. The sign-in page asks for a pairing code from
+  `fleetctl.sh pair --scopes read,act`, whose scopes become the connector's.
+  Connectors are listed by `fleetctl.sh devices` and revoked like a device.
+  The dashboard itself is still never public. See
+  [Chat tools](docs/remote-access.md#chat-tools-claudeai-chatgpt).
 - **`cockpit why`, `wait`, `run` and `mcp` ask `/api/v1`.** The daemon
   now diagnoses the repo, decides when checks are done and finds orphaned
   jobs, so the command line prints its answer instead of rebuilding it from a
