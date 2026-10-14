@@ -33,7 +33,7 @@ describe('route table', () => {
   test('every route says what it is for and what it needs', () => {
     for (const r of ROUTES) {
       assert.ok(r.summary && r.description, `${r.id} is described`);
-      assert.ok(['read', 'act'].includes(r.scope), `${r.id} has a scope`);
+      assert.ok(['read', 'act', 'act:danger'].includes(r.scope), `${r.id} has a scope`);
       for (const p of r.params) assert.ok(p.description, `${r.id}.${p.name} is described`);
     }
   });
@@ -177,6 +177,114 @@ describe('errors', () => {
     assert.equal(out.status, 500);
     assert.equal(out.body.error.code, 'internal');
     assert.equal(out.headers['fleet-api-version'], '1');
+  });
+});
+
+describe('actions', () => {
+  const drain = {
+    id: 'runner.drain', label: 'Drain runner', danger: 'medium', confirm: 'stops after its job', scope: 'act',
+    args: [{ name: 'name', type: 'string', required: true, description: 'Runner name.' }],
+  };
+  const restart = { ...drain, id: 'runner.restart', label: 'Restart runner', scope: 'act:danger' };
+  const agent = { id: 'token:k1', name: 'claude', kind: 'token', scopes: ['read', 'act'] };
+
+  function actx(over = {}) {
+    const issued = new Map();
+    const ran = [];
+    return {
+      ran,
+      ...ctx(),
+      readOnly: () => false,
+      actionInfo: (id) => ({ 'runner.drain': drain, 'runner.restart': restart })[id] ?? null,
+      previewAction: async (id, args) => `./scripts/drain-runner.sh ${args.name} --drain`,
+      runAction: async (id, args, p) => { ran.push({ id, args, caller: p.name }); return { ok: true, code: 0, output: 'drained' }; },
+      confirmations: {
+        issue: (r) => { const t = `c${issued.size}`; issued.set(t, JSON.stringify(r)); return { token: t, expiresAt: 1 }; },
+        consume: (t, r) => (issued.get(t) === JSON.stringify(r) ? (issued.delete(t), null) : 'the confirmation is unknown or expired'),
+      },
+      ...over,
+    };
+  }
+
+  const post = (path, body, c, principal = agent) => handleApi(
+    { method: 'POST', url: new URL(path, 'http://localhost'), principal, body: JSON.stringify(body) }, c);
+
+  test('the first call previews and runs nothing; the second, with its confirm, runs it once', async () => {
+    const c = actx();
+    const first = await post('/api/v1/actions/runner.drain', { args: { name: 'r1' } }, c);
+    assert.equal(first.status, 200);
+    assert.equal(first.body.status, 'confirm_required');
+    assert.equal(first.body.command, './scripts/drain-runner.sh r1 --drain');
+    assert.equal(c.ran.length, 0);
+    const second = await post('/api/v1/actions/runner.drain', { args: { name: 'r1' }, confirm: first.body.confirm }, c);
+    assert.equal(second.body.status, 'done');
+    assert.deepEqual(c.ran, [{ id: 'runner.drain', args: { name: 'r1' }, caller: 'claude' }]);
+    const again = await post('/api/v1/actions/runner.drain', { args: { name: 'r1' }, confirm: first.body.confirm }, c);
+    assert.equal(again.status, 409);
+    assert.equal(again.body.error.code, 'confirmation_invalid');
+  });
+
+  test('a confirm for one runner does not run another', async () => {
+    const c = actx();
+    const first = await post('/api/v1/actions/runner.drain', { args: { name: 'r1' } }, c);
+    const other = await post('/api/v1/actions/runner.drain', { args: { name: 'r2' }, confirm: first.body.confirm }, c);
+    assert.equal(other.status, 409);
+    assert.equal(c.ran.length, 0);
+  });
+
+  test('dryRun previews without a confirm token', async () => {
+    const out = await post('/api/v1/actions/runner.drain', { args: { name: 'r1' }, dryRun: true }, actx());
+    assert.equal(out.body.status, 'preview');
+    assert.equal(out.body.confirm, undefined);
+  });
+
+  test('no token is a 401; act cannot run an act:danger action; read cannot run anything', async () => {
+    assert.equal((await post('/api/v1/actions/runner.drain', { args: { name: 'r1' } }, actx(), null)).status, 401);
+    const danger = await post('/api/v1/actions/runner.restart', { args: { name: 'r1' } }, actx());
+    assert.equal(danger.status, 403);
+    assert.equal(danger.body.error.code, 'insufficient_scope');
+    const reader = { ...agent, scopes: ['read'] };
+    assert.equal((await post('/api/v1/actions/runner.drain', { args: { name: 'r1' } }, actx(), reader)).status, 403);
+  });
+
+  test('arguments are checked against the action\'s declared list', async () => {
+    const c = actx();
+    const extra = await post('/api/v1/actions/runner.drain', { args: { name: 'r1', force: true } }, c);
+    assert.equal(extra.status, 400);
+    assert.match(extra.body.error.hint, /It takes name/);
+    assert.equal((await post('/api/v1/actions/runner.drain', { args: {} }, c)).status, 400);
+    assert.equal((await post('/api/v1/actions/runner.drain', { args: { name: 7 } }, c)).status, 400);
+    assert.equal((await post('/api/v1/actions/runner.drain', { args: { name: 'r1' }, yes: true }, c)).body.error.code, 'unknown_field');
+    assert.equal((await post('/api/v1/actions/nope.nope', {}, c)).status, 404);
+  });
+
+  test('read-only refuses every action', async () => {
+    const out = await post('/api/v1/actions/runner.drain', { args: { name: 'r1' } }, actx({ readOnly: () => true }));
+    assert.equal(out.body.error.code, 'read_only');
+  });
+
+  test('a token with no read scope cannot read', async () => {
+    const out = await handleApi({ method: 'GET', url: new URL('http://localhost/api/v1/status'), principal: { ...agent, scopes: [] } }, ctx());
+    assert.equal(out.status, 403);
+  });
+
+  test('tokens: act:danger mints a scoped token; act cannot', async () => {
+    const minted = [];
+    const c = actx({ issueToken: (t) => { minted.push(t); return { token: 'x'.repeat(64), name: t.name, key: 'k9' }; } });
+    const master = { id: 'master', name: 'master token', kind: 'master', scopes: ['read', 'act', 'act:danger'] };
+    const ok = await post('/api/v1/tokens', { name: 'claude code', scopes: 'act,read' }, c, master);
+    assert.equal(ok.status, 200);
+    assert.deepEqual(ok.body.scopes, ['read', 'act']);
+    assert.match(ok.body.hint, /revoke k9/);
+    assert.equal((await post('/api/v1/tokens', { name: 'wider', scopes: 'act:danger' }, c, agent)).status, 403);
+    assert.equal((await post('/api/v1/tokens', { name: 'x', scopes: 'root' }, c, master)).status, 400);
+    assert.equal(minted.length, 1);
+  });
+
+  test('/me says who the token is', async () => {
+    const out = await handleApi({ method: 'GET', url: new URL('http://localhost/api/v1/me'), principal: agent }, actx());
+    assert.deepEqual(out.body, { authenticated: true, caller: 'claude', kind: 'token', scopes: ['read', 'act'], readOnly: false });
+    assert.equal((await get('/api/v1/me', actx())).body.authenticated, false);
   });
 });
 

@@ -21,6 +21,17 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
   progress because their runner was drained or lost during "Complete job",
   with the force-cancel and re-run commands that clear them. Until now only
   the Mac app could see these, by calling `gh` from the laptop.
+- **Scoped tokens and confirmed actions.** Tokens now carry scopes: `read`,
+  `act` (checks, previews, drain and resume, re-run, cancel, orphan recovery)
+  and `act:danger` (everything else). `./fleetctl.sh api-token <name>
+  --scopes read,act` issues one for an agent. `POST /api/v1/actions/{id}`
+  previews first and runs only with the single-use confirmation the preview
+  returned, bound to the caller and the exact arguments, and the action log
+  records who ran each action. The master token and existing paired devices
+  keep every scope.
+- **`run.recoverOrphan`.** Force-cancels a run whose job was orphaned and
+  re-runs it once GitHub has completed it. It refuses a run that isn't
+  orphaned or whose work had already failed.
 - **Waiting on checks, in the daemon.**
   `GET /api/v1/repos/{owner}/{repo}/checks?pr=N&wait=300` answers green, red,
   pending or pointless for a PR's head commit, holding the request open until

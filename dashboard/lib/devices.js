@@ -54,7 +54,7 @@ function writeStore(path, data) {
 
 // ---- in-memory state --------------------------------------------------------
 
-// Map<code -> { expires, used }>
+// Map<code -> { expires, used, scopes }>
 const pendingCodes = new Map();
 
 // Map<ip -> { failures: number, windowStart: number }>
@@ -62,7 +62,9 @@ const rateLimitState = new Map();
 
 // ---- code generation --------------------------------------------------------
 
-export function createPairingCode() {
+// `scopes` limits the token the code is exchanged for (lib/scopes.js); null
+// means every scope, which is what pairing a browser has always granted.
+export function createPairingCode({ scopes = null } = {}) {
   // purge expired codes
   const now = Date.now();
   for (const [code, entry] of pendingCodes) {
@@ -72,8 +74,27 @@ export function createPairingCode() {
   do {
     code = String(randomInt(100000, 1000000));
   } while (pendingCodes.has(code));
-  pendingCodes.set(code, { expires: now + CODE_TTL_MS, used: false });
+  pendingCodes.set(code, { expires: now + CODE_TTL_MS, used: false, scopes });
   return code;
+}
+
+// Spends a pairing code without issuing a device token, for a caller that
+// issues its own credential (the OAuth consent page). Same single use, same
+// rate limits. Returns { scopes } or { error, rateLimited }.
+export function redeemCode(code, ip) {
+  if (isRateLimited(ip) || globallyLocked()) {
+    return { error: 'too many failed attempts — wait a minute and try again', rateLimited: true };
+  }
+  const normalized = String(code ?? '').replace(/\D/g, '');
+  const entry = pendingCodes.get(normalized);
+  if (!entry || entry.used || entry.expires < Date.now()) {
+    recordFailure(ip);
+    return { error: 'invalid or expired pairing code' };
+  }
+  entry.used = true;
+  pendingCodes.delete(normalized);
+  clearFailures(ip);
+  return { scopes: entry.scopes };
 }
 
 // ---- global failure budget --------------------------------------------------
@@ -153,7 +174,14 @@ export function exchangeCode(path, code, name, ip) {
   entry.used = true;
   pendingCodes.delete(normalized);
   clearFailures(ip);
+  return addToken(path, { name, scopes: entry.scopes });
+}
 
+// Issues a token straight into the store: the pairing exchange above, and
+// `fleetctl.sh agent-token`, which an authorised session calls for a named,
+// scoped token. Returns { token, name, key }; the token is never stored.
+export function addToken(path, { name, scopes = null, kind = 'device' }) {
+  const now = Date.now();
   const token = randomBytes(32).toString('hex');
   const store = readStore(path);
   const safeName = String(name ?? 'device')
@@ -176,15 +204,19 @@ export function exchangeCode(path, code, name, ip) {
     hash: DIGEST(token),
     createdAt: now,
     lastSeenAt: now,
+    ...(kind !== 'device' ? { kind } : {}),
+    ...(scopes ? { scopes } : {}),
   };
   writeStore(path, store);
-  return { token, name: deviceName };
+  return { token, name: deviceName, key };
 }
 
 // ---- token validation -------------------------------------------------------
 
-export function deviceTokenMatches(path, token) {
-  if (!token || typeof token !== 'string') return false;
+// The store entry a token belongs to, as { key, name, kind, scopes }, or
+// null. scopes is null for an entry from before scopes: every scope.
+export function deviceTokenEntry(path, token) {
+  if (!token || typeof token !== 'string') return null;
   const store = readStore(path);
   const actual = Buffer.from(DIGEST(token));
   for (const [key, entry] of Object.entries(store)) {
@@ -196,15 +228,20 @@ export function deviceTokenMatches(path, token) {
       // Avoid a synchronous disk rewrite on every authenticated API request.
       // Five-minute precision is enough for the device-management UI.
       try {
-        if (Date.now() - (entry.lastSeenAt ?? 0) < 5 * 60 * 1000) return true;
-        entry.lastSeenAt = Date.now();
-        store[key] = entry;
-        writeStore(path, store);
+        if (Date.now() - (entry.lastSeenAt ?? 0) >= 5 * 60 * 1000) {
+          entry.lastSeenAt = Date.now();
+          store[key] = entry;
+          writeStore(path, store);
+        }
       } catch { /* best effort */ }
-      return true;
+      return { key, name: entry.name, kind: entry.kind ?? 'device', scopes: entry.scopes ?? null };
     }
   }
-  return false;
+  return null;
+}
+
+export function deviceTokenMatches(path, token) {
+  return deviceTokenEntry(path, token) !== null;
 }
 
 // ---- device list ------------------------------------------------------------
@@ -214,6 +251,8 @@ export function listDevices(path) {
   return Object.entries(store).map(([key, entry]) => ({
     key,
     name: entry.name,
+    kind: entry.kind ?? 'device',
+    scopes: entry.scopes ?? null,
     createdAt: entry.createdAt,
     lastSeenAt: entry.lastSeenAt,
   }));
