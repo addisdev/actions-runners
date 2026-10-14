@@ -7,7 +7,7 @@ name: Fleet Cockpit release
 # Gated on secrets. Until DEVELOPER_ID_P12 and the notarization credentials are
 # set on the repository the job says so and stops, successfully — a fork or a
 # fresh clone must be able to run CI without anybody's certificate. Local builds
-# need none of this (see docs/cockpit.md).
+# need none of this (see docs/cockpit/development.md).
 #
 # Secrets: DEVELOPER_ID_P12 (base64 .p12), DEVELOPER_ID_P12_PASSWORD, APPLE_TEAM_ID,
 #          APPLE_ID, APPLE_APP_PASSWORD (app-specific password for notarytool).
@@ -114,7 +114,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" "$DMG" "$CLI_ZIP" --title "Fleet Cockpit ${GITHUB_REF_NAME#cockpit-v}" \
-            --notes "Signed and notarized. See docs/cockpit.md." --verify-tag
+            --notes "Signed and notarized. See https://addisdev.github.io/actions-runners/cockpit/install/." --verify-tag
 
       - name: Remove the keychain
         if: always() && env.HAS_CERT == 'true'
