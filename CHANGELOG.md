@@ -10,6 +10,14 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Added
 
+- **`cleanupctl.sh`, the disk-cleanup timer as a command.** It installs
+  `<prefix>.runner-cleanup`, which runs `cleanup.sh --apply --auto` every
+  15 minutes, the way `healthctl.sh` installs health repair; runner-host's
+  agent had been written by hand. `join-host.sh --apply` now installs it too.
+  ultra got it on 2026-10-15 (floor 100 GB, so it acts under 120 GB), after a
+  manual cleanup there freed 29 GB that runner workspaces and CI simulators
+  refill in a day or two.
+
 - **Versioned API (`/api/v1`).** A stable read API for scripts and agent
   tools: fleet status, a per-repository diagnosis, the queue, runners, hosts
   and the action catalogue. Lists are wrapped in `items`, errors share one
@@ -85,6 +93,15 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
   red, an older commit never answers for the PR, a failed run is checked
   again before red is believed, an orphaned job makes waiting pointless, and
   GitHub is asked directly when the fleet view is stale.
+
+### Fixed
+
+- **Two hosts held each other's cleanup.** GitHub lists every runner of a
+  repository, so with the same repos mirrored on runner-host and ultra each
+  host's `cleanup.sh` counted the other's busy runners as its own and skipped
+  its host-wide steps (old DerivedData, dead simulators, stale Playwright
+  locks) whenever the other host was building. It now counts only the busy
+  runners that live on this host.
 
 ## [v0.3.0] — 2026-10-13
 

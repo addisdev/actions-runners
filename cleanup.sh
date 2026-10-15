@@ -103,6 +103,20 @@ say "==> $(date '+%F %T')  free ${FREE_NOW} GB (${PLAIN_NOW} GB without purgeabl
 # only the runners that are building. Refusing everything while any job ran
 # meant this never ran on a busy day, which is when the disk runs out.
 # ---------------------------------------------------------------------------
+# A runner directory's GitHub name, which is what GitHub and the slots use.
+runner_name() {
+  python3 -c "import json,sys;print(json.load(open(sys.argv[1],encoding='utf-8-sig'))['agentName'])" \
+    "$1/.runner" 2>/dev/null
+}
+# The runners on THIS host. GitHub lists every runner of a repository, so with
+# the same repo mirrored on two hosts (runner-host and ultra, 2026-10-09) the
+# other host's busy runners came back too, and each host's host-wide steps
+# waited on the other's jobs and almost never ran.
+LOCAL=" "
+for d in "$ROOT"/*/; do
+  [ -f "$d/.runner" ] || continue
+  LOCAL="$LOCAL$(runner_name "$d") "
+done
 rm -f /tmp/.cleanup-gh-failed
 for d in "$ROOT"/*/; do
   [ -f "$d/.runner" ] || continue
@@ -132,11 +146,15 @@ for w in "$ROOT"/.admission/waiters/*; do
   held="$held $(sed -n 's/^runner=//p' "$w" | head -1)"
 done
 : > /tmp/.cleanup-building
+elsewhere=0
+waiting=0
 while read -r name; do
   [ -n "$name" ] || continue
-  case " $held " in *" $name "*) continue ;; esac
+  case "$LOCAL" in *" $name "*) ;; *) elsewhere=$((elsewhere + 1)); continue ;; esac
+  case " $held " in *" $name "*) waiting=$((waiting + 1)); continue ;; esac
   echo "$name" >> /tmp/.cleanup-building
 done < /tmp/.cleanup-busy
+[ "$elsewhere" -gt 0 ] && say "(${elsewhere} busy runner(s) of the same repos are on other hosts — not counted)"
 # An admitted job holds a slot file with a live owner. That is local and does
 # not depend on `gh` working from this session, so it counts too.
 for f in "$ROOT"/.admission/slots/*; do
@@ -146,7 +164,7 @@ for f in "$ROOT"/.admission/slots/*; do
   sed -n 's/^runner=//p' "$f" | head -1 >> /tmp/.cleanup-building
 done
 sort -u -o /tmp/.cleanup-building /tmp/.cleanup-building
-[ -n "$(tr -d '[:space:]' < /tmp/.cleanup-busy)" ] && [ ! -s /tmp/.cleanup-building ] \
+[ "$waiting" -gt 0 ] && [ ! -s /tmp/.cleanup-building ] \
   && say "(runners held by admission are waiting, not building — not counted)"
 BUILDING=" $(tr '\n' ' ' < /tmp/.cleanup-building) "
 HOST_IDLE=1
@@ -182,12 +200,6 @@ host_idle() {
   say "    (skipped: a job is running)"
   return 1
 }
-# A runner directory's GitHub name, which is what GitHub and the slots use.
-runner_name() {
-  python3 -c "import json,sys;print(json.load(open(sys.argv[1],encoding='utf-8-sig'))['agentName'])" \
-    "$1/.runner" 2>/dev/null
-}
-
 before=$(free_gb)
 say "==> free before: ${before} GB"
 

@@ -25,6 +25,7 @@ without `--repair` — have no `--apply` because there is nothing to guard.
 | `status.sh` | Every runner, its status, and what the fleet costs idle | read-only |
 | `health.sh` | launchd + GitHub state per runner; `--repair` restarts dead services | read-only without `--repair` |
 | `healthctl.sh` | Install a LaunchAgent that runs `health.sh --repair` on a timer | n/a — subcommands |
+| `cleanupctl.sh` | Install a LaunchAgent that runs `cleanup.sh --apply --auto` every 15 minutes | n/a — subcommands |
 | `runs.sh` | What is building across every repo, and on which machine | read-only |
 | `cleanup.sh` | Erase idle CI simulators; prune stale DerivedData, dead simulators, old `_diag`, superseded runner versions | **yes** |
 | `preflight.sh` | Check a host against what the workflows assume | read-only, installs nothing |
@@ -293,6 +294,35 @@ What it refuses to do:
 Dry run is the default because the build host is usually somebody's laptop too,
 and everything above is shared with their interactive Xcode.
 
+
+### `cleanupctl.sh`
+
+Installs the LaunchAgent that runs `cleanup.sh --apply --auto` every
+`FLEET_CLEANUP_INTERVAL` seconds (900), so the disk is reclaimed before the
+admission floor holds the fleet.
+Source: [`cleanupctl.sh`](https://github.com/addisdev/actions-runners/blob/main/cleanupctl.sh).
+
+```bash
+./cleanupctl.sh install     # write the LaunchAgent and load it
+./cleanupctl.sh status      # is it loaded, and what did the last run say
+./cleanupctl.sh logs [n]    # tail the cleanup log (default 60 lines)
+./cleanupctl.sh restart
+./cleanupctl.sh uninstall
+./cleanupctl.sh run         # one cleanup.sh --apply --auto in the foreground
+```
+
+| Subcommand | What it does |
+|---|---|
+| `install` | Write `<FLEET_LABEL_PREFIX>.runner-cleanup.plist`, bootstrap it into `gui/<uid>`, and report status. |
+| `uninstall` | Boot the agent out and delete the plist. |
+| `start` / `stop` | Bootstrap or boot out the agent. |
+| `restart` | Boot out, bootstrap, and report status. |
+| `status` | **The default.** launchd state and run count, interval, pressure line, last run's free-disk lines. |
+| `logs [n]` | Tail the cleanup log. Default 60 lines. |
+| `run` | One `cleanup.sh --apply --auto` in the foreground with the agent's PATH. |
+
+The plist has no `RunAtLoad`; the first tick comes one interval after login.
+`cleanup.sh` keeps its own lock, so ticks never overlap.
 ### `preflight.sh`
 
 Checks a prospective runner host against what the fleet's workflows actually
