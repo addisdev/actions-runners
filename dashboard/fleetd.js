@@ -123,6 +123,7 @@ const CONFIG = {
   fastAbandonMs: Number(process.env.FLEET_FAST_ABANDON_MS ?? 240000),
   fastMaxAbandoned: Number(process.env.FLEET_FAST_MAX_ABANDONED ?? 3),
   jobFetchConcurrency: Math.max(1, Number(process.env.FLEET_JOB_FETCH_CONCURRENCY ?? 8)),
+  repoFetchConcurrency: Math.max(1, Number(process.env.FLEET_REPO_FETCH_CONCURRENCY ?? 6)),
   // How old the newest completed tick may be before this daemon calls itself
   // unhealthy. watch/fleet-watch.mjs already raises `collector-not-ok` the
   // moment /api/health stops saying ok, so reporting staleness here is the
@@ -1820,8 +1821,12 @@ async function fastTick(progress = null) {
   const runnersKnownFor = new Set();
 
   stage(progress, `GitHub runners+runs for ${repos.length} repos`);
-  await Promise.all(
-    repos.map(async (repo) => {
+  // Bounded: each repo is five requests (runners, runs, three active-run
+  // statuses). All 39 repos at once was ~195 in flight, past GitHub's 100
+  // concurrent-request secondary limit; its 429 stopped every read until the
+  // backoff lifted (2026-10-14).
+  await mapWithConcurrency(repos, CONFIG.repoFetchConcurrency,
+    async (repo) => {
       // allSettled, not all: these are independent questions, and a failure to
       // list runs used to take the runner list down with it — which then made
       // every runner for that repo look deregistered.
@@ -1846,8 +1851,7 @@ async function fastTick(progress = null) {
       } else {
         failures.push({ repo, message: activeRunsRes.reason?.message ?? String(activeRunsRes.reason) });
       }
-    })
-  );
+    });
 
   const allRuns = [...rawRunsByKey.values()].map(({ repo, run }) => shapeRun(repo, run, groups));
 

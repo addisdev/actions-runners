@@ -7,6 +7,8 @@ import {
   mergeRunPages,
   newerRun,
   activeRunQueryPaths,
+  rateLimitBackoffUntil,
+  GitHub,
 } from '../lib/github.js';
 
 describe('isActiveRunStatus', () => {
@@ -91,5 +93,69 @@ describe('activeRunQueryPaths', () => {
     for (const { status } of activeRunQueryPaths('owner/repo')) {
       assert.ok(ACTIVE_RUN_STATUSES.has(status));
     }
+  });
+});
+
+describe('rateLimitBackoffUntil', () => {
+  const now = 1_000_000;
+  test('honours Retry-After', () => {
+    assert.equal(rateLimitBackoffUntil({ now, retryAfterS: 30, remaining: 4995, resetAt: now + 3_600_000 }), now + 30_000);
+  });
+  test('waits for the reset only when the primary allowance is spent', () => {
+    assert.equal(rateLimitBackoffUntil({ now, remaining: 0, resetAt: now + 900_000 }), now + 900_000);
+  });
+  test('a secondary limit waits a minute, doubling per strike up to 15 minutes', () => {
+    const at = (strikes) => rateLimitBackoffUntil({ now, remaining: 4995, resetAt: now + 3_600_000, strikes }) - now;
+    assert.deepEqual([0, 1, 2, 3, 4, 9].map(at), [60_000, 120_000, 240_000, 480_000, 900_000, 900_000]);
+  });
+});
+
+describe('GitHub.get rate limiting', () => {
+  function respond(status, headers = {}, body = '{}') {
+    return new Response(body, { status, headers: { 'x-ratelimit-limit': '5000', ...headers } });
+  }
+  async function withFetch(responses, fn) {
+    const real = globalThis.fetch;
+    const queue = [...responses];
+    globalThis.fetch = async () => queue.shift();
+    try { return await fn(); } finally { globalThis.fetch = real; }
+  }
+  const reset = String(Math.floor(Date.now() / 1000) + 3000);
+
+  test('a 429 with calls left backs off a minute, not until the hourly reset', async () => {
+    const logs = [];
+    const gh = new GitHub({ log: (m) => logs.push(m) });
+    gh.token = 't';
+    await withFetch([respond(429, { 'x-ratelimit-remaining': '4995', 'x-ratelimit-reset': reset })], async () => {
+      await assert.rejects(gh.get('repos/a/b/actions/runs', { attempts: 1 }), (err) => err.rateLimited === true);
+    });
+    const wait = gh.backoffUntil - Date.now();
+    assert.ok(wait > 50_000 && wait <= 60_000, `waited ${wait} ms`);
+    assert.match(logs.join('\n'), /429 rate limited \(4995 of 5000 left\)/);
+  });
+
+  test('a 403 that is not rate limiting is an ordinary error and sets no backoff', async () => {
+    const gh = new GitHub({ log: () => {} });
+    gh.token = 't';
+    await withFetch([respond(403, { 'x-ratelimit-remaining': '4990', 'x-ratelimit-reset': reset }, '{"message":"Resource not accessible by integration"}')], async () => {
+      await assert.rejects(gh.get('repos/a/b/actions/runners', { attempts: 1 }), (err) => err.status === 403 && !err.rateLimited);
+    });
+    assert.equal(gh.backoffUntil, 0);
+  });
+
+  test('a secondary-limit 403 backs off; a later success resets the strikes', async () => {
+    const gh = new GitHub({ log: () => {} });
+    gh.token = 't';
+    await withFetch([
+      respond(403, { 'x-ratelimit-remaining': '4000', 'x-ratelimit-reset': reset }, '{"message":"You have exceeded a secondary rate limit"}'),
+    ], async () => {
+      await assert.rejects(gh.get('x', { attempts: 1 }), (err) => err.rateLimited === true);
+    });
+    assert.equal(gh.rateStrikes, 1);
+    gh.backoffUntil = 0;
+    await withFetch([respond(200, { 'x-ratelimit-remaining': '3999', 'x-ratelimit-reset': reset }, '{"ok":true}')], async () => {
+      assert.deepEqual((await gh.get('x', { attempts: 1, etag: false })).data, { ok: true });
+    });
+    assert.equal(gh.rateStrikes, 0);
   });
 });
