@@ -20,9 +20,11 @@
 #      runners carry, minus what this host cannot run. register.sh writes the
 #      admission hooks, ANDROID_HOME, WB_SKIP and the Spotlight marker.
 #   5. The health-repair timer (healthctl.sh install).
+#   6. The disk-cleanup timer (cleanupctl.sh install): cleanup.sh --apply --auto
+#      every 15 minutes, acting under FLEET_ADMIT_MIN_FREE_DISK_GB + 20.
 #
 # Admission limits for this host come from fleet.env (FLEET_ADMIT_*); start
-# from examples/fleet.env.ultra. Everything is dry run without --apply.
+# from examples/fleet.env.second-host. Everything is dry run without --apply.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -36,7 +38,7 @@ while [ $# -gt 0 ]; do
     --apply) APPLY=1 ;;
     --install-tools) INSTALL_TOOLS=1 ;;
     --only|--tokens-from|--coordinator) PASS+=("$1" "${2:?$1 needs a value}"); shift ;;
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -53,7 +55,7 @@ header "Preflight"
 [ "$(uname)" = Darwin ] && ok "macOS $(sw_vers -productVersion)" || bad "macOS required"
 [ -d "$HERE/.git" ] && ok "git clone at $HERE ($(git -C "$HERE" rev-parse --short HEAD))" || bad "not a git clone"
 if command -v node >/dev/null; then ok "node $(node --version)"; else bad "node missing (brew install node)"; fi
-[ -f "$ENV_FILE" ] && ok "fleet.env present" || bad "no fleet.env — copy examples/fleet.env.ultra and edit it"
+[ -f "$ENV_FILE" ] && ok "fleet.env present" || bad "no fleet.env — copy examples/fleet.env.second-host and edit it"
 
 COORD="${FLEET_COORDINATOR:-${FLEET_COORDINATORS%%,*}}"
 for i in "${!PASS[@]}"; do [ "${PASS[$i]}" = "--coordinator" ] && COORD="${PASS[$((i + 1))]}"; done
@@ -184,6 +186,13 @@ if [ "$APPLY" -eq 1 ]; then
   "$HERE/healthctl.sh" install
 else
   echo "    (dry run) healthctl.sh install — restarts runners that die silently"
+fi
+
+header "Disk cleanup"
+if [ "$APPLY" -eq 1 ]; then
+  "$HERE/cleanupctl.sh" install
+else
+  echo "    (dry run) cleanupctl.sh install — cleanup.sh --apply --auto every ${FLEET_CLEANUP_INTERVAL:-900}s"
 fi
 
 header "Done"

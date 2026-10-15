@@ -62,6 +62,22 @@ The LaunchAgent label is `<FLEET_LABEL_PREFIX>.fleet-health` (default
 `./healthctl.sh install`; changing it later requires uninstall under the old
 label and reinstall.
 
+## Disk cleanup
+
+Used by `cleanup.sh` and `cleanupctl.sh`. See
+[Operations → Disk cleanup](operations.md#disk-cleanup).
+
+| Variable | Default | What it does |
+|---|---|---|
+| `FLEET_CLEANUP_PRESSURE_GB` | `FLEET_ADMIT_MIN_FREE_DISK_GB` + 20 | Below this much usable disk, `--auto` acts on every tick and takes the pressure steps too. |
+| `FLEET_CLEANUP_SIM_MAX_GB` | `3` | Erase an idle runner's `ci-` simulator past this size. |
+| `FLEET_CLEANUP_SIM_PRESSURE_GB` | `1` | ...and past this under pressure. |
+| `FLEET_CLEANUP_FULL_EVERY_S` | `86400` | `--auto` runs a full pass at least this often. |
+| `FLEET_CLEANUP_INTERVAL` | `900` | Seconds between `--auto` ticks. Reinstall after changing: `./cleanupctl.sh install`. |
+| `FLEET_CLEANUP_LOG` | `~/Library/Logs/runner-cleanup.log` | Where the cleanup LaunchAgent writes stdout/stderr. |
+
+The LaunchAgent label is `<FLEET_LABEL_PREFIX>.runner-cleanup`.
+
 ## Grouping variables
 
 Used by the dashboard and `runs.sh` to group repos.

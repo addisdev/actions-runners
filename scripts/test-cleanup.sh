@@ -125,6 +125,25 @@ ok "a partial run is not recorded as full" \
   "$([ "$(cat "$T/.cleanup-last-full")" -gt 1 ] && [ -n "$(find "$T/.cleanup-last-full" -newer "$T/out" 2>/dev/null)" ] && echo recorded || echo not)" "not"
 { kill "$SLOT"; wait "$SLOT"; } 2>/dev/null
 
+echo "== another host's busy runners do not hold this host =="
+setup 11
+echo 45 > "$T/free"
+# The same repos are mirrored on a second host: GitHub lists its runners too.
+printf 'OTHER-web\nOTHER-ios\n' > "$T/busy"
+old="$T/home/Library/Developer/Xcode/DerivedData/Old-abc"
+mkdir -p "$old"; touch -t 202601010000 "$old"
+clean --apply > "$T/out"
+ok "said they are elsewhere" "$(grep -c 'on other hosts' "$T/out")" "1"
+ok "did not list them as busy here" "$(grep -c 'a runner is BUSY' "$T/out")" "0"
+ok "host-wide steps ran" "$(gone "$old")" "removed"
+ok "this host's idle device was erased" "$(calls 'simctl erase U-WEB')" "1"
+echo "OTHER-web" > "$T/busy"; echo "RL-android" >> "$T/busy"
+mkdir -p "$old"; touch -t 202601010000 "$old"
+: > "$T/calls"
+clean --apply > "$T/out"
+ok "a local busy runner still holds the host-wide steps" "$(gone "$old")" "kept"
+ok "and keeps its own device" "$(calls 'U-ANDROID')" "0"
+
 echo "== under pressure on an idle fleet, small CI devices go too =="
 setup 4
 echo 45 > "$T/free"

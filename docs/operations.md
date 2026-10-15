@@ -63,7 +63,18 @@ day while a weekly run reclaimed 1–2 GB, and it refused to run whenever any jo
 was building. When the disk does reach the admission floor, every job is held,
 so the fleet is idle and the next 15-minute run can take everything it needs.
 
-See `examples/launchd-cleanup.plist` for a ready-to-install template. For
+Install the timer with `./cleanupctl.sh install` (`join-host.sh --apply` does
+it on a new host). It writes `<FLEET_LABEL_PREFIX>.runner-cleanup` with the
+runners' job PATH, bootstraps it into the `gui/<uid>` domain, and logs to
+`~/Library/Logs/runner-cleanup.log`; `./cleanupctl.sh status` shows the last
+run. Like the runners, it starts at login, so a host without automatic login
+gets it back when someone logs in.
+
+With one repository mirrored on several hosts, GitHub lists every host's
+runners for it. `cleanup.sh` counts only the busy runners that live on this
+host, so one host's jobs never hold another host's cleanup.
+
+`examples/launchd-cleanup.plist` is a hand-install template. For
 health repair without `healthctl.sh`, `examples/launchd-health.plist` is a
 manual fallback — prefer `./healthctl.sh install` on production hosts.
 
