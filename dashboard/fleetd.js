@@ -89,6 +89,7 @@ import { checkPosture } from './lib/posture.js';
 import { timeline } from './lib/timeline.js';
 import { TickGuard, stage } from './lib/tick-guard.js';
 import { decideTiers, tiersConfigFromEnv, primaryRungs, DRAIN_OWNER } from './lib/tiers.js';
+import { admissionSettings, admissionBlocker } from './lib/admit-gate.js';
 import { switchOffImpact, drainsToReassert, reassertArgs, markerStillHeld } from './lib/host-switch.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -841,6 +842,7 @@ function hostRecordFromPayload(hostId, lastSeen, payload) {
     repos: payload.repos ?? [],
     host: payload.host ?? {},
     capacity: payload.capacity ?? null,
+    admission: payload.admission ?? null,
     runnerCount: runners.length,
     version: payload.version ?? 1,
     drained: Boolean(payload.drained),
@@ -2312,9 +2314,17 @@ async function runTiers(snap, localRunners, now) {
   const standby = TIERS.standbyHosts.map((id) => {
     const h = findHost(id);
     return h
-      ? { id: h.id, name: h.name, lastHeartbeat: h.lastHeartbeat, memPressure: h.host?.memPressure ?? null, off: Boolean(h.off) }
-      : { id, name: id, lastHeartbeat: null, memPressure: null, off: false };
+      ? {
+        id: h.id, name: h.name, lastHeartbeat: h.lastHeartbeat, memPressure: h.host?.memPressure ?? null, off: Boolean(h.off),
+        // Null from an agent too old to report it: unknown, never "blocked".
+        cannotAdmit: h.admission?.blocked ?? null,
+      }
+      : { id, name: id, lastHeartbeat: null, memPressure: null, off: false, cannotAdmit: null };
   });
+  // The coordinator's own hook reads its own fleet.env; so does this.
+  const primaryAdmission = primaryIsLocal
+    ? admissionBlocker(snap.host ?? {}, admissionSettings({ root: CONFIG.root }))
+    : primaryHost?.admission?.blocked ?? null;
 
   const { state, decision } = decideTiers({
     config: TIERS,
@@ -2325,6 +2335,7 @@ async function runTiers(snap, localRunners, now) {
       lastHeartbeat: primaryIsLocal ? now : primaryHost?.lastHeartbeat ?? null,
       memPressure: primaryIsLocal ? snap.host?.memPressure ?? null : primaryHost?.host?.memPressure ?? null,
       off: primaryIsLocal ? hostDrainState(CONFIG.root) === 'off' : Boolean(primaryHost?.off),
+      cannotAdmit: primaryAdmission,
       rungs: primaryRungs(lastVerdict?.verdict, lastVerdict?.runners?.values?.() ?? [], {
         primaryId, primaryIsLocal, staleHostIds,
       }),
@@ -3443,6 +3454,7 @@ const server = http.createServer(async (req, res) => {
           runners: body.runners,
           host: hostVitalsIn,
           capacity: body.capacity ?? null,
+          admission: body.admission ?? null,
           repos: body.repos ?? [],
           // Persisted with the rest so a coordinator restart does not put a
           // deliberately drained host back into rotation the moment it comes up,
@@ -3466,6 +3478,7 @@ const server = http.createServer(async (req, res) => {
         repos: body.repos ?? [],
         host: body.host ?? {},
         capacity: body.capacity ?? null,
+        admission: body.admission ?? null,
         runnerCount: body.runners.length,
         version: body.version ?? 1,
         drained: Boolean(body.drained),
@@ -4083,6 +4096,7 @@ async function main() {
           repos: payload.repos ?? [],
           host: payload.host ?? {},
           capacity: payload.capacity ?? null,
+          admission: payload.admission ?? null,
           runnerCount: (payload.runners ?? []).length,
           version: row.agent_version ?? 1,
           drained: Boolean(payload.drained),

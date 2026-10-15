@@ -27,6 +27,9 @@
     "id": "disk-floor",
     "tone": "critical",
     "title": "Disk floor is holding jobs",
+    "hosts": [
+     null
+    ],
     "sentence": "3 jobs held because free disk is under the admission floor. It looks like load; it is disk.",
     "evidence": [
      "36.6 GB free, floor 40 GB",

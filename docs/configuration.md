@@ -329,6 +329,7 @@ tiers work and why the timers are what they are:
 | `FLEET_TIERS_SELF_RESUME_AFTER_S` | `300` | Self-drained primary runners come back once their lane has had room this long... |
 | `FLEET_TIERS_SELF_MIN_HOLD_S` | `600` | ...and not before the lane has been self-draining this long. Resumes that keep a repo served (no twin, primary-only, self-drain off) never wait. |
 | `FLEET_TIERS_SELF_MIN_OPEN_S` | `300` | A lane does not start self-draining again sooner than this after its runners came back. |
+| `FLEET_TIERS_ADMIT_RESUME_AFTER_S` | `300` | A host whose admission hook would hold every job (disk under its own `FLEET_ADMIT_MIN_FREE_DISK_GB` or `FLEET_ADMIT_MIN_PLAIN_FREE_GB`) has all its runners drained. It gets them back once it has been able to admit this long. |
 | `FLEET_TIERS_BUILD_CAP` | `FLEET_ADMIT_MAX_CONCURRENT` | The primary's build-lane cap, if it differs from the admission setting `fleetctl.sh` passes through. |
 | `FLEET_TIERS_SIMULATOR_CAP` | `FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT` | The primary's Simulator-lane cap; runners in the lane are the ones `FLEET_SIMULATOR_RUNNERS` matches. `0`: no Simulator lane. |
 

@@ -96,6 +96,24 @@ the menu bar and to agent sessions. The dashboard also works away from the
 desk: LAN and Tailscale access, per-device pairing, and a mobile layout. The
 autofix bridge is removed.
 
+- **Runners on a host that cannot start jobs go offline.** A runner cannot
+  refuse a job GitHub has given it. Its admission hook can only hold the job
+  at "Set up runner", and under the disk floor that hold lasts until GitHub
+  cancels it. Each host now reports whether its hook would hold every job
+  (`admission` in the agent heartbeat, `lib/admit-gate.js`). The tiers
+  controller drains every runner on such a host, floor runners included. It no
+  longer uses the host as an overflow target or a twin. If the host is the
+  primary, the controller sends its work to the standby. It trusts the host
+  again after 5 min of room (`FLEET_TIERS_ADMIT_RESUME_AFTER_S`). Seen
+  2026-10-15: ultra at 97 GB under its 100 GB floor held every job it took for
+  30–60 min while runner-host had room.
+- **A standby host's disk hold reads as a disk hold.** The verdict compared
+  every held job with the coordinator's disk, so ultra's 97 GB under its own
+  100 GB floor read as "waiting for a slot (disk freed)" and the fleet as all
+  clear. Each held job is now compared with its own host's disk. The
+  `disk-floor` rung names the hosts it is about (`hosts`), so the tiers
+  controller no longer treats a standby host's floor as the primary's.
+
 ### Added
 
 - **Host on/off switch.** A switch beside each host's name in the Fleet and
