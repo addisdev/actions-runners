@@ -396,3 +396,7 @@ if [ "$APPLY" = "1" ]; then
 else
   say "==> DRY RUN — nothing was deleted. Re-run with --apply."
 fi
+# A partial run is a normal outcome, not a failure. Without this the stamp
+# test above was the exit status, so every tick on a busy host exited 1 and
+# the Homelab Map read the LaunchAgent as failing (launchd.exit-nonzero).
+exit 0
