@@ -36,6 +36,7 @@ import {
 
 import { discoverRunnerDirs, launchdJobs, runnerProcesses, hostVitals, hostDrainState } from './lib/local.js';
 import { headroom } from './lib/capacity.js';
+import { admissionSettings, admissionReport } from './lib/admit-gate.js';
 // Shared with buildRunners so a duplicate is numbered the same way on every host.
 import { instanceOf } from './lib/state.js';
 import { loadOffset, saveOffset, readPending, advance } from './lib/admission-ship.js';
@@ -319,6 +320,12 @@ async function collect() {
     // capacity from a 30-second-old copy would be deciding from stale data at
     // exactly the moment it matters.
     capacity: headroom({ host, runners, limits: CONFIG.limits }),
+    // Whether this host's admission hook would hold every job it took right
+    // now (the disk floor). The coordinator keeps such a host's runners
+    // offline, so GitHub gives the job to a runner that can start it
+    // (lib/admit-gate.js, lib/tiers.js). Read from this host's fleet.env, the
+    // file the hook itself reads.
+    admission: admissionReport(host, admissionSettings({ root: CONFIG.root })),
   };
 }
 

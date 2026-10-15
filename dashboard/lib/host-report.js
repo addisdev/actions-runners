@@ -4,6 +4,7 @@ import {
   discoverRunnerDirs, launchdJobs, runnerProcesses, hostVitals, hostDrainState,
 } from './local.js';
 import { headroom } from './capacity.js';
+import { admissionSettings, admissionReport } from './admit-gate.js';
 import { instanceOf } from './state.js';
 
 let lastSwap = null;
@@ -76,5 +77,6 @@ export async function collectHostReport({
     repos: [...new Set(runners.map((r) => r.repo))],
     host,
     capacity: headroom({ host, runners, limits }),
+    admission: admissionReport(host, admissionSettings({ root })),
   };
 }

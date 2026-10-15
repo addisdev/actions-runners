@@ -240,11 +240,22 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
   // keeps waiting. After disk is freed, a job held at 38 GB goes on waiting
   // for a slot under the same "below the floor" reason (seen live 2026-09-30).
   // So a disk reason counts only while free disk is actually under the floor.
-  const diskNow = host.diskFreeGb;
+  // Each waiter is compared with ITS host's disk. Comparing a standby host's
+  // hold with the coordinator's disk read ultra's 97 GB under a 100 GB floor
+  // as "disk freed" (runner-host had 107), and the verdict said all clear
+  // while every job on ultra sat at Set up runner (2026-10-15).
+  const hostRows = snapshot.hosts ?? [];
+  const localHostIds = new Set(hostRows.filter((h) => h.local).map((h) => h.id));
+  const hostOf = (id) => (id == null || localHostIds.has(id) ? null : hostRows.find((h) => h.id === id) ?? null);
+  const diskFor = (id) => {
+    const h = hostOf(id);
+    return h ? h.host?.diskFreeGb ?? null : host.diskFreeGb;
+  };
   const waiting = (snapshot.admission?.waiting ?? [])
     .filter((w) => w.since == null || now - w.since * (w.since < 1e12 ? 1000 : 1) <= o.holdTtlMs)
     .map((w) => {
       const disk = parseDiskHold(w.reason);
+      const diskNow = diskFor(w.host);
       const stillBelow = disk && (diskNow == null || diskNow < disk.floorGb);
       return stillBelow ? { ...w, disk } : { ...w, disk: null, reason: disk ? 'waiting for a slot (disk freed)' : w.reason };
     });
@@ -382,8 +393,15 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
   const enforcing = (snapshot.admission?.mode ?? null) === 'enforce';
   if (diskHeld.length || (diskBelow && enforcing)) {
     const evidence = [];
-    if (host.diskFreeGb != null && effectiveFloor != null) {
-      evidence.push(`${host.diskFreeGb.toFixed(1)} GB free, floor ${effectiveFloor} GB`);
+    // One line per host whose disk is holding jobs, named when it is not the
+    // coordinator; the coordinator's own line when nothing is held yet.
+    const heldHosts = [...new Set(diskHeld.map((w) => (hostOf(w.host) ? w.host : null)))];
+    const diskHosts = heldHosts.length ? heldHosts : [null];
+    for (const id of diskHosts) {
+      const free = diskFor(id);
+      const floor = diskHeld.find((w) => (hostOf(w.host) ? w.host : null) === id)?.disk.floorGb ?? effectiveFloor;
+      const label = id == null ? '' : `${hostOf(id)?.name ?? id}: `;
+      if (free != null && floor != null) evidence.push(`${label}${free.toFixed(1)} GB free, floor ${floor} GB`);
     }
     if (diskHeld.length) {
       evidence.push(`${plural(diskHeld.length, 'job')} held at Set up runner: ${diskHeld.map((w) => short(w.repo ?? w.runner)).join(', ')}`);
@@ -392,6 +410,9 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
     }
     evidence.push('Waiting does not fix this; freeing disk does');
     push('disk-floor', {
+      // Which hosts' disks are holding jobs (null = the coordinator), so a
+      // consumer can tell the coordinator's floor from a standby host's.
+      hosts: diskHosts,
       sentence: `${diskHeld.length ? plural(diskHeld.length, 'job') + ' held' : 'Jobs will be held'} because free disk is under the admission floor. It looks like load; it is disk.`,
       evidence,
       next: { label: 'Preview cleanup', kind: 'action', action: 'fleet.cleanupPreview', then: 'fleet.cleanupApply' },

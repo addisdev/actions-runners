@@ -636,3 +636,109 @@ describe('self-drain hysteresis', () => {
     assert.equal(resumedAt, 11 * MIN);
   });
 });
+
+// 2026-10-15: ultra (the standby host) sat at 97 GB under its own 100 GB
+// admission floor. The controller kept its runners online and self-drained the
+// primary's runners onto them as "twins", so every job GitHub gave ultra sat
+// at Set up runner for 30–60 min and was cancelled, while the primary had room.
+describe('a host that cannot admit', () => {
+  const FLOOR = { kind: 'disk', freeGb: 96, floorGb: 100, reason: '96 GB disk free, below the 100 GB floor' };
+  const ACTIVE_STATE = { overflow: 'active', since: NOW - 5 * MIN, reason: 'busy', pending: {} };
+  const blockedStandby = (over = {}) => [{ id: 'studio', name: 'studio', lastHeartbeat: NOW - 10 * SEC, memPressure: 'normal', cannotAdmit: FLOOR, ...over }];
+
+  test('every runner on a standby host that cannot admit is drained, floor and busy ones included', () => {
+    const runners = fleet({ 'studio-app-api': { workingLocally: true } });
+    const r = decideTiers(input({ runners, standby: blockedStandby(), state: ACTIVE_STATE }));
+    assert.deepEqual(names(r.decision.actions, 'drain'), ['studio-app-api', 'studio-app-ios', 'studio-app-web', 'studio-app-web-2']);
+    assert.ok(r.decision.actions.every((a) => /studio cannot start jobs: 96 GB disk free/.test(a.reason)), r.decision.actions.map((a) => a.reason).join(' | '));
+    assert.equal(r.decision.hosts[0].cannotAdmit, FLOOR.reason);
+  });
+
+  test('a busy primary lane does not resume a standby host that cannot admit', () => {
+    const runners = fleet({ ...resting(), 'laptop-app-web': { workingLocally: true }, 'laptop-app-api': { workingLocally: true } });
+    const state = { ...STANDBY_STATE, atCapSince: { build: NOW - 2 * MIN } };
+    const r = decideTiers(input({ runners, standby: blockedStandby(), state }));
+    assert.deepEqual(names(r.decision.actions, 'resume'), []);
+  });
+
+  test('is no twin: the primary keeps its runners, and resumes the ones it shed', () => {
+    const runners = fleet({
+      'laptop-app-web': { workingLocally: true },
+      'laptop-app-api': { workingLocally: true },
+      'laptop-app-web-2': owned(),
+    });
+    const state = { ...ACTIVE_STATE, atCapSince: { build: NOW - 5 * MIN }, shed: { build: { on: true, since: NOW - 2 * MIN } } };
+    const r = decideTiers(input({ runners, standby: blockedStandby(), state }));
+    assert.deepEqual(names(r.decision.actions.filter((a) => a.tier === 'primary'), 'resume'), ['laptop-app-web-2']);
+    assert.deepEqual(names(r.decision.actions.filter((a) => a.tier === 'primary'), 'drain'), []);
+  });
+
+  test('stays drained until it has been able to admit for admitResumeAfterMs', () => {
+    let runners = fleet();
+    let r = decideTiers(input({ runners, standby: blockedStandby(), state: ACTIVE_STATE }));
+    let state = r.state;
+    // Drains land; then the disk crosses back over the floor.
+    runners = fleet({ 'studio-app-web': owned(), 'studio-app-web-2': owned(), 'studio-app-api': owned(), 'studio-app-ios': owned() });
+    const queue = [{ id: 1, repo: 'o/app-web', labels: ['ci'], queuedSinceMs: 5 * MIN }];
+    for (const t of [1, 2, 4]) {
+      r = decideTiers(input({ now: NOW + t * MIN, runners, queue, standby: blockedStandby({ cannotAdmit: null, lastHeartbeat: NOW + t * MIN }), state }));
+      state = r.state;
+      assert.deepEqual(names(r.decision.actions, 'resume'), [], `still held at ${t} min`);
+      assert.match(r.decision.hosts[0].cannotAdmit, /until \d+s ago|until \d+m ago/);
+    }
+    r = decideTiers(input({ now: NOW + 7 * MIN, runners, queue, standby: blockedStandby({ cannotAdmit: null, lastHeartbeat: NOW + 7 * MIN }), state }));
+    assert.equal(r.decision.hosts[0].cannotAdmit, null);
+    assert.deepEqual(names(r.decision.actions, 'resume'), ['studio-app-api', 'studio-app-ios', 'studio-app-web', 'studio-app-web-2']);
+  });
+
+  test('a fresh block restarts the wait', () => {
+    let r = decideTiers(input({ standby: blockedStandby(), state: ACTIVE_STATE }));
+    r = decideTiers(input({ now: NOW + 4 * MIN, standby: blockedStandby({ cannotAdmit: null, lastHeartbeat: NOW + 4 * MIN }), state: r.state }));
+    r = decideTiers(input({ now: NOW + 5 * MIN, standby: blockedStandby({ lastHeartbeat: NOW + 5 * MIN }), state: r.state }));
+    r = decideTiers(input({ now: NOW + 9 * MIN, standby: blockedStandby({ cannotAdmit: null, lastHeartbeat: NOW + 9 * MIN }), state: r.state }));
+    assert.ok(r.decision.hosts[0].cannotAdmit, 'blocked again at 5 min, so 9 min is only 4 min clear');
+  });
+
+  test('an agent that does not report admission (null) is not blocked', () => {
+    const r = decideTiers(input({ standby: blockedStandby({ cannotAdmit: null }), state: ACTIVE_STATE }));
+    assert.deepEqual(names(r.decision.actions, 'drain'), []);
+    assert.equal(r.decision.hosts[0].cannotAdmit, null);
+  });
+
+  test('a primary that cannot admit wakes the overflow tier and drains its own runners, busy ones too, onto online twins', () => {
+    const runners = fleet({ ...resting(), 'laptop-app-web': { workingLocally: true } });
+    const primary = { id: 'laptop', lastHeartbeat: NOW, memPressure: 'normal', rungs: [], cannotAdmit: FLOOR };
+    let r = decideTiers(input({ runners, primary, state: STANDBY_STATE }));
+    assert.equal(r.decision.triggers[0].id, 'primary-cannot-admit');
+    assert.equal(r.decision.overflow, 'active');
+    assert.deepEqual(names(r.decision.actions, 'resume'), ['studio-app-api', 'studio-app-web', 'studio-app-web-2']);
+    // Next step, with the standby twins online: the primary's runners go,
+    // except the primary-only repo and one with no twin (app-ios-2 shares the
+    // floor twin with app-ios, which is enough).
+    r = decideTiers(input({ runners: fleet({ 'laptop-app-web': { workingLocally: true } }), primary, state: r.state }));
+    const drained = names(r.decision.actions.filter((a) => a.tier === 'primary'), 'drain');
+    assert.ok(drained.includes('laptop-app-web'), 'busy runner drained too');
+    assert.ok(!drained.includes('laptop-app-db'), 'primary-only repo stays');
+    assert.ok(r.decision.actions.filter((a) => a.tier === 'primary').every((a) => /the primary cannot start jobs/.test(a.reason)));
+  });
+
+  test('off mode drains nothing for admission and releases what it drained', () => {
+    const config = { ...CONFIG, mode: 'off' };
+    const runners = fleet({ 'studio-app-ios': owned() });
+    const r = decideTiers(input({ config, runners, standby: blockedStandby(), state: ACTIVE_STATE }));
+    assert.deepEqual(names(r.decision.actions, 'drain'), []);
+    assert.deepEqual(names(r.decision.actions, 'resume'), ['studio-app-ios']);
+  });
+
+  test('primaryRungs: a disk-floor rung about a standby host is not the primary\'s', () => {
+    const v = (hosts) => ({ open: [{ id: 'disk-floor', hosts }] });
+    assert.deepEqual(primaryRungs(v(['studio']), [], { primaryId: 'laptop', primaryIsLocal: true }), []);
+    assert.deepEqual(primaryRungs(v([null]), [], { primaryId: 'laptop', primaryIsLocal: true }), ['disk-floor']);
+    assert.deepEqual(primaryRungs(v(['laptop']), [], { primaryId: 'laptop', primaryIsLocal: false }), ['disk-floor']);
+  });
+
+  test('reads FLEET_TIERS_ADMIT_RESUME_AFTER_S', () => {
+    assert.equal(tiersConfigFromEnv({}).admitResumeAfterMs, 300_000);
+    assert.equal(tiersConfigFromEnv({ FLEET_TIERS_ADMIT_RESUME_AFTER_S: '120' }).admitResumeAfterMs, 120_000);
+  });
+});

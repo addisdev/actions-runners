@@ -15,6 +15,11 @@
 //             GitHub stops handing the primary jobs it would only hold at
 //             "Set up runner"; they come back when the lane has room.
 //
+// A host that CANNOT ADMIT (its hook would hold every job: the disk floor,
+// lib/admit-gate.js) gets no runner online at all, floor runners included,
+// and is no twin and no overflow target. A runner cannot refuse a job once
+// GitHub has given it one; it can only be offline before that.
+//
 // Every drain this controller makes is written with `drain-runner.sh --by=tiers`
 // and it only ever resumes runners whose marker says so. A runner an operator
 // drained is never touched, on either host.
@@ -61,6 +66,11 @@ export const TIERS_DEFAULTS = {
   selfMinHoldMs: 600_000,
   // ...and does not start shedding again sooner than this after it stopped.
   selfMinOpenMs: 300_000,
+  // A host that could not admit is trusted again only after it has been able
+  // to for this long: the disk floor is crossed in both directions by every
+  // job's checkout and cleanup, and each crossing would otherwise drain or
+  // resume a whole host.
+  admitResumeAfterMs: 300_000,
   // An action not yet reflected in the reported state is not re-sent for
   // this long.
   retryMs: 180_000,
@@ -115,6 +125,7 @@ export function tiersConfigFromEnv(env = {}, { localHostId = null } = {}) {
     selfResumeAfterMs: s('FLEET_TIERS_SELF_RESUME_AFTER_S', TIERS_DEFAULTS.selfResumeAfterMs),
     selfMinHoldMs: s('FLEET_TIERS_SELF_MIN_HOLD_S', TIERS_DEFAULTS.selfMinHoldMs),
     selfMinOpenMs: s('FLEET_TIERS_SELF_MIN_OPEN_S', TIERS_DEFAULTS.selfMinOpenMs),
+    admitResumeAfterMs: s('FLEET_TIERS_ADMIT_RESUME_AFTER_S', TIERS_DEFAULTS.admitResumeAfterMs),
     caps: {
       build: int(env.FLEET_TIERS_BUILD_CAP, int(env.FLEET_ADMIT_MAX_CONCURRENT, TIERS_DEFAULTS.caps.build)),
       simulator: int(env.FLEET_TIERS_SIMULATOR_CAP, int(env.FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT, 0)),
@@ -166,7 +177,13 @@ export function primaryRungs(verdict, runnerStates, { primaryId, primaryIsLocal,
   const open = new Set((verdict?.open ?? []).map((o) => o.id));
   const rungs = [];
   if (open.has('host-down') && !primaryIsLocal && staleHostIds.includes(primaryId)) rungs.push('host-down');
-  if (primaryIsLocal && open.has('disk-floor')) rungs.push('disk-floor');
+  // disk-floor names the hosts whose disk holds jobs (null = the coordinator):
+  // a standby host's floor is not the primary's.
+  const disk = (verdict?.open ?? []).find((o) => o.id === 'disk-floor');
+  if (disk) {
+    const hosts = disk.hosts ?? [null];
+    if (hosts.some((h) => (h == null ? primaryIsLocal : h === primaryId))) rungs.push('disk-floor');
+  }
   if (open.has('dead-service')) {
     const dead = [...(runnerStates ?? [])].some((r) => r.hostId === primaryId && (r.state === 'dead' || r.state === 'offline'));
     if (dead) rungs.push('dead-service');
@@ -182,10 +199,12 @@ export function primaryRungs(verdict, runnerStates, { primaryId, primaryIsLocal,
  * @param {object} input.config     - tiersConfigFromEnv()
  * @param {number} input.now
  * @param {object|null} input.state - the previous step's `state`, or null at start
- * @param {object} input.primary    - { id, lastHeartbeat, memPressure, rungs: [], off }
- * @param {object[]} input.standby  - [{ id, name, lastHeartbeat, memPressure, off }]
+ * @param {object} input.primary    - { id, lastHeartbeat, memPressure, rungs: [], off, cannotAdmit }
+ * @param {object[]} input.standby  - [{ id, name, lastHeartbeat, memPressure, off, cannotAdmit }]
  *   `off`: the host is switched off (host-drain.sh --off). It takes no jobs,
  *   so it is never sent an action, and an off primary wakes the overflow tier.
+ *   `cannotAdmit`: lib/admit-gate.js admissionBlocker() as the host reported
+ *   it ({ reason, ... }), or null. Its runners are kept offline.
  * @param {object[]} input.runners  - fleet runners: { name, dirName, repo, hostId,
  *   local, labels, ghStatus, ghUnknown, workingLocally, ghBusy, drainState,
  *   drainBy, ephemeral }
@@ -210,6 +229,31 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
   const overflowRunners = standbyRunners.filter((r) => !isFloor(r));
   const floorRunners = standbyRunners.filter(isFloor);
   const isSim = (r) => isSimulatorRunner(r.name, cfg.simulatorRunners);
+
+  // ---- hosts that cannot admit -------------------------------------------------
+  // On as soon as a host reports a blocker; off only after it has reported
+  // none for admitResumeAfterMs. Null (an agent too old to say) is "can".
+  const admit = {};
+  for (const h of [primary, ...standby]) {
+    if (!h?.id) continue;
+    const p = prev.admit?.[h.id];
+    if (h.cannotAdmit) {
+      admit[h.id] = { on: true, since: p?.on ? p.since : now, clearSince: null, reason: h.cannotAdmit.reason ?? 'admission blocked' };
+    } else if (p?.on) {
+      const clearSince = p.clearSince ?? now;
+      admit[h.id] = now - clearSince >= cfg.admitResumeAfterMs
+        ? { on: false, since: now, clearSince: null, reason: null }
+        : { ...p, clearSince };
+    } else {
+      admit[h.id] = { on: false, since: p?.since ?? null, clearSince: null, reason: null };
+    }
+  }
+  const blockedWhy = (id) => {
+    const a = admit[id];
+    if (!a?.on) return null;
+    return a.clearSince == null ? a.reason : `${a.reason} until ${secs(now - a.clearSince)} ago`;
+  };
+  const primaryBlocked = Boolean(admit[primary.id]?.on);
 
   // ---- primary lanes ---------------------------------------------------------
   // Busy is the number of jobs with a Runner.Worker on the primary, which
@@ -265,8 +309,9 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
   // drained only while such a lane is also at cap right now: a hold delays
   // resumes, it never drains more of a lane that has room.
   const lanesOf = (r) => Object.keys(shed).filter((k) => k === 'build' || isSim(r));
-  const held = (r) => lanesOf(r).some((k) => shed[k].on);
-  const drainLane = (r) => lanesOf(r).find((k) => shed[k].on && lanes[k].atCap) ?? null;
+  // A primary that cannot admit holds every runner drained, whatever its lanes.
+  const held = (r) => primaryBlocked || lanesOf(r).some((k) => shed[k].on);
+  const drainLane = (r) => (primaryBlocked ? 'admission' : lanesOf(r).find((k) => shed[k].on && lanes[k].atCap) ?? null);
 
   // ---- standby hosts ---------------------------------------------------------
   const hostInfo = new Map(standby.map((h) => {
@@ -277,12 +322,13 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
       reachable: age <= cfg.commandStaleMs,
       critical: h.memPressure === 'critical',
       off: Boolean(h.off),
+      cannotAdmit: blockedWhy(h.id),
       heartbeatAgeMs: Number.isFinite(age) ? age : null,
     }];
   }));
   const usableHost = (id) => {
     const h = hostInfo.get(id);
-    return Boolean(h && h.reachable && !h.critical && !h.off);
+    return Boolean(h && h.reachable && !h.critical && !h.off && !h.cannotAdmit);
   };
 
   // ---- queue -----------------------------------------------------------------
@@ -307,6 +353,7 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
     if (UNFIT_RUNGS.includes(rung)) triggers.push({ id: `primary-${rung}`, detail: `verdict rung ${rung} on the primary` });
   }
   if (primary.memPressure === 'critical') triggers.push({ id: 'primary-memory-critical', detail: 'memory pressure critical on the primary' });
+  if (primaryBlocked) triggers.push({ id: 'primary-cannot-admit', detail: `the primary cannot start jobs: ${blockedWhy(primary.id)}` });
   for (const [lane, l] of Object.entries(lanes)) {
     if (l.atCap && l.atCapForMs >= cfg.resumeAfterBusyMs) {
       triggers.push({ id: 'primary-at-cap', detail: `${lane} lane ${l.busy}/${l.cap} for ${secs(l.atCapForMs)}` });
@@ -365,8 +412,15 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
 
   const off = cfg.mode === 'off';
   for (const r of floorRunners) {
-    // Never drained by the controller. One it drained under an older floor
-    // list goes back online.
+    // Never drained by the controller, except on a host that cannot admit:
+    // there a floor runner only takes jobs to hold them. One it drained (for
+    // that, or under an older floor list) goes back online.
+    if (operatorDrained(r)) continue;
+    const why = hostInfo.get(r.hostId)?.cannotAdmit;
+    if (why && !off) {
+      want(r, 'drain', 'floor', `${hostInfo.get(r.hostId).name} cannot start jobs: ${why}`);
+      continue;
+    }
     if (own(r)) want(r, 'resume', 'floor', 'floor runners stay online');
   }
 
@@ -377,7 +431,7 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
       if (own(r)) want(r, 'resume', 'overflow', 'tiers switched off');
       continue;
     }
-    const wantOnline = overflow === 'active' && !h?.critical;
+    const wantOnline = overflow === 'active' && !h?.critical && !h?.cannotAdmit;
     if (wantOnline) {
       if (own(r)) want(r, 'resume', 'overflow', reason);
       continue;
@@ -385,12 +439,17 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
     if (r.drainState) continue;
     // Never drain the twin a self-drained primary runner is relying on: the
     // primary runner comes back first (its lane has room by now), then this.
-    const covering = primaryRunners.some((p) => own(p) && p.repo === r.repo && covers(r.labels, p.labels));
+    // A runner on a host that cannot admit is covering nothing: the primary
+    // runner is resumed this same step (it has no twin), and this one goes.
+    const covering = !h?.cannotAdmit
+      && primaryRunners.some((p) => own(p) && p.repo === r.repo && covers(r.labels, p.labels));
     if (covering) {
       deferred.push({ name: r.name, reason: 'still covering a self-drained primary runner' });
       continue;
     }
-    want(r, 'drain', 'overflow', h?.critical ? 'memory pressure critical on the standby host' : reason);
+    const why = h?.cannotAdmit ? `${h.name} cannot start jobs: ${h.cannotAdmit}`
+      : h?.critical ? 'memory pressure critical on the standby host' : reason;
+    want(r, 'drain', 'overflow', why);
   }
 
   // A standby runner that is online now and will stay online: what a primary
@@ -416,14 +475,16 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
     }
     const lane = drainLane(p);
     if (!selfDrain || pinned || p.drainState || !lane) continue;
-    // Idle only, and only with a twin online elsewhere: a repo must never be
-    // left with nothing but drained runners.
-    if (busy(p) || !online(p)) continue;
+    // Only with a twin online elsewhere: a repo must never be left with
+    // nothing but drained runners. Idle only for a lane at cap, whose jobs
+    // start in minutes; a busy runner on a primary that cannot admit is drained
+    // too (it stops when its job ends), or it takes the next job to hold it.
+    if ((busy(p) && lane !== 'admission') || !online(p)) continue;
     if (!twinFor(p)) {
       deferred.push({ name: p.name, reason: 'no online standby twin' });
       continue;
     }
-    want(p, 'drain', 'primary', `${lane} lane at cap`);
+    want(p, 'drain', 'primary', lane === 'admission' ? `the primary cannot start jobs: ${blockedWhy(primary.id)}` : `${lane} lane at cap`);
   }
 
   // Commands only reach a host whose agent is reporting, and never one that is
@@ -452,7 +513,7 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
     drainedByOperator: rs.filter(operatorDrained).length,
   });
 
-  const nextState = { overflow, since, reason, atCapSince, freeSince, quietSince, shed, pending };
+  const nextState = { overflow, since, reason, atCapSince, freeSince, quietSince, shed, admit, pending };
   return {
     state: nextState,
     decision: {
@@ -465,6 +526,7 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
       quietForMs,
       drainInMs: overflow === 'active' && quiet ? Math.max(0, cfg.drainAfterQuietMs - quietForMs) : null,
       lanes,
+      primaryCannotAdmit: blockedWhy(primary.id),
       hosts: [...hostInfo.values()],
       counts: {
         floor: count(floorRunners),

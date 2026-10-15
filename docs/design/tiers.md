@@ -97,6 +97,35 @@ primary runner is back.
 A job already held on the primary still finishes there. Self-drain limits how
 many such jobs exist; it does not move them.
 
+## A host that cannot admit
+
+The admission hook runs only after a runner has taken a job, so it cannot hand
+the job back. A full lane clears in minutes. The disk floor does not: while a
+host's usable disk is under its `FLEET_ADMIT_MIN_FREE_DISK_GB` (or plain free
+under `FLEET_ADMIT_MIN_PLAIN_FREE_GB`), every job one of its runners takes sits
+at "Set up runner" until disk is freed or GitHub cancels it. On 2026-10-15 ultra
+sat at 97 GB under its 100 GB floor for hours. The controller kept its runners
+online, and even self-drained the primary's runners onto them as twins, so its
+jobs were held 30–60 min and cancelled while runner-host had room.
+
+Each host now reports whether it can admit. The agent's heartbeat carries an
+`admission` block, and the coordinator computes the same for itself. Both read
+the host's own `fleet.env` and the disk figure the hook uses
+(`lib/admit-gate.js`). While a host cannot admit:
+
+- every runner on it is drained, floor runners and busy ones included (a busy
+  one stops when its job ends);
+- it is no overflow target and no twin, so the primary resumes the runners it
+  shed onto it;
+- a primary that cannot admit wakes the overflow tier (`primary-cannot-admit`)
+  and drains its own runners onto online twins, busy ones included.
+
+It counts as able to admit again only after reporting no blocker for
+`FLEET_TIERS_ADMIT_RESUME_AFTER_S` (5 min). Every checkout and cleanup crosses
+the floor, and without the wait each crossing would drain or resume the whole
+host. An agent too old to send the block counts as able to admit. Mode `off`
+drains nothing and releases what it drained.
+
 ## Whose drain is it
 
 Every drain the controller makes goes through `drain-runner.sh --by=tiers`,

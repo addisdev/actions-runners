@@ -126,6 +126,28 @@ describe('what does not count', () => {
     assert.equal(r.runners.get('build-host-comet-web').state, 'held-slot');
   });
 
+  test('a standby host\'s disk hold is judged by that host\'s disk, not the coordinator\'s', () => {
+    // Seen live 2026-10-15: ultra at 97 GB under its own 100 GB floor held every
+    // job, while runner-host (the coordinator) had 107 GB, so the hold read
+    // "waiting for a slot (disk freed)" and the fleet read all clear.
+    const s = SCENARIOS.diskHold();
+    s.snapshot.host.diskFreeGb = 107;
+    s.snapshot.hosts = [
+      { id: 'build-host', name: 'build-host', local: true, host: s.snapshot.host },
+      { id: 'studio', name: 'studio', host: { diskFreeGb: 96.5 } },
+    ];
+    s.snapshot.admission.waiting = s.snapshot.admission.waiting.map((w) => ({
+      ...w, host: 'studio', reason: '96 GB disk free, below the 100 GB floor',
+    }));
+    const r = computeVerdict(s.snapshot, s.facts, { now: s.now, floorGb: 40 });
+    assert.equal(r.verdict.id, 'disk-floor');
+    assert.deepEqual(r.verdict.open[0].hosts, ['studio']);
+    assert.ok(r.verdict.open[0].evidence.includes('studio: 96.5 GB free, floor 100 GB'), r.verdict.open[0].evidence.join(' | '));
+    // Once the standby host itself has room, it is a slot wait like any other.
+    s.snapshot.hosts[1].host.diskFreeGb = 104;
+    assert.equal(computeVerdict(s.snapshot, s.facts, { now: s.now, floorGb: 40 }).verdict.id, 'waiting');
+  });
+
   test('a public repo queued for GitHub-hosted runners is waiting, not drift; a private one is drift', () => {
     const s = SCENARIOS.quiet();
     const q = { ...SCENARIOS.waiting().snapshot.queue[0], repo: 'acme/public-tool', cause: 'github-hosted', confidence: 'high' };
