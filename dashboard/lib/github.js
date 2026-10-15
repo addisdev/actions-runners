@@ -108,6 +108,23 @@ export function activeRunQueryPaths(repo, { perPage = 100, maxPages = 5, statuse
   return paths;
 }
 
+const SECONDARY_BACKOFF_MS = 60_000;
+const SECONDARY_BACKOFF_MAX_MS = 15 * 60_000;
+
+/**
+ * When to try GitHub again after a rate-limit response. GitHub's guidance:
+ * honour Retry-After; wait for the reset only when the primary allowance is
+ * spent; otherwise it is the secondary (burst) limit, so wait at least a minute,
+ * longer if it keeps happening. Waiting for the reset on every 429 took the
+ * dashboard off GitHub for up to an hour with 4,995 of 5,000 calls left
+ * (2026-10-14).
+ */
+export function rateLimitBackoffUntil({ now, retryAfterS, remaining, resetAt, strikes = 0 }) {
+  if (Number.isFinite(retryAfterS) && retryAfterS > 0) return now + retryAfterS * 1000;
+  if (remaining === 0 && resetAt > now) return resetAt;
+  return now + Math.min(SECONDARY_BACKOFF_MS * 2 ** strikes, SECONDARY_BACKOFF_MAX_MS);
+}
+
 export class GitHub {
   constructor({ log }) {
     this.token = null;
@@ -116,6 +133,7 @@ export class GitHub {
     this.cache = new Map();
     this.rate = { remaining: null, limit: null, resetAt: null };
     this.backoffUntil = 0;
+    this.rateStrikes = 0;
     // Counter only. There is deliberately no shared `lastError` field: the fast
     // loop fans out across every repo at once, so a single mutable "last error"
     // is written by whichever request happened to finish last. Errors are thrown
@@ -156,8 +174,9 @@ export class GitHub {
   // says so. Reporting a one-off blip as a dashboard error just trains people
   // to ignore the error line.
   //
-  // 429 and 403 are deliberately NOT retried: those are rate limiting, they need
-  // backoff on a timescale of minutes, and retrying immediately makes it worse.
+  // 429 and rate-limit 403s are deliberately NOT retried: they need backoff on a
+  // timescale of minutes (rateLimitBackoffUntil), and retrying immediately makes
+  // it worse.
   async get(path, { etag = true, attempts = 3 } = {}) {
     if (Date.now() < this.backoffUntil) {
       throw Object.assign(
@@ -203,6 +222,7 @@ export class GitHub {
       }
 
       if (res.status === 304) {
+        this.rateStrikes = 0;
         return { data: this.cache.get(url), notModified: true, status: 304 };
       }
 
@@ -213,17 +233,26 @@ export class GitHub {
         throw new Error(`${path}: 401 unauthorized (token dropped, will re-resolve)`);
       }
 
-      if (res.status === 429 || (res.status === 403 && this.rate.remaining === 0)) {
-        const retryAfter = Number(res.headers.get('retry-after'));
-        const resetAt = this.rate.resetAt ?? 0;
-        this.backoffUntil = Number.isFinite(retryAfter) && retryAfter > 0
-          ? Date.now() + retryAfter * 1000
-          : Math.max(Date.now() + 60_000, resetAt);
+      if (res.status === 429 || res.status === 403) {
         const body = await res.text().catch(() => '');
-        throw Object.assign(
-          new Error(`${path}: ${res.status} rate limited; backing off until ${new Date(this.backoffUntil).toISOString()} ${body.slice(0, 120)}`),
-          { status: res.status, rateLimited: true, resetAt: this.backoffUntil }
-        );
+        const retryAfterS = Number(res.headers.get('retry-after'));
+        const limited = res.status === 429 || this.rate.remaining === 0
+          || Number.isFinite(retryAfterS) && retryAfterS > 0
+          || /secondary rate limit/i.test(body);
+        if (!limited) {
+          throw Object.assign(new Error(`${path}: ${res.status} ${body.slice(0, 200)}`), { status: res.status });
+        }
+        this.backoffUntil = rateLimitBackoffUntil({
+          now: Date.now(),
+          retryAfterS,
+          remaining: this.rate.remaining,
+          resetAt: this.rate.resetAt ?? 0,
+          strikes: this.rateStrikes,
+        });
+        if (this.rate.remaining !== 0) this.rateStrikes++;
+        const message = `${path}: ${res.status} rate limited (${this.rate.remaining ?? '?'} of ${this.rate.limit ?? '?'} left); backing off until ${new Date(this.backoffUntil).toISOString()} ${body.slice(0, 120)}`;
+        this.log?.(`WARN github: ${message}`);
+        throw Object.assign(new Error(message), { status: res.status, rateLimited: true, resetAt: this.backoffUntil });
       }
 
       if (TRANSIENT_STATUS.has(res.status)) {
@@ -238,6 +267,7 @@ export class GitHub {
         throw Object.assign(new Error(`${path}: ${res.status} ${body.slice(0, 200)}`), { status: res.status });
       }
 
+      this.rateStrikes = 0;
       const data = await res.json();
       const newEtag = res.headers.get('etag');
       if (etag && newEtag) {

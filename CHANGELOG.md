@@ -96,6 +96,16 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Fixed
 
+- **A GitHub burst limit no longer takes the dashboard off GitHub for an
+  hour.** A 429 (or a secondary-rate-limit 403) used to back off until the
+  hourly reset even with 4,995 of 5,000 calls left (2026-10-14). The client
+  now honours `Retry-After`, waits for the reset only when the allowance is
+  really spent, and otherwise backs off for a minute, doubling per repeat up
+  to 15 minutes (`rateLimitBackoffUntil` in `lib/github.js`). An ordinary 403
+  is reported as an error, not a rate limit. The fast tick now reads at most
+  `FLEET_REPO_FETCH_CONCURRENCY` repos at once (default 6). Unbounded, it put
+  ~195 requests in flight, past GitHub's 100-concurrent limit.
+
 - **Two hosts held each other's cleanup.** GitHub lists every runner of a
   repository, so with the same repos mirrored on runner-host and ultra each
   host's `cleanup.sh` counted the other's busy runners as its own and skipped
