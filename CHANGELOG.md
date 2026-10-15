@@ -102,6 +102,10 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
   its host-wide steps (old DerivedData, dead simulators, stale Playwright
   locks) whenever the other host was building. It now counts only the busy
   runners that live on this host.
+- **`cleanup.sh` exited 1 after a partial run.** Its last line was the
+  full-run stamp test, so every tick that skipped the host-wide steps because
+  a job was building ended non-zero, and the Homelab Map read the cleanup
+  LaunchAgent as failing (`launchd.exit-nonzero`). It exits 0 now.
 
 ## [v0.3.0] — 2026-10-13
 
