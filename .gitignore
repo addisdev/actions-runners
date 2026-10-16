@@ -220,6 +220,8 @@ site/
 !cockpit/App/project.yml
 !cockpit/App/Signing.xcconfig
 !cockpit/App/Local.xcconfig.example
+!cockpit/App/Icon/
+!cockpit/App/Icon/*.swift
 !cockpit/App/FleetCockpit/
 !cockpit/App/FleetCockpit/**
 !cockpit/App/FleetCockpitWidgets/

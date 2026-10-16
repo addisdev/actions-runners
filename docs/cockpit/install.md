@@ -75,6 +75,23 @@ Check it took with `sfltool dumpbtm | grep -A6 fleetcockpit` (look for
 `enabled, allowed`). There is deliberately no URL for this: a web page can open
 `fleetcockpit://` links, and it must not be able to add a login item.
 
+## No menu bar icon?
+
+The app has no Dock icon: opening it again from Applications only brings back
+the menu bar item. On a Mac with a notch, a full menu bar drops the items that
+started most recently, and Fleet Cockpit is usually one of them. Check
+**System Settings → Menu Bar** that it is allowed, then pin it near the clock
+(the value is points from the right edge of the screen) and relaunch:
+
+```bash
+defaults write io.github.addisdev.fleetcockpit "NSStatusItem Preferred Position Item-0" -float 420
+osascript -e 'tell application id "io.github.addisdev.fleetcockpit" to quit'
+open "/Applications/Fleet Cockpit.app"
+```
+
+⌘-dragging the icon writes the same setting. ⌃⌥⌘F opens the panel whether or
+not the icon is visible.
+
 ## Reach the dashboard
 
 The dashboard binds to loopback on the runner host. The default route needs
