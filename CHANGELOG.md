@@ -10,6 +10,26 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Added
 
+- **Parking: held time becomes queue time, not job time.** A held job is in
+  progress as far as GitHub is concerned, so the admission hook's wait counts
+  against `timeout-minutes`, and the hook cannot see that limit to budget
+  against it. Self-drain only took a primary runner offline when a standby
+  twin was online, so on 2026-10-16, with ultra under its disk floor, runner-host's
+  homelake runners stayed online at the lane cap and every job they took sat in
+  the hook: homelake PR #114's `release-check` passed every step and was
+  cancelled at 30m26s after a 26 min hold, and `words` (10 min) timed out six
+  times. The tiers controller now parks a twinless primary runner at cap (primary-only repos too), so its jobs
+  wait in GitHub's queue, and brings parked runners back one per free lane
+  slot, oldest queued run first, so they do not all take a job and refill the
+  hook. `FLEET_TIERS_PARK=0` restores the old rule. See
+  [tiers](docs/design/tiers.md#parking-no-twin).
+- **`admission-hold`, a failure class that is not your code.** A job that
+  times out while the hook holds it concludes `cancelled`, like a superseded
+  run, so the cockpit never listed it. The fast failure pass now checks
+  cancelled runs the hook held, and a job whose annotation says it exceeded
+  its maximum execution time after a hold of 2 min or more on its runner is
+  classed `admission-hold` and listed with `notYourCode`.
+
 - **`cleanupctl.sh`, the disk-cleanup timer as a command.** It installs
   `<prefix>.runner-cleanup`, which runs `cleanup.sh --apply --auto` every
   15 minutes, the way `healthctl.sh` installs health repair; runner-host's
@@ -96,6 +116,13 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Fixed
 
+- **Queue causes judge only runners that can take the job.** The
+  "idle runner exists, GitHub is holding this run" test counted every runner
+  of the repo, so homelake runs waiting for its `ci` runner read
+  `concurrency-block` because its `release` runner on the Mini was idle, and
+  the tiers controller ignores such runs. A fitting runner that is offline or
+  parked now makes the run `runner-down` (with "parked until a host slot
+  frees" when tiers parked it), not a label mismatch.
 - **A GitHub burst limit no longer takes the dashboard off GitHub for an
   hour.** A 429 (or a secondary-rate-limit 403) used to back off until the
   hourly reset even with 4,995 of 5,000 calls left (2026-10-14). The client

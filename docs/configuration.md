@@ -342,6 +342,7 @@ tiers work and why the timers are what they are:
 | `FLEET_TIERS_DRAIN_AFTER_S` | `600` | Drain the overflow tier again after this long with every primary lane below cap, nothing queued and no unfit verdict rung. |
 | `FLEET_TIERS_PRIMARY_STALE_S` | `180` | The primary counts as down when its heartbeat is older than this (a remote primary only). |
 | `FLEET_TIERS_SELF_DRAIN` | `1` | `0` turns off primary self-drain (and resumes runners it drained). |
+| `FLEET_TIERS_PARK` | `1` | Self-drain a primary runner with no standby twin too ("park" it), so its jobs wait in GitHub's queue instead of in the admission hook, where the wait counts against `timeout-minutes`; parked runners come back one per free lane slot, oldest queued run first. `0` keeps a twinless runner online at cap. See [tiers](design/tiers.md#parking-no-twin). |
 | `FLEET_TIERS_SELF_DRAIN_AFTER_S` | `60` | A primary lane starts self-draining once it has been at its cap this long. |
 | `FLEET_TIERS_SELF_RESUME_AFTER_S` | `300` | Self-drained primary runners come back once their lane has had room this long... |
 | `FLEET_TIERS_SELF_MIN_HOLD_S` | `600` | ...and not before the lane has been self-draining this long. Resumes that keep a repo served (no twin, primary-only, self-drain off) never wait. |

@@ -477,3 +477,43 @@ describe('lint findings are matched per run', () => {
     assert.equal(out.get(4242).cause, CAUSES.LABEL_MISMATCH);
   });
 });
+
+// 2026-10-16: homelake's `ci` runner on runner-host was parked by the tiers
+// controller while its `release` runner on the Mini sat idle and online. The
+// release runner cannot take a `ci` job, but the classifier counted it, so
+// every parked run read "an idle runner exists, GitHub is holding this run"
+// (concurrency-block), and the tiers controller, which ignores such runs,
+// never released a runner for them.
+describe('only runners that can take the job count', () => {
+  const longAgo = new Date(Date.now() - 20 * 60_000).toISOString();
+  const run = () => makeActiveRun({ repo: 'testowner/app-ios', createdAt: longAgo, startedAt: longAgo });
+  const ciRunner = (over = {}) => makeRunner({ name: 'host-app-ios-2', labels: ['self-hosted', 'macos', 'arm64', 'ci'], ...over });
+  const releaseRunner = makeRunner({ name: 'mini-app-ios-release', labels: ['self-hosted', 'macos', 'arm64', 'release'] });
+  const runLabels = ['self-hosted', 'macOS', 'ci'];
+
+  test('a parked ci runner with an idle release runner online is runner-down, not concurrency-block', () => {
+    const r = classifyQueueCause({
+      run: run(),
+      runners: [ciRunner({ drainState: 'drained', drainBy: 'tiers', ghStatus: 'offline' }), releaseRunner],
+      capacity: goodCapacity,
+      runLabels,
+    });
+    assert.equal(r.cause, CAUSES.RUNNER_DOWN);
+    assert.match(r.evidence.join(' '), /parked until a host slot frees/);
+  });
+
+  test('an offline runner that fits is not a label mismatch', () => {
+    const r = classifyQueueCause({ run: run(), runners: [ciRunner({ ghStatus: 'offline' }), releaseRunner], capacity: goodCapacity, runLabels });
+    assert.equal(r.cause, CAUSES.RUNNER_DOWN);
+  });
+
+  test('an idle runner that fits, waiting long, is still concurrency-block', () => {
+    const r = classifyQueueCause({ run: run(), runners: [ciRunner(), releaseRunner], capacity: goodCapacity, runLabels });
+    assert.equal(r.cause, CAUSES.CONCURRENCY_BLOCK);
+  });
+
+  test('no runner of the repo fits at all: still structural (ci is a role, so role-unserved)', () => {
+    const r = classifyQueueCause({ run: run(), runners: [releaseRunner], capacity: goodCapacity, runLabels });
+    assert.equal(r.cause, CAUSES.ROLE_UNSERVED);
+  });
+});

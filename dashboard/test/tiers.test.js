@@ -23,6 +23,9 @@ const CONFIG = {
   primaryOnlyRepos: ['app-db'],
   caps: { build: 2, simulator: 1 },
   simulatorRunners: ['*-ios', '*-ios-*'],
+  // The suites below describe self-drain onto standby twins, which predates
+  // parking; describe('parking') turns it on.
+  park: false,
 };
 
 const BASE = ['self-hosted', 'macOS', 'ARM64'];
@@ -740,5 +743,158 @@ describe('a host that cannot admit', () => {
   test('reads FLEET_TIERS_ADMIT_RESUME_AFTER_S', () => {
     assert.equal(tiersConfigFromEnv({}).admitResumeAfterMs, 300_000);
     assert.equal(tiersConfigFromEnv({ FLEET_TIERS_ADMIT_RESUME_AFTER_S: '120' }).admitResumeAfterMs, 120_000);
+  });
+});
+
+// 2026-10-16: ultra sat under its 100 GB disk floor, so it could not admit and
+// every homelake runner there was drained. runner-host's homelake runners then
+// had no standby twin, self-drain left them online at the lane's cap, and every
+// job they took sat in the admission hook, charged to its own timeout-minutes:
+// homelake release-check timed out at 30 min after a 26 min hold for a 4 min
+// job, and `words` hit its 10 min limit six times. Parking keeps such a runner
+// offline instead, so the job waits in GitHub's queue, and brings parked
+// runners back one per free slot.
+describe('parking (no standby twin)', () => {
+  const PARK = { ...CONFIG, park: true };
+  const FLOOR = { kind: 'disk', freeGb: 94, floorGb: 100, reason: '94 GB disk free, below the 100 GB floor' };
+  const blocked = [{ id: 'studio', name: 'studio', lastHeartbeat: NOW - 10 * SEC, memPressure: 'normal', cannotAdmit: FLOOR }];
+  // The standby host's runners, all drained because it cannot admit.
+  const standbyDown = () => ({
+    'studio-app-web': owned(), 'studio-app-web-2': owned(), 'studio-app-api': owned(), 'studio-app-ios': owned(),
+  });
+  // Build lane shedding for two minutes: inside the ten-minute minimum hold.
+  const SHEDDING = {
+    overflow: 'standby', since: NOW - 30 * MIN, reason: 'quiet', pending: {},
+    atCapSince: { build: NOW - 3 * MIN }, freeSince: { simulator: NOW - 30 * MIN },
+    shed: { build: { on: true, since: NOW - 2 * MIN }, simulator: { on: false, since: null } },
+    admit: { studio: { on: true, since: NOW - 60 * MIN, clearSince: null, reason: FLOOR.reason } },
+  };
+  const step = (over) => decideTiers(input({ config: PARK, standby: blocked, state: SHEDDING, ...over }));
+  const queued = (id, repo, ageMin, labels = [], cause = 'runner-down') => ({ id, repo, labels: [...BASE, ...labels], queuedSinceMs: ageMin * MIN, cause });
+  const primaryActions = (r) => r.decision.actions.filter((a) => a.tier === 'primary');
+
+  test('FLEET_TIERS_PARK defaults on; 0 turns it off', () => {
+    assert.equal(tiersConfigFromEnv({}).park, true);
+    assert.equal(tiersConfigFromEnv({ FLEET_TIERS_PARK: '0' }).park, false);
+  });
+
+  test('at cap with no standby twin, idle primary runners are parked, a primary-only repo too', () => {
+    const runners = fleet({ ...standbyDown(), 'laptop-app-web': { workingLocally: true }, 'laptop-app-api': { workingLocally: true } });
+    const r = step({ runners });
+    assert.deepEqual(names(primaryActions(r), 'drain'), ['laptop-app-db', 'laptop-app-ios', 'laptop-app-ios-2', 'laptop-app-web-2']);
+    assert.ok(primaryActions(r).every((a) => /parked, no standby twin/.test(a.reason)));
+    assert.deepEqual(r.decision.deferred.filter((d) => /twin/.test(d.reason)), []);
+  });
+
+  test('parking off keeps the old rule: twinless runners stay online and are deferred', () => {
+    const runners = fleet({ ...standbyDown(), 'laptop-app-web': { workingLocally: true }, 'laptop-app-api': { workingLocally: true } });
+    const r = step({ runners, config: { ...PARK, park: false } });
+    assert.deepEqual(names(primaryActions(r), 'drain'), []);
+    assert.ok(r.decision.deferred.some((d) => d.name === 'laptop-app-web-2' && /no online standby twin/.test(d.reason)));
+  });
+
+  test('a parked runner stays parked while the lane is full; its run waits at GitHub', () => {
+    const runners = fleet({ ...standbyDown(), 'laptop-app-web': { workingLocally: true }, 'laptop-app-api': { workingLocally: true }, 'laptop-app-web-2': owned() });
+    const r = step({ runners, queue: [queued(1, 'o/app-web', 12, ['ci'])] });
+    assert.deepEqual(names(primaryActions(r), 'resume'), []);
+    assert.deepEqual(r.decision.release.slots, { build: 0, simulator: 1 });
+  });
+
+  test('a job held in the hook still fills its slot', () => {
+    // laptop-app-api has a Worker sitting in the hook: workingLocally, so busy.
+    const runners = fleet({ ...standbyDown(), 'laptop-app-web': { workingLocally: true }, 'laptop-app-api': { workingLocally: true }, 'laptop-app-db': owned() });
+    const r = step({ runners, queue: [queued(1, 'o/app-db', 20, ['postgres'])] });
+    assert.deepEqual(names(primaryActions(r), 'resume'), []);
+  });
+
+  test('one slot frees: exactly one parked runner comes back, for the oldest queued run', () => {
+    const runners = fleet({
+      ...standbyDown(),
+      'laptop-app-api': { workingLocally: true },
+      'laptop-app-web': owned(), 'laptop-app-web-2': owned(), 'laptop-app-db': owned(),
+    });
+    const queue = [queued(7, 'o/app-db', 3, ['postgres']), queued(8, 'o/app-web', 9, ['ci'])];
+    const r = step({ runners, queue });
+    const resumed = primaryActions(r).filter((a) => a.action === 'resume');
+    assert.deepEqual(resumed.map((a) => a.name), ['laptop-app-web']);
+    assert.match(resumed[0].reason, /slot is free for queued run 8/);
+    assert.equal(r.decision.lanes.build.shedding, true, 'still inside the hold: the rest stay parked');
+  });
+
+  test('a runner already online and idle for the run takes the slot; nothing is resumed for it', () => {
+    const runners = fleet({ ...standbyDown(), 'laptop-app-api': { workingLocally: true }, 'laptop-app-web-2': owned(), 'laptop-app-db': owned() });
+    const queue = [queued(8, 'o/app-web', 9, ['ci']), queued(7, 'o/app-db', 3, ['postgres'])];
+    const r = step({ runners, queue });
+    assert.deepEqual(names(primaryActions(r), 'resume'), [], 'laptop-app-web is online for run 8; no slot is left for run 7');
+    assert.deepEqual(r.decision.release.runners, { 'laptop-app-web': 8 });
+  });
+
+  test('a runner GitHub has handed a job, whose Worker has not started, spends a slot', () => {
+    const runners = fleet({ ...standbyDown(), 'laptop-app-api': { workingLocally: true }, 'laptop-app-web': { ghBusy: true }, 'laptop-app-db': owned() });
+    const r = step({ runners, queue: [queued(7, 'o/app-db', 3, ['postgres'])] });
+    assert.deepEqual(names(primaryActions(r), 'resume'), []);
+  });
+
+  test('the Simulator lane meters on its own cap as well as the build lane', () => {
+    const runners = fleet({ ...standbyDown(), 'laptop-app-ios': { workingLocally: true }, 'laptop-app-ios-2': owned() });
+    const r = step({ runners, queue: [queued(3, 'o/app-ios', 6)] });
+    // Build has a slot (1/2), but the Simulator lane is 1/1.
+    assert.deepEqual(names(primaryActions(r), 'resume'), []);
+  });
+
+  test('a run GitHub itself is holding gets no slot', () => {
+    const runners = fleet({ ...standbyDown(), 'laptop-app-api': { workingLocally: true }, 'laptop-app-web': owned(), 'laptop-app-web-2': owned() });
+    const r = step({ runners, queue: [queued(8, 'o/app-web', 30, ['ci'], 'concurrency-block')] });
+    assert.deepEqual(names(primaryActions(r), 'resume'), []);
+  });
+
+  test('a primary that cannot admit has no slots: its twinless runners all wait parked', () => {
+    const primary = { id: 'laptop', lastHeartbeat: NOW, memPressure: 'normal', rungs: [], cannotAdmit: FLOOR };
+    const runners = fleet({ ...standbyDown(), 'laptop-app-web': { workingLocally: true } });
+    const r = step({ runners, primary, queue: [queued(8, 'o/app-api', 9)] });
+    const drained = names(primaryActions(r), 'drain');
+    assert.ok(drained.includes('laptop-app-web'), 'the busy one stops after its job');
+    assert.ok(drained.includes('laptop-app-db'));
+    assert.ok(drained.includes('laptop-app-api'));
+    assert.deepEqual(names(primaryActions(r), 'resume'), []);
+    assert.ok(primaryActions(r).every((a) => /parked, no standby twin: the primary cannot start jobs/.test(a.reason)));
+  });
+
+  test('with an online twin, parking changes nothing: the runner drains onto the twin', () => {
+    const runners = fleet({ 'laptop-app-web': { workingLocally: true }, 'laptop-app-api': { workingLocally: true } });
+    const standby = [{ id: 'studio', name: 'studio', lastHeartbeat: NOW - 10 * SEC, memPressure: 'normal' }];
+    const r = step({ runners, standby, state: { ...SHEDDING, overflow: 'active', admit: {} } });
+    const reasons = Object.fromEntries(primaryActions(r).map((a) => [a.name, a.reason]));
+    assert.equal(reasons['laptop-app-web-2'], 'build lane at cap');
+    assert.match(reasons['laptop-app-db'], /parked/, 'primary-only: never sent to the twin, parked instead');
+  });
+
+  test('parked runners all come back once the lane has had room past the hold', () => {
+    const runners = fleet({ ...standbyDown(), 'laptop-app-web-2': owned(), 'laptop-app-db': owned() });
+    const state = { ...SHEDDING, shed: { build: { on: true, since: NOW - 11 * MIN }, simulator: { on: false, since: null } }, atCapSince: {}, freeSince: { build: NOW - 6 * MIN, simulator: NOW - 30 * MIN } };
+    const r = step({ runners, state });
+    assert.deepEqual(names(primaryActions(r), 'resume'), ['laptop-app-db', 'laptop-app-web-2']);
+    assert.equal(r.decision.lanes.build.shedding, false);
+  });
+
+  test('replay: a backlog drains one job per slot, oldest first, with nothing held in the hook', () => {
+    const queue = [queued(7, 'o/app-db', 3, ['postgres']), queued(8, 'o/app-web', 9, ['ci'])];
+    // 1. At cap: the idle runners park.
+    let runners = fleet({ ...standbyDown(), 'laptop-app-web': { workingLocally: true }, 'laptop-app-api': { workingLocally: true } });
+    let r = step({ runners, queue });
+    assert.ok(names(primaryActions(r), 'drain').includes('laptop-app-db'));
+    assert.ok(names(primaryActions(r), 'drain').includes('laptop-app-web-2'));
+    // 2. laptop-app-web's job ends; it is idle and online, and the oldest run
+    //    is its repo's, so it keeps its place and nothing else comes back.
+    runners = fleet({ ...standbyDown(), 'laptop-app-api': { workingLocally: true }, 'laptop-app-web-2': owned(), 'laptop-app-db': owned(), 'laptop-app-ios': owned(), 'laptop-app-ios-2': owned() });
+    r = step({ runners, queue, state: r.state, now: NOW + 15 * SEC });
+    assert.deepEqual(names(primaryActions(r), 'resume'), []);
+    assert.deepEqual(r.decision.release.runners, { 'laptop-app-web': 8 });
+    // 3. It took run 8 (2/2 again); then app-api's job ends: run 7's runner
+    //    is resumed for the one free slot.
+    runners = fleet({ ...standbyDown(), 'laptop-app-web': { workingLocally: true }, 'laptop-app-web-2': owned(), 'laptop-app-db': owned(), 'laptop-app-ios': owned(), 'laptop-app-ios-2': owned() });
+    r = step({ runners, queue: [queue[0]], state: r.state, now: NOW + 4 * MIN });
+    assert.deepEqual(names(primaryActions(r), 'resume'), ['laptop-app-db']);
+    assert.deepEqual(names(primaryActions(r), 'drain'), [], 'laptop-app-api is busy-free but the lane has room: it is not newly parked');
   });
 });
