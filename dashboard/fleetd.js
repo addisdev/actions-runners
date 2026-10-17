@@ -78,7 +78,7 @@ import { createAdmission } from './lib/admission.js';
 import { ingestTestOutcomes } from './lib/test-results.js';
 import { annotateActiveFromDb } from './lib/long-running.js';
 import { renderPrometheusMetrics } from './lib/metrics.js';
-import { classifyAnnotations } from './lib/failures.js';
+import { classifyAnnotations, classifyCancelled, heldSeconds, HOLD_BLAME_MIN_S } from './lib/failures.js';
 import { HaCoordinator } from './lib/ha.js';
 import { collectHostReport } from './lib/host-report.js';
 import { createShmSampler, lowFreeFromEnv } from './lib/shm.js';
@@ -1708,6 +1708,9 @@ function reposToPoll() {
 // that should be classified while it is still news. Pull
 // job detail and annotations for only the newest failed runs, under a tiny call
 // budget; the regular backfill still fills steps and older history.
+// Cancelled jobs already looked at for an admission-hold timeout: most are
+// superseded runs, which keep failure_class NULL and would be fetched again.
+const heldChecked = new Set();
 async function classifyRecentFailures(runs, maxCalls = 4) {
   let calls = 0;
   const hasJobs = db.prepare('SELECT 1 FROM jobs WHERE run_id = ? LIMIT 1');
@@ -1748,6 +1751,54 @@ async function classifyRecentFailures(runs, maxCalls = 4) {
       }
     }
   }
+
+  // A job that ran out of timeout-minutes while the admission hook held it
+  // concludes `cancelled`, like a superseded one, so the pass above never sees
+  // it, and the PR shows a red check nobody can explain from the log. Only
+  // cancelled runs the hook held are looked at, each job once.
+  const holds = db.prepare(`SELECT ts, event, runner, waited_s FROM admission_events WHERE run_id = ?`);
+  const cancelledJobs = db.prepare(`
+    SELECT id, repo, runner_name, started_at, completed_at FROM jobs
+    WHERE run_id = ? AND conclusion = 'cancelled' AND failure_class IS NULL AND id > 0`);
+  const cancelled = runs
+    .filter((run) => run.status === 'completed' && run.conclusion === 'cancelled'
+      && Date.now() - (Date.parse(run.updatedAt) || 0) <= 2 * 60 * 60 * 1000)
+    .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  for (const run of cancelled) {
+    if (calls >= maxCalls || (gh.rate.remaining != null && gh.rate.remaining <= CONFIG.backfillFloor)) break;
+    let events;
+    try { events = holds.all(String(run.id)); } catch { return; /* pre-migration db */ }
+    if (!events.some((e) => e.event === 'held')) continue;
+    if (!hasJobs.get(run.id)) {
+      try {
+        const jobs = await gh.jobsForRun(run.repo, run.id);
+        calls++;
+        for (const raw of jobs) persistJob(shapeJob(run.repo, raw));
+      } catch (err) {
+        warn(`fast held jobs ${run.repo}#${run.id}:`, err.message);
+        continue;
+      }
+    }
+    for (const job of cancelledJobs.all(run.id)) {
+      if (heldChecked.has(job.id)) continue;
+      if (calls >= maxCalls || (gh.rate.remaining != null && gh.rate.remaining <= CONFIG.backfillFloor)) break;
+      const held = heldSeconds(events, job);
+      if (held < HOLD_BLAME_MIN_S) {
+        heldChecked.add(job.id);
+        continue;
+      }
+      try {
+        const messages = await gh.failureAnnotations(job.repo, job.id);
+        calls++;
+        heldChecked.add(job.id);
+        const cls = classifyCancelled(messages, held);
+        if (cls) setClass.run(cls, `held ${Math.round(held / 60)} min by the admission hook; ${messages[0] ?? ''}`.slice(0, 2000), job.id);
+      } catch (err) {
+        warn(`fast held cause ${job.repo}#${job.id}:`, err.message);
+      }
+    }
+  }
+  if (heldChecked.size > 5000) heldChecked.clear();
 }
 
 // A run's final jobs were last fetched while the run was still active, so

@@ -80,7 +80,7 @@ frozen; mention it.
 
 <!-- generated:rules -->
 - Never watch checks with `gh pr checks --watch` or a `gh run view` loop: it waits forever on a check that will never start. Use `fleet wait owner/repo --pr N`, which says when waiting is pointless and why.
-- Never change code or tests for a failure marked not your code (`notYourCode`: `runner-lost`, `account-blocked`, `account-quota`, `no-runner`) or for an orphaned job whose work passed (`workPassed`). The host or the account caused it.
+- Never change code or tests for a failure marked not your code (`notYourCode`: `runner-lost`, `account-blocked`, `account-quota`, `no-runner`, `admission-hold`) or for an orphaned job whose work passed (`workPassed`). The host or the account caused it.
 - Never cancel or force-cancel runs other than the PR you are waiting on, and never cancel fleet-wide: those runs are other sessions' work. Recover only your own PR's orphan.
 - Actions (`fleet run <action>` or `cockpit run <action>`) preview first. Show the user the preview, and confirm (`--yes`) only an action they asked for. If the token lacks the scope (`insufficient_scope`), report it; do not look for another token.
 - A stale view (`freshness.stale`, "Collector stalled") is the dashboard's problem, not the PR's: say so.

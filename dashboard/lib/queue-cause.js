@@ -141,25 +141,24 @@ export function classifyQueueCause({ run, runners, capacity, api = {}, collector
 
   // ---- label mismatch ----------------------------------------------------
   // Only run if we have label information from the job API call.
-  if (runLabels && runLabels.length > 0) {
-    const needsLabels = runLabels.filter((l) => !['self-hosted', 'macos', 'linux', 'windows', 'x64', 'arm64'].includes(l.toLowerCase()));
-    if (needsLabels.length > 0) {
-      const registered = repoRunners.filter((r) => r.registered && r.ghStatus === 'online');
-      const anyMatch = registered.some((r) =>
-        needsLabels.every((l) => r.labels.map((x) => x.toLowerCase()).includes(l.toLowerCase()))
-      );
-      if (!anyMatch && registered.length > 0) {
-        evidence.push(`Job needs labels [${needsLabels.join(', ')}]`);
-        evidence.push(`Runners carry [${[...new Set(registered.flatMap((r) => r.labels))].join(', ')}]`);
-        const role = roleLabel(needsLabels);
-        const roleExists = role
-          && registered.some((r) => roleLabel(r.extraLabels ?? r.labels) === role);
-        if (role && !roleExists) {
-          evidence.push(`No ${role} runner is registered for this repo`);
-          return result(CAUSES.ROLE_UNSERVED, 'high', evidence, true);
-        }
-        return result(CAUSES.LABEL_MISMATCH, 'high', evidence, false);
+  const needsLabels = (runLabels ?? []).filter((l) => !['self-hosted', 'macos', 'linux', 'windows', 'x64', 'arm64'].includes(l.toLowerCase()));
+  const fits = (r) => needsLabels.every((l) => (r.labels ?? []).map((x) => x.toLowerCase()).includes(l.toLowerCase()));
+  if (needsLabels.length > 0) {
+    const registered = repoRunners.filter((r) => r.registered && r.ghStatus === 'online');
+    // Any registered runner that fits, online or not: a fitting runner that
+    // is offline or parked (lib/tiers.js) is runner-down, not config drift.
+    const anyMatch = repoRunners.some((r) => r.registered && fits(r));
+    if (!anyMatch && registered.length > 0) {
+      evidence.push(`Job needs labels [${needsLabels.join(', ')}]`);
+      evidence.push(`Runners carry [${[...new Set(registered.flatMap((r) => r.labels))].join(', ')}]`);
+      const role = roleLabel(needsLabels);
+      const roleExists = role
+        && registered.some((r) => roleLabel(r.extraLabels ?? r.labels) === role);
+      if (role && !roleExists) {
+        evidence.push(`No ${role} runner is registered for this repo`);
+        return result(CAUSES.ROLE_UNSERVED, 'high', evidence, true);
       }
+      return result(CAUSES.LABEL_MISMATCH, 'high', evidence, false);
     }
   }
 
@@ -175,13 +174,22 @@ export function classifyQueueCause({ run, runners, capacity, api = {}, collector
   }
 
   // ---- runners exist but are down/draining --------------------------------
-  const onlineRunners = repoRunners.filter((r) => r.registered && r.ghStatus === 'online' && r.launchdState === 'running' && !r.drainState);
-  const downRunners = repoRunners.filter((r) => r.registered && (r.ghStatus !== 'online' || r.launchdState !== 'running' || r.drainState));
+  // Judged on the runners that can take this job. The repo's other runners say
+  // nothing about it: on 2026-10-16 homelake's `ci` runner was parked while
+  // its idle `release` runner on another host was online, and every parked run
+  // read "an idle runner exists, GitHub is holding this run" (concurrency-block),
+  // which also dropped it from the tiers controller's queue.
+  const serving = needsLabels.length > 0 && repoRunners.some(fits) ? repoRunners.filter(fits) : repoRunners;
+  const onlineRunners = serving.filter((r) => r.registered && r.ghStatus === 'online' && r.launchdState === 'running' && !r.drainState);
+  const downRunners = serving.filter((r) => r.registered && (r.ghStatus !== 'online' || r.launchdState !== 'running' || r.drainState));
 
   if (onlineRunners.length === 0 && downRunners.length > 0) {
     for (const r of downRunners) {
       if (r.drainState && r.hostOff) {
         evidence.push(`${r.name} is ${r.drainState}: host ${r.hostName ?? r.hostId} is switched off`);
+      } else if (r.drainState && r.drainBy === 'tiers') {
+        // No twin is serving the job either, or it would be online above.
+        evidence.push(`${r.name} is ${r.drainState} by the tiers controller: parked until a host slot frees, so the job waits here and not against its timeout`);
       } else if (r.drainState) {
         evidence.push(`${r.name} is ${r.drainState}`);
       } else if (r.launchdState !== 'running') {

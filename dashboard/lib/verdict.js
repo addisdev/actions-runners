@@ -118,7 +118,7 @@ export const DEFAULTS = {
 };
 
 // Failure classes whose first move is not reading the diff (lib/failures.js).
-export const NOT_YOUR_CODE = ['runner-lost', 'account-blocked', 'account-quota', 'no-runner'];
+export const NOT_YOUR_CODE = ['runner-lost', 'account-blocked', 'account-quota', 'no-runner', 'admission-hold'];
 
 const DISK_HOLD = /(\d+(?:\.\d+)?) GB disk free, below the (\d+(?:\.\d+)?) GB floor/;
 
@@ -149,7 +149,10 @@ export function loadFailureFacts(db, now = Date.now(), opts = {}) {
       SELECT j.run_id AS runId, j.repo, r.workflow_name AS workflow, r.head_branch AS branch,
              r.html_url AS url, j.failure_class AS cls, MAX(j.completed_at) AS at, j.runner_name AS runner
       FROM jobs j LEFT JOIN runs r ON r.id = j.run_id
-      WHERE j.conclusion IN ('failure', 'timed_out') AND j.completed_at >= ?
+      -- A timeout after an admission hold concludes 'cancelled', but it is a
+      -- red check all the same (lib/failures.js classifyCancelled).
+      WHERE (j.conclusion IN ('failure', 'timed_out') OR j.failure_class = 'admission-hold')
+        AND j.completed_at >= ?
       GROUP BY j.run_id
       ORDER BY at DESC LIMIT 8`)
       .all(new Date(now - o.recentFailureWindowMs).toISOString())
