@@ -355,6 +355,7 @@ public struct FailureRow: Codable, Sendable, Equatable, Identifiable {
         case "account-blocked": "Refused by GitHub — billing, not the code"
         case "account-quota": "Storage quota full — the job ran, publishing failed"
         case "no-runner": "No runner matched — configuration, not the code"
+        case "admission-hold": "Timed out while the fleet held it — re-run, not the code"
         case "job-failed": "A step failed"
         default: "Cause not recorded"
         }

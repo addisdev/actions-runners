@@ -12,8 +12,9 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   computeVerdict, createVerdictTracker, buildGlance, loadFailureFacts, parseDiskHold, LADDER, GLANCE_SCHEMA,
-  RUNNER_STATES,
+  RUNNER_STATES, NOT_YOUR_CODE,
 } from '../lib/verdict.js';
+import { heldSeconds, classifyCancelled, HOLD_BLAME_MIN_S, FAILURE_CLASSES } from '../lib/failures.js';
 import { openDb } from '../lib/db.js';
 import { SCENARIOS, LIVE_TS } from './fixtures/scenarios.js';
 
@@ -346,5 +347,59 @@ describe('loadFailureFacts', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // homelake PR #114, 2026-10-16: release-check passed every step, then was
+  // cancelled at 30m26s for timeout-minutes after a 26 min admission hold.
+  // GitHub concludes such a job `cancelled`, which this query used to skip.
+  test('a timeout after an admission hold is listed, and is not your code', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-verdict-'));
+    try {
+      const db = openDb(join(dir, 't.db'));
+      const now = LIVE_TS;
+      const iso = (m) => new Date(now - m * 60000).toISOString();
+      const ins = db.prepare(`INSERT INTO jobs (id, run_id, repo, name, status, conclusion, started_at, completed_at,
+        runner_name, failure_class) VALUES (?,?,?,?,?,?,?,?,?,?)`);
+      ins.run(1, 9, 'acme/a', 'release-check', 'completed', 'cancelled', iso(40), iso(10), 'host-a-2', 'admission-hold');
+      // Superseded by a newer push: cancelled, no class, not a failure.
+      ins.run(2, 8, 'acme/a', 'words', 'completed', 'cancelled', iso(30), iso(28), 'host-a-2', null);
+      const f = loadFailureFacts(db, now);
+      assert.deepEqual(f.recentFailures.map((x) => [x.runId, x.cls]), [[9, 'admission-hold']]);
+      assert.ok(NOT_YOUR_CODE.includes('admission-hold'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('held-timeout classification (lib/failures.js)', () => {
+  const T0 = Date.UTC(2026, 9, 16, 10, 24, 54);
+  const job = { runner_name: 'host-homelake-2', started_at: new Date(T0).toISOString(), completed_at: new Date(T0 + 1826 * 1000).toISOString() };
+  const ev = (dt, event, waited = 0, runner = 'host-homelake-2') => ({ ts: Math.round(T0 / 1000) + dt, event, runner, waited_s: waited });
+  const TIMEOUT = ['The job has exceeded the maximum execution time of 30m0s'];
+
+  test('heldSeconds takes the closing event\'s total', () => {
+    assert.equal(heldSeconds([ev(36, 'held'), ev(630, 'continued-hold', 600), ev(1556, 'admitted', 1520)], job), 1520);
+  });
+
+  test('heldSeconds: held to the end when the job was cancelled before any closing event', () => {
+    assert.equal(heldSeconds([ev(36, 'held'), ev(636, 'continued-hold', 600)], job), 1790);
+  });
+
+  test('heldSeconds ignores other runners, other attempts and runs with no hold', () => {
+    assert.equal(heldSeconds([ev(36, 'held', 0, 'host-homelake'), ev(900, 'admitted', 864, 'host-homelake')], job), 0);
+    assert.equal(heldSeconds([ev(-4000, 'held'), ev(-3000, 'admitted', 1000)], job), 0);
+    assert.equal(heldSeconds([ev(10, 'admitted', 0)], job), 0);
+  });
+
+  test('a timeout after a hold is admission-hold; a short hold or no timeout is not', () => {
+    assert.equal(classifyCancelled(TIMEOUT, 1520), 'admission-hold');
+    assert.equal(classifyCancelled(TIMEOUT, HOLD_BLAME_MIN_S - 1), null, 'a 4 min job that timed out after a 1 min hold is its own');
+    assert.equal(classifyCancelled(['Canceling since a higher priority waiting request for product-ci-refs/heads/main exists'], 900), null);
+    assert.equal(classifyCancelled([], 900), null);
+  });
+
+  test('the class has a label and blames the host', () => {
+    assert.equal(FAILURE_CLASSES['admission-hold'].blame, 'host');
   });
 });

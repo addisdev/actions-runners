@@ -85,17 +85,65 @@ finds the controller's drains in a lane treats it as shedding from the
 restart, so the hold starts again rather than resuming everything at once.
 The safety resumes below never wait for a hold.
 
-It never strands a repo. A primary runner is drained only while a standby
-runner for the same repo, carrying every one of its labels, is online and not
-being drained; if that twin goes away, the primary runner is resumed at once.
-A runner with no such twin (a repo the standby host deliberately does not
-serve, such as one needing a database label) is never self-drained, and
-`FLEET_TIERS_PRIMARY_ONLY_REPOS` pins a repo to the primary explicitly. The
-overflow twin a self-drained primary runner leans on is not drained until the
-primary runner is back.
+A primary runner drains onto a **twin**: a standby runner for the same repo,
+carrying every one of its labels, online and not being drained. The overflow
+twin a self-drained primary runner leans on is not drained until the primary
+runner is back. `FLEET_TIERS_PRIMARY_ONLY_REPOS` pins a repo to the primary:
+it never drains onto a twin.
 
 A job already held on the primary still finishes there. Self-drain limits how
 many such jobs exist; it does not move them.
+
+### Parking (no twin)
+
+A runner with no twin used to stay online at the cap ("never strand a repo").
+GitHub then gave it jobs the hook could only hold, and **a held job is in
+progress as far as GitHub is concerned: the hold counts against its
+`timeout-minutes`.** On 2026-10-16 ultra was under its disk floor, so no
+homelake runner had a twin. runner-host's lane sat at its cap of 2, and every
+job its homelake runners took waited in the hook. `release-check` (30 min)
+timed out after a 26 min hold for a 4 min job, with every step green, and
+`words` (10 min) timed out six times. Of the 94 holds on runner-host that day
+that ended cancelled, 54 had waited 28 min or more.
+
+So a runner with no twin (the standby host is drained, cannot admit, or does
+not serve the repo, primary-only repos included) is now **parked** instead:
+drained the same way, by the same hysteresis, with the reason
+`parked, no standby twin`. Its jobs wait in GitHub's queue, where waiting does
+not count against `timeout-minutes` (GitHub keeps a job queued for up to 24 h
+while a runner that fits is registered, even if offline).
+
+Bringing every parked runner back when a slot frees would only move the hold
+back into the hook, because each one takes a queued job at once. While the
+lane sheds, parked runners come back **one per free slot**:
+
+- a lane's free slots are its cap minus the Workers on the primary (jobs held
+  in the hook included), minus runners GitHub has handed a job whose Worker
+  has not started; a runner in the Simulator lane needs a slot in both lanes;
+- the slots go to the oldest queued runs a twinless primary runner fits,
+  first to a runner already online and idle for it, else to a parked one
+  (preferring one whose resume is already in flight);
+- a run GitHub itself is holding (`concurrency-block`) gets no slot;
+- a primary that cannot admit has no slots, so its parked runners wait until
+  it can.
+
+When shedding ends (room for `FLEET_TIERS_SELF_RESUME_AFTER_S` after the
+minimum hold), every parked runner comes back as before. The decision's
+`release` block shows the slots left and which runner each slot is for.
+`FLEET_TIERS_PARK=0` restores the old rule.
+
+What parking cannot close: a job GitHub hands a runner in the seconds before
+its drain lands, or during the `FLEET_TIERS_SELF_DRAIN_AFTER_S` wait before a
+lane starts shedding, is still held in the hook. When such a hold ends in a
+timeout, the daemon classes the job `admission-hold`, and the cockpit lists it
+as **not your code** (`lib/failures.js`): the job concludes `cancelled`, the
+same as a superseded run, and only its "exceeded the maximum execution time"
+annotation plus a hold of 2 min or more on its runner tells them apart.
+
+Two costs. A parked repo's next job starts a tick plus a runner start later
+(about 15–30 s) than a held one would have been admitted. And if fleetd stops,
+parked runners stay parked until it is back, where twin drains at least left
+the twin serving.
 
 ## A host that cannot admit
 
@@ -115,8 +163,8 @@ the host's own `fleet.env` and the disk figure the hook uses
 
 - every runner on it is drained, floor runners and busy ones included (a busy
   one stops when its job ends);
-- it is no overflow target and no twin, so the primary resumes the runners it
-  shed onto it;
+- it is no overflow target and no twin, so the primary's runners that leaned
+  on it are parked (or, with `FLEET_TIERS_PARK=0`, resumed);
 - a primary that cannot admit wakes the overflow tier (`primary-cannot-admit`)
   and drains its own runners onto online twins, busy ones included.
 

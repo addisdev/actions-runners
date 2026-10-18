@@ -14,6 +14,13 @@
 //             admission cap, the IDLE ones are drained too ("self-drain"), so
 //             GitHub stops handing the primary jobs it would only hold at
 //             "Set up runner"; they come back when the lane has room.
+//   parked    a self-drained primary runner with NO standby twin (the standby
+//             host is drained, cannot admit, or does not serve the repo). Its
+//             jobs wait in GitHub's queue, where the wait does not count
+//             against `timeout-minutes`, instead of in the admission hook,
+//             where it does. While its lane sheds, the controller brings
+//             parked runners back one per free slot, for the oldest queued
+//             run first, so the hook rarely holds anything.
 //
 // A host that CANNOT ADMIT (its hook would hold every job: the disk floor,
 // lib/admit-gate.js) gets no runner online at all, floor runners included,
@@ -53,6 +60,13 @@ export const TIERS_DEFAULTS = {
   // (the coordinator refuses to queue work for a staler host anyway).
   commandStaleMs: 120_000,
   selfDrain: true,
+  // Self-drain a runner that has no standby twin too ("park" it), releasing
+  // parked runners one per free lane slot. Off restores the older rule, which
+  // left a twinless runner online at cap: every job it took then sat in the
+  // admission hook, and that hold is charged to the job's own timeout-minutes
+  // (2026-10-16, ultra drained: homelake release-check timed out at 30 min
+  // after a 26 min hold for a 4 min job; `words` died at 10 min six times).
+  park: true,
   // Self-drain has hysteresis, because the cap is the lane's normal operating
   // point: with a build cap of 2 the lane crosses it every time a job starts or
   // ends, and with no hold each crossing drained or resumed ~50 runners
@@ -121,6 +135,7 @@ export function tiersConfigFromEnv(env = {}, { localHostId = null } = {}) {
     drainAfterQuietMs: s('FLEET_TIERS_DRAIN_AFTER_S', TIERS_DEFAULTS.drainAfterQuietMs),
     primaryStaleMs: s('FLEET_TIERS_PRIMARY_STALE_S', TIERS_DEFAULTS.primaryStaleMs),
     selfDrain: String(env.FLEET_TIERS_SELF_DRAIN ?? '1') !== '0',
+    park: String(env.FLEET_TIERS_PARK ?? '1') !== '0',
     selfDrainAfterMs: s('FLEET_TIERS_SELF_DRAIN_AFTER_S', TIERS_DEFAULTS.selfDrainAfterMs),
     selfResumeAfterMs: s('FLEET_TIERS_SELF_RESUME_AFTER_S', TIERS_DEFAULTS.selfResumeAfterMs),
     selfMinHoldMs: s('FLEET_TIERS_SELF_MIN_HOLD_S', TIERS_DEFAULTS.selfMinHoldMs),
@@ -460,28 +475,76 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
     && usableHost(r.hostId));
 
   const selfDrain = cfg.selfDrain && !off;
+  const park = selfDrain && cfg.park;
+  // With parking on, a primary-only repo is simply twinless: it is never sent
+  // to the standby host, but it may wait in GitHub's queue like any other.
+  const twinOf = (p) => (repoIn(p.repo, cfg.primaryOnlyRepos) ? null : twinFor(p));
+
+  // ---- metered release of parked runners ---------------------------------------
+  // A parked runner coming back takes a queued job at once, so bringing every
+  // parked runner back when one slot frees would only move the hold back into
+  // the hook. Instead each lane's free slots (cap minus Workers, held jobs
+  // included) go to the oldest queued runs a twinless primary runner can
+  // serve: first a runner already online and idle for it, else a parked one.
+  // A runner GitHub has handed a job whose Worker has not started yet is
+  // already spending a slot. A primary that cannot admit has no slots.
+  const slotted = new Map();
+  const slots = {};
+  if (park) {
+    for (const [k, l] of Object.entries(lanes)) slots[k] = primaryBlocked ? 0 : Math.max(0, l.cap - l.busy);
+    const spend = (r) => { for (const k of lanesOf(r)) slots[k] -= 1; };
+    for (const r of primaryRunners) if (r.ghBusy && !r.workingLocally) spend(r);
+    const parkable = (r) => !operatorDrained(r) && !busy(r) && !twinOf(r)
+      && (own(r) || (!r.drainState && online(r)));
+    // `servable` leaves out runs GitHub itself is holding (concurrency-block,
+    // which lib/queue-cause.js now reports only while a runner that fits is
+    // idle and online): a slot kept for one would sit unused.
+    const waiting = [...servable].sort((a, b) => (b.queuedSinceMs ?? 0) - (a.queuedSinceMs ?? 0));
+    for (const q of waiting) {
+      const fit = primaryRunners.filter((r) => jobFits(q, r) && parkable(r) && !slotted.has(r.name));
+      const r = fit.find((x) => !x.drainState)
+        ?? fit.find((x) => pending[x.name]?.action === 'resume')
+        ?? fit[0];
+      if (!r || !lanesOf(r).every((k) => slots[k] > 0)) continue;
+      spend(r);
+      slotted.set(r.name, q.id);
+    }
+  }
+
   for (const p of primaryRunners) {
     if (operatorDrained(p)) continue;
     const pinned = repoIn(p.repo, cfg.primaryOnlyRepos);
+    const twin = park ? twinOf(p) : twinFor(p);
     if (own(p)) {
       if (!selfDrain) want(p, 'resume', 'primary', off ? 'tiers switched off' : 'self-drain disabled');
-      else if (pinned) want(p, 'resume', 'primary', 'repo is primary-only');
-      else if (!twinFor(p)) want(p, 'resume', 'primary', 'no online standby twin');
+      else if (!park && pinned) want(p, 'resume', 'primary', 'repo is primary-only');
+      else if (!park && !twin) want(p, 'resume', 'primary', 'no online standby twin');
       else if (!held(p)) {
         const freeFor = Math.min(...lanesOf(p).map((k) => lanes[k].freeForMs));
         want(p, 'resume', 'primary', Number.isFinite(freeFor) ? `lane below cap for ${secs(freeFor)}` : 'no lane to shed');
+      } else if (!twin && slotted.has(p.name)) {
+        want(p, 'resume', 'primary', `a host slot is free for queued run ${slotted.get(p.name)}`);
       }
+      // Otherwise it stays drained: onto its twin, or parked with its jobs
+      // queued at GitHub.
       continue;
     }
     const lane = drainLane(p);
-    if (!selfDrain || pinned || p.drainState || !lane) continue;
-    // Only with a twin online elsewhere: a repo must never be left with
-    // nothing but drained runners. Idle only for a lane at cap, whose jobs
-    // start in minutes; a busy runner on a primary that cannot admit is drained
-    // too (it stops when its job ends), or it takes the next job to hold it.
+    if (!selfDrain || (!park && pinned) || p.drainState || !lane) continue;
+    // A repo is never left with only drained runners unless parking is on:
+    // then its jobs wait in GitHub's queue and a parked runner comes back for
+    // them as slots free. Idle only for a lane at cap, whose jobs start in
+    // minutes; a busy runner on a primary that cannot admit is drained too (it
+    // stops when its job ends), or it takes the next job to hold it.
     if ((busy(p) && lane !== 'admission') || !online(p)) continue;
-    if (!twinFor(p)) {
-      deferred.push({ name: p.name, reason: 'no online standby twin' });
+    if (!twin) {
+      if (!park) {
+        deferred.push({ name: p.name, reason: 'no online standby twin' });
+        continue;
+      }
+      want(p, 'drain', 'primary', lane === 'admission'
+        ? `parked, no standby twin: the primary cannot start jobs: ${blockedWhy(primary.id)}`
+        : `parked, no standby twin: ${lane} lane at cap, so its jobs wait in GitHub's queue, not against their timeout`);
       continue;
     }
     want(p, 'drain', 'primary', lane === 'admission' ? `the primary cannot start jobs: ${blockedWhy(primary.id)}` : `${lane} lane at cap`);
@@ -533,6 +596,9 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
         overflow: count(overflowRunners),
         primary: count(primaryRunners),
       },
+      // Parked runners kept or brought online this step, by the queued run
+      // each one's slot is for, and the lane slots left over.
+      release: park ? { slots, runners: Object.fromEntries(slotted) } : null,
       // What this step would do (observe) or does (enforce).
       actions: issued,
       applied: cfg.mode === 'enforce' || (off && issued.length > 0),

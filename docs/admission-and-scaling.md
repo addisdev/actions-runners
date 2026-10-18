@@ -105,6 +105,15 @@ against `timeout-minutes`. In fail-open mode, keep `FLEET_ADMIT_MAX_WAIT_S`
 well under the tightest timeout in the fleet. In strict mode, cancellation
 polling releases the runner when that timeout ends the run.
 
+The hook cannot budget its hold against that timeout: GitHub enforces
+`timeout-minutes` on its side and leaves it out of the job message the runner
+receives. So the fleet keeps jobs out of the hook instead. With
+[tiers](design/tiers.md#parking-no-twin) on, a primary lane at its cap takes its
+idle runners offline (onto a standby twin, or parked when there is none), and
+the jobs wait in GitHub's queue, where the wait is not charged to the job. A
+hold that still ends in a timeout is classed `admission-hold` and shown as not
+your code.
+
 ### Installing the hooks
 
 ```bash
