@@ -337,7 +337,8 @@ entries carry `etaStartMs` and `etaDoneMs` as `[p50, p90]` ranges and
 `etaBasis` saying what the estimate waits behind; both are absent when the
 cause never clears on its own. `failures` lists failed runs from the last two hours with their
 failure class (see `lib/failures.js`); `notYourCode` is true for `runner-lost`,
-`account-blocked`, `account-quota` and `no-runner`, the classes whose first move
+`host-broken`, `account-blocked`, `account-quota`, `no-runner` and
+`admission-hold`, the classes whose first move
 is not reading the diff. `schema` changes only on a breaking change; new fields may appear at
 any time and decoders should ignore what they do not know.
 
