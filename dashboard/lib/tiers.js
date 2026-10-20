@@ -241,8 +241,31 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
   const primaryRunners = runners.filter((r) => !r.ephemeral && r.hostId === primary.id && r.local !== false && r.dirName);
   const standbyRunners = runners.filter((r) => !r.ephemeral && standbyIds.has(r.hostId));
   const isFloor = (r) => repoIn(r.repo, cfg.floorRepos);
-  const overflowRunners = standbyRunners.filter((r) => !isFloor(r));
   const floorRunners = standbyRunners.filter(isFloor);
+
+  // ---- sole runners --------------------------------------------------------------
+  // A standby runner is overflow only while some runner outside the overflow
+  // tier can take every job it can: same repo, a label set that covers its
+  // own, and not drained by an operator. Without one, draining it does not
+  // send its repo's jobs to the primary; it strands them. On 10-19/20
+  // ultra-home-agent (labels ci) was home-agent's only `ci` runner, its twin
+  // on the Mini a `release` runner, and every home-agent PR queued behind the
+  // drain. Such a runner is "sole" and kept online like the floor. A runner
+  // whose labels are unknown (GitHub did not answer) keeps its last reading.
+  const notFloor = standbyRunners.filter((r) => !isFloor(r));
+  const notFloorNames = new Set(notFloor.map((r) => r.name));
+  const outside = runners.filter((r) => !r.ephemeral && !notFloorNames.has(r.name));
+  const soleNames = new Set();
+  for (const r of notFloor) {
+    const known = (r.labels ?? []).length > 0;
+    const sole = known
+      ? !outside.some((o) => o.repo === r.repo && !operatorDrained(o) && covers(o.labels, r.labels))
+      : (prev.sole ?? []).includes(r.name);
+    if (sole) soleNames.add(r.name);
+  }
+  const soleRunners = notFloor.filter((r) => soleNames.has(r.name));
+  const overflowRunners = notFloor.filter((r) => !soleNames.has(r.name));
+  const extraLabels = (r) => lower(r.labels).filter((l) => !['self-hosted', 'macos', 'linux', 'windows', 'arm64', 'x64'].includes(l));
   const isSim = (r) => isSimulatorRunner(r.name, cfg.simulatorRunners);
 
   // ---- hosts that cannot admit -------------------------------------------------
@@ -353,9 +376,31 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
   // no runner carries is config drift; resuming a host would not move it.
   const servable = queue.filter((q) => !NOT_RUNNER_CAUSES.includes(q.cause)
     && (primaryRunners.some((r) => jobFits(q, r)) || standbyRunners.some((r) => jobFits(q, r))));
-  const stuck = servable.filter((q) => (q.queuedSinceMs ?? 0) > cfg.queueAgeMs
+  // Waking the whole overflow tier only helps a run some overflow runner fits;
+  // and only such runs, or the primary's, hold that tier online. A run only a
+  // sole or floor runner fits is theirs, and they are online anyway.
+  const tierQueue = servable.filter((q) => primaryRunners.some((r) => jobFits(q, r)) || overflowRunners.some((r) => jobFits(q, r)));
+  const stuck = tierQueue.filter((q) => (q.queuedSinceMs ?? 0) > cfg.queueAgeMs
     && !idlePrimaryFor(q)
-    && standbyRunners.some((r) => jobFits(q, r)));
+    && overflowRunners.some((r) => jobFits(q, r)));
+
+  // A run that no runner outside the overflow tier can take soon (online and
+  // not drained, or drained by this controller, which brings it back) wakes
+  // one overflow runner that fits it at once, whatever the tier is doing. The
+  // queue-age trigger would get there after FLEET_TIERS_QUEUE_AGE_S, by waking
+  // every overflow runner on the host for one repo's job.
+  const overflowNames = new Set(overflowRunners.map((r) => r.name));
+  const takesSoon = (o, q) => !o.ephemeral && !overflowNames.has(o.name) && jobFits(q, o)
+    && !operatorDrained(o) && ((online(o) && !o.drainState) || own(o));
+  const wake = new Map();
+  for (const q of [...servable].sort((a, b) => (b.queuedSinceMs ?? 0) - (a.queuedSinceMs ?? 0))) {
+    if (runners.some((o) => takesSoon(o, q))) continue;
+    const fit = overflowRunners.filter((r) => jobFits(q, r) && !operatorDrained(r) && usableHost(r.hostId) && !wake.has(r.name));
+    const r = fit.find((x) => !x.drainState && online(x) && !busy(x))
+      ?? fit.find(own)
+      ?? fit.find((x) => !x.drainState);
+    if (r) wake.set(r.name, q.id);
+  }
 
   // ---- resume triggers ---------------------------------------------------------
   const triggers = [];
@@ -380,7 +425,7 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
   }
 
   const anyLaneAtCap = Object.values(lanes).some((l) => l.atCap);
-  const quiet = !anyLaneAtCap && servable.length === 0 && triggers.length === 0;
+  const quiet = !anyLaneAtCap && tierQueue.length === 0 && triggers.length === 0;
   const quietSince = quiet ? (prev.quietSince ?? now) : null;
   const quietForMs = quiet ? now - quietSince : 0;
 
@@ -426,17 +471,21 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
   };
 
   const off = cfg.mode === 'off';
-  for (const r of floorRunners) {
+  for (const [tier, r] of [...floorRunners.map((x) => ['floor', x]), ...soleRunners.map((x) => ['sole', x])]) {
     // Never drained by the controller, except on a host that cannot admit:
     // there a floor runner only takes jobs to hold them. One it drained (for
-    // that, or under an older floor list) goes back online.
+    // that, under an older floor list, or before it was known to be sole)
+    // goes back online.
     if (operatorDrained(r)) continue;
     const why = hostInfo.get(r.hostId)?.cannotAdmit;
     if (why && !off) {
-      want(r, 'drain', 'floor', `${hostInfo.get(r.hostId).name} cannot start jobs: ${why}`);
+      want(r, 'drain', tier, `${hostInfo.get(r.hostId).name} cannot start jobs: ${why}`);
       continue;
     }
-    if (own(r)) want(r, 'resume', 'floor', 'floor runners stay online');
+    if (own(r)) {
+      want(r, 'resume', tier, tier === 'floor' ? 'floor runners stay online'
+        : `the only runner for ${String(r.repo).split('/').pop()} with labels ${extraLabels(r).join(',') || lower(r.labels).join(',')}`);
+    }
   }
 
   for (const r of overflowRunners) {
@@ -446,9 +495,12 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
       if (own(r)) want(r, 'resume', 'overflow', 'tiers switched off');
       continue;
     }
-    const wantOnline = overflow === 'active' && !h?.critical && !h?.cannotAdmit;
+    const wantOnline = (overflow === 'active' || wake.has(r.name)) && !h?.critical && !h?.cannotAdmit;
     if (wantOnline) {
-      if (own(r)) want(r, 'resume', 'overflow', reason);
+      if (own(r)) {
+        want(r, 'resume', 'overflow', overflow === 'active' ? reason
+          : `queued run ${wake.get(r.name)} fits no runner outside the overflow tier`);
+      }
       continue;
     }
     if (r.drainState) continue;
@@ -576,7 +628,7 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
     drainedByOperator: rs.filter(operatorDrained).length,
   });
 
-  const nextState = { overflow, since, reason, atCapSince, freeSince, quietSince, shed, admit, pending };
+  const nextState = { overflow, since, reason, atCapSince, freeSince, quietSince, shed, admit, pending, sole: [...soleNames].sort() };
   return {
     state: nextState,
     decision: {
@@ -593,12 +645,19 @@ export function decideTiers({ config, now, state = null, primary, standby = [], 
       hosts: [...hostInfo.values()],
       counts: {
         floor: count(floorRunners),
+        sole: count(soleRunners),
         overflow: count(overflowRunners),
         primary: count(primaryRunners),
       },
       // Parked runners kept or brought online this step, by the queued run
       // each one's slot is for, and the lane slots left over.
       release: park ? { slots, runners: Object.fromEntries(slotted) } : null,
+      // Standby runners no runner outside the overflow tier can stand in for,
+      // kept online like the floor.
+      sole: [...soleNames].sort(),
+      // Overflow runners kept or brought online this step for a queued run no
+      // other runner can take, by run id.
+      wake: Object.fromEntries(wake),
       // What this step would do (observe) or does (enforce).
       actions: issued,
       applied: cfg.mode === 'enforce' || (off && issued.length > 0),
