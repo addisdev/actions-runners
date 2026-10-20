@@ -898,3 +898,117 @@ describe('parking (no standby twin)', () => {
     assert.deepEqual(names(primaryActions(r), 'drain'), [], 'laptop-app-api is busy-free but the lane has room: it is not newly parked');
   });
 });
+
+describe('sole runners (no runner outside the overflow tier carries their labels)', () => {
+  // addisdev/home-agent on 10-19/20: the Mini's release runner (no agent, so no
+  // hostId) and ultra's ci runner. CI runs on [self-hosted, macOS, ci], which
+  // only the ultra runner can take, and the controller drained it with the
+  // rest of the overflow tier every quiet ten minutes.
+  const mini = {
+    ...runner('mini', 'o/home-agent', 1, { labels: ['release'] }),
+    name: 'server-home-agent', hostId: null, local: false, dirName: undefined,
+  };
+  const ultra = (extra = {}) => ({ ...runner('studio', 'o/home-agent', 1, { labels: ['ci'] }), name: 'ultra-home-agent', ...extra });
+  const QUIET = { overflow: 'active', since: NOW - 20 * MIN, reason: 'busy', quietSince: NOW - 11 * MIN, pending: {} };
+
+  test('home-agent: a Mini release runner is no stand-in for ultra\'s ci runner, which stays online', () => {
+    const runners = [...fleet(), mini, ultra()];
+    const r = decideTiers(input({ runners, state: QUIET }));
+    assert.equal(r.decision.overflow, 'standby');
+    assert.deepEqual(names(r.decision.actions, 'drain'), ['studio-app-api', 'studio-app-web', 'studio-app-web-2']);
+    assert.deepEqual(r.decision.sole, ['ultra-home-agent']);
+    assert.equal(r.decision.counts.sole.online, 1);
+    // ...and still online on every later quiet tick.
+    const later = decideTiers(input({ runners, state: r.state, now: NOW + 30 * MIN }));
+    assert.ok(!names(later.decision.actions).includes('ultra-home-agent'));
+  });
+
+  test('home-agent: the controller\'s old drain of ultra-home-agent is released at once', () => {
+    const runners = [...fleet(resting()), mini, ultra(owned())];
+    const r = decideTiers(input({ runners, state: STANDBY_STATE }));
+    assert.equal(r.decision.overflow, 'standby');
+    assert.deepEqual(r.decision.actions.map((a) => [a.name, a.action, a.tier]), [['ultra-home-agent', 'resume', 'sole']]);
+    assert.match(r.decision.actions[0].reason, /only runner for home-agent with labels ci/);
+  });
+
+  test('a runner outside the tier that carries the same labels makes it overflow again', () => {
+    const twin = { ...mini, name: 'server-home-agent-ci', labels: [...BASE, 'ci'] };
+    const r = decideTiers(input({ runners: [...fleet(), mini, twin, ultra()], state: QUIET }));
+    assert.ok(names(r.decision.actions, 'drain').includes('ultra-home-agent'));
+    assert.deepEqual(r.decision.sole, []);
+  });
+
+  test('an operator-drained runner is no stand-in', () => {
+    const runners = fleet({ 'laptop-app-api': operator() });
+    const r = decideTiers(input({ runners, state: QUIET }));
+    assert.deepEqual(r.decision.sole, ['studio-app-api']);
+    assert.ok(!names(r.decision.actions).includes('studio-app-api'));
+  });
+
+  test('labels GitHub did not report keep the last reading', () => {
+    let r = decideTiers(input({ runners: [...fleet(), mini, ultra()], state: QUIET }));
+    const blip = [...fleet(), { ...mini, labels: [] }, ultra({ labels: [], ghStatus: 'unknown', ghUnknown: true })];
+    r = decideTiers(input({ runners: blip, state: r.state, now: NOW + MIN }));
+    assert.deepEqual(r.decision.sole, ['ultra-home-agent']);
+    assert.ok(!names(r.decision.actions).includes('ultra-home-agent'));
+  });
+
+  test('a run only a sole runner fits neither wakes nor holds the overflow tier', () => {
+    const runners = [...fleet(resting()), mini, ultra({ ghBusy: true, workingLocally: true })];
+    const queue = [{ id: 21, repo: 'o/home-agent', labels: ['self-hosted', 'macOS', 'ci'], queuedSinceMs: 10 * MIN }];
+    let r = decideTiers(input({ runners, queue, state: STANDBY_STATE }));
+    assert.equal(r.decision.overflow, 'standby');
+    assert.deepEqual(r.decision.triggers, []);
+    assert.deepEqual(r.decision.actions, []);
+    r = decideTiers(input({ runners: [...fleet(), mini, ultra()], queue, state: QUIET }));
+    assert.equal(r.decision.overflow, 'standby');
+  });
+
+  test('the tier still drains on a host that cannot admit, sole runners included', () => {
+    const standby = [{ id: 'studio', name: 'studio', lastHeartbeat: NOW - 10 * SEC, memPressure: 'normal', cannotAdmit: { reason: 'disk floor' } }];
+    const r = decideTiers(input({ runners: [...fleet(), mini, ultra()], standby, state: QUIET }));
+    assert.ok(r.decision.actions.some((a) => a.name === 'ultra-home-agent' && a.action === 'drain' && a.tier === 'sole'));
+  });
+});
+
+describe('a queued run only overflow runners fit', () => {
+  // laptop-app-web and -2 are dead (offline, not drained): they still stand in
+  // for the studio runners' labels, so those stay overflow, but they take
+  // nothing now.
+  const dead = { ghStatus: 'offline', drainState: null };
+
+  test('wakes one fitting overflow runner at once, not the tier and not after the queue age', () => {
+    const runners = fleet({ ...resting(), 'laptop-app-web': dead, 'laptop-app-web-2': dead });
+    const queue = [{ id: 31, repo: 'o/app-web', labels: ['self-hosted', 'ci'], queuedSinceMs: 5 * SEC, cause: 'runner-down' }];
+    const r = decideTiers(input({ runners, queue, state: STANDBY_STATE }));
+    assert.equal(r.decision.overflow, 'standby');
+    assert.deepEqual(r.decision.sole, []);
+    assert.deepEqual(r.decision.actions.map((a) => [a.name, a.action, a.tier]), [['studio-app-web', 'resume', 'overflow']]);
+    assert.match(r.decision.actions[0].reason, /queued run 31 fits no runner outside the overflow tier/);
+    assert.deepEqual(r.decision.wake, { 'studio-app-web': 31 });
+  });
+
+  test('keeps the woken runner online while its run is queued, and lets it go after', () => {
+    const queue = [{ id: 31, repo: 'o/app-web', labels: ['ci'], queuedSinceMs: 5 * SEC }];
+    const runners = fleet({ 'studio-app-web-2': owned(), 'studio-app-api': owned(), 'laptop-app-web': dead, 'laptop-app-web-2': dead });
+    let r = decideTiers(input({ runners, queue, state: STANDBY_STATE }));
+    assert.deepEqual(r.decision.actions, []);
+    r = decideTiers(input({ runners, state: r.state }));
+    assert.deepEqual(names(r.decision.actions, 'drain'), ['studio-app-web']);
+  });
+
+  test('a run a primary runner can take soon, or that the controller parked, wakes nothing', () => {
+    const queue = [{ id: 32, repo: 'o/app-web', labels: ['ci'], queuedSinceMs: 5 * SEC }];
+    let r = decideTiers(input({ runners: fleet(resting()), queue, state: STANDBY_STATE }));
+    assert.deepEqual(r.decision.actions, []);
+    r = decideTiers(input({ runners: fleet({ ...resting(), 'laptop-app-web': owned(), 'laptop-app-web-2': dead }), queue, state: STANDBY_STATE }));
+    assert.ok(!r.decision.actions.some((a) => a.hostId === 'studio'));
+  });
+
+  test('never onto a standby host under critical memory pressure', () => {
+    const standby = [{ id: 'studio', name: 'studio', lastHeartbeat: NOW - 10 * SEC, memPressure: 'critical' }];
+    const queue = [{ id: 33, repo: 'o/app-web', labels: ['ci'], queuedSinceMs: 5 * SEC }];
+    const r = decideTiers(input({ runners: fleet({ ...resting(), 'laptop-app-web': dead, 'laptop-app-web-2': dead }), standby, queue, state: STANDBY_STATE }));
+    assert.deepEqual(r.decision.actions, []);
+  });
+});
