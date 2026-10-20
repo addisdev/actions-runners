@@ -349,7 +349,7 @@ describe('loadFailureFacts', () => {
     }
   });
 
-  // homelake PR #114, 2026-10-16: release-check passed every step, then was
+  // A product PR, 2026-10-16: release-check passed every step, then was
   // cancelled at 30m26s for timeout-minutes after a 26 min admission hold.
   // GitHub concludes such a job `cancelled`, which this query used to skip.
   test('a timeout after an admission hold is listed, and is not your code', () => {
@@ -374,8 +374,8 @@ describe('loadFailureFacts', () => {
 
 describe('held-timeout classification (lib/failures.js)', () => {
   const T0 = Date.UTC(2026, 9, 16, 10, 24, 54);
-  const job = { runner_name: 'host-homelake-2', started_at: new Date(T0).toISOString(), completed_at: new Date(T0 + 1826 * 1000).toISOString() };
-  const ev = (dt, event, waited = 0, runner = 'host-homelake-2') => ({ ts: Math.round(T0 / 1000) + dt, event, runner, waited_s: waited });
+  const job = { runner_name: 'host-app-2', started_at: new Date(T0).toISOString(), completed_at: new Date(T0 + 1826 * 1000).toISOString() };
+  const ev = (dt, event, waited = 0, runner = 'host-app-2') => ({ ts: Math.round(T0 / 1000) + dt, event, runner, waited_s: waited });
   const TIMEOUT = ['The job has exceeded the maximum execution time of 30m0s'];
 
   test('heldSeconds takes the closing event\'s total', () => {
@@ -387,7 +387,7 @@ describe('held-timeout classification (lib/failures.js)', () => {
   });
 
   test('heldSeconds ignores other runners, other attempts and runs with no hold', () => {
-    assert.equal(heldSeconds([ev(36, 'held', 0, 'host-homelake'), ev(900, 'admitted', 864, 'host-homelake')], job), 0);
+    assert.equal(heldSeconds([ev(36, 'held', 0, 'host-app'), ev(900, 'admitted', 864, 'host-app')], job), 0);
     assert.equal(heldSeconds([ev(-4000, 'held'), ev(-3000, 'admitted', 1000)], job), 0);
     assert.equal(heldSeconds([ev(10, 'admitted', 0)], job), 0);
   });

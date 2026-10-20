@@ -15,8 +15,8 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
   against `timeout-minutes`, and the hook cannot see that limit to budget
   against it. Self-drain only took a primary runner offline when a standby
   twin was online, so on 2026-10-16, with ultra under its disk floor, runner-host's
-  homelake runners stayed online at the lane cap and every job they took sat in
-  the hook: homelake PR #114's `release-check` passed every step and was
+  runners for one repo stayed online at the lane cap and every job they took sat in
+  the hook: a PR's `release-check` passed every step and was
   cancelled at 30m26s after a 26 min hold, and `words` (10 min) timed out six
   times. The tiers controller now parks a twinless primary runner at cap (primary-only repos too), so its jobs
   wait in GitHub's queue, and brings parked runners back one per free lane
@@ -118,7 +118,7 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 - **Queue causes judge only runners that can take the job.** The
   "idle runner exists, GitHub is holding this run" test counted every runner
-  of the repo, so homelake runs waiting for its `ci` runner read
+  of the repo, so one repo's runs waiting for its `ci` runner read
   `concurrency-block` because its `release` runner on the Mini was idle, and
   the tiers controller ignores such runs. A fitting runner that is offline or
   parked now makes the run `runner-down` (with "parked until a host slot
