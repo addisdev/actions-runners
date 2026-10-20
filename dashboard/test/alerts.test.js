@@ -572,3 +572,41 @@ describe('shared memory table', () => {
     assert.equal(alerts.open.has('host:shm-low:attic'), false);
   });
 });
+
+describe('unused runners', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const T = Date.parse('2026-10-20T12:00:00Z');
+  const runner = (name, updatedAt) => db.prepare(`
+    INSERT INTO runner_state (name, repo, gh_status, gh_busy, updated_at)
+    VALUES (?, 'acme/app', 'online', 0, ?)`).run(name, updatedAt);
+  const unused = (alerts) => [...alerts.open.keys()].filter((k) => k.startsWith('runner:unused:')).sort();
+
+  test('a registered runner with no job in the window alerts once the condition has held', () => {
+    runner('host-app', T);
+    const alerts = makeAlerts();
+    alerts.evaluate({}, T);
+    assert.deepEqual(unused(alerts), [], 'not before it has held for a tenth of the window');
+    db.prepare('UPDATE runner_state SET updated_at = ?').run(T + DAY);
+    alerts.evaluate({}, T + DAY);
+    assert.deepEqual(unused(alerts), ['runner:unused:host-app']);
+  });
+
+  test('a deregistered runner, whose row the collector stopped refreshing, does not alert', () => {
+    runner('host-app', T + DAY);
+    runner('host-app-gone', T - 30 * DAY);
+    const alerts = makeAlerts();
+    alerts.evaluate({}, T);
+    alerts.evaluate({}, T + DAY);
+    assert.deepEqual(unused(alerts), ['runner:unused:host-app']);
+  });
+
+  test('an alert opened before the runner went away closes once its row goes stale', () => {
+    runner('host-app-gone', T + DAY);
+    const alerts = makeAlerts();
+    alerts.evaluate({}, T);
+    alerts.evaluate({}, T + DAY);
+    assert.deepEqual(unused(alerts), ['runner:unused:host-app-gone']);
+    const { closed } = alerts.evaluate({}, T + 2 * DAY);
+    assert.deepEqual(closed.map((a) => a.key), ['runner:unused:host-app-gone']);
+  });
+});

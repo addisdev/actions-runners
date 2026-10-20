@@ -60,6 +60,11 @@ export const DEFAULTS = {
   offlineDebounceMs: 15 * 60 * 1000,
   // How long a runner must have run zero jobs before the unused-runner alert fires.
   unusedRunnerWindowMs: 7 * 24 * 60 * 60 * 1000,
+  // A runner_state row the collector has not refreshed for this long is a runner
+  // that was deregistered: the row keeps its last gh_status ('online') for ever.
+  // Long enough that a collector stall or a rate-limit backoff does not close
+  // and re-sustain every unused alert.
+  runnerSeenWithinMs: 6 * 60 * 60 * 1000,
   // Long-running in-progress runs vs historical p95 baselines (see lib/long-running.js).
   longRunningHistoryDays: LONG_RUNNING_DEFAULTS.historyDays,
   longRunningPercentile: LONG_RUNNING_DEFAULTS.percentile,
@@ -477,12 +482,13 @@ export class Alerts {
     try {
       const unusedWindowMs = c.unusedRunnerWindowMs ?? 7 * 24 * 60 * 60 * 1000;
       const unusedSince = new Date(now - unusedWindowMs).toISOString();
+      const seenSince = now - (c.runnerSeenWithinMs ?? 6 * 60 * 60 * 1000);
       const unusedRunners = this.db.prepare(`
         SELECT name FROM runner_state
-        WHERE gh_status = 'online' AND name NOT IN (
+        WHERE gh_status = 'online' AND updated_at >= ? AND name NOT IN (
           SELECT DISTINCT runner_name FROM jobs
           WHERE runner_name IS NOT NULL AND started_at >= ?
-        )`).all(unusedSince);
+        )`).all(seenSince, unusedSince);
       for (const r of unusedRunners) {
         const key = `runner:unused:${r.name}`;
         if (this.sustained(key, true, unusedWindowMs * 0.1, now)) {
