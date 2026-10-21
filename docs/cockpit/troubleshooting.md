@@ -8,7 +8,7 @@ first, then the handbook's [Troubleshooting](../troubleshooting.md).
 Run the connection by hand, exactly as the app does:
 
 ```bash
-ssh -o BatchMode=yes runner-host 'curl -s -o /dev/null -w "%{http_code}\n" 127.0.0.1:7878/api/health'
+ssh -o BatchMode=yes ultra 'curl -s -o /dev/null -w "%{http_code}\n" 127.0.0.1:7878/api/health'
 ```
 
 | You see | Cause | Fix |

@@ -13,8 +13,8 @@ back, with how long it was gone:
 
 | Title | Body | Priority |
 |---|---|---|
-| **runner-host is down** | Has not answered for 3 minutes. Asleep, off, or rebooted with nobody logged in — runners start at login. Only someone there can wake it. | urgent |
-| **runner-host is back** | Answers again after 23 min. Queued jobs start on their own; dead services may need a repair. | default |
+| **ultra is down** | Has not answered for 3 minutes. Asleep, off, or rebooted with nobody logged in — runners start at login. Only someone there can wake it. | urgent |
+| **ultra is back** | Answers again after 23 min. Queued jobs start on their own; dead services may need a repair. | default |
 
 Messages carry the host's name and nothing else about the fleet.
 
@@ -27,7 +27,7 @@ On the other machine, with a clone of this repository:
 2. **Write the config** (mode `0600`):
 
     ```bash
-    printf '%s\n' 'SENTINEL_NAME=runner-host' 'SENTINEL_TARGET=runner' \
+    printf '%s\n' 'SENTINEL_NAME=ultra' 'SENTINEL_TARGET=ultra' \
       "SENTINEL_NTFY=https://ntfy.sh/fleet-$(openssl rand -hex 12)" > ~/.config/fleet-sentinel.env
     chmod 600 ~/.config/fleet-sentinel.env
     cat ~/.config/fleet-sentinel.env        # note the topic URL
@@ -51,7 +51,7 @@ another file.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SENTINEL_NAME` | `runner-host` | What the messages call the host |
+| `SENTINEL_NAME` | the target | What the messages call the host |
 | `SENTINEL_TARGET` | `runner` | Tailnet name or IP to probe |
 | `SENTINEL_PROBE` | `tailscale` | `tailscale` (`tailscale ping` over the tailnet) or `tcp` (`nc -z <target> 22`) |
 | `SENTINEL_TAILSCALE` | `/opt/homebrew/opt/tailscale/bin/tailscale` | The `tailscale` binary |

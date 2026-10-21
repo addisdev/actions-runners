@@ -12,7 +12,7 @@ new build.
 | Setting | Default | Meaning |
 |---|---|---|
 | Reach the dashboard by | SSH tunnel | **SSH tunnel**, **Direct URL** or **Fixture (demo)** |
-| SSH aliases, in order | `runner-host, runner-ts` | Aliases from `~/.ssh/config`, comma- or space-separated, tried in turn |
+| SSH aliases, in order | `ultra, ultra-ts` | Aliases from `~/.ssh/config`, comma- or space-separated, tried in turn |
 | Dashboard port on the host | `7878` | Where the dashboard listens on the host's loopback |
 | Dashboard URL | `http://127.0.0.1:7878` | For Direct URL: a dashboard served over Tailscale Serve or bound to the LAN |
 | Scenario | `live` | For Fixture: which recorded state to show |
