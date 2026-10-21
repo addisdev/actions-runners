@@ -35,6 +35,13 @@ export const FAILURE_CLASSES = {
     hint: 'The runner stopped talking to GitHub mid-job — CPU/memory starvation on the host, or '
       + 'the network dropping. Check host load around that time before suspecting the code.',
   },
+  'host-broken': {
+    label: 'Host needs attention',
+    blame: 'host',
+    hint: 'The workflow ran and recognised the host as the cause: a simulator that will not boot, '
+      + 'or a CoreSimulator older than the installed Xcode needs. Fix the host (the annotation '
+      + 'says how), then re-run. Changing the code will not turn it green.',
+  },
   'no-runner': {
     label: 'No runner matched',
     blame: 'config',
@@ -70,6 +77,8 @@ const PATTERNS = [
   [/recent account payments have failed|spending limit needs to be increased/i, 'account-blocked'],
   [/storage quota has been hit|artifact storage quota|quota has been exceeded/i, 'account-quota'],
   [/self-hosted runner lost communication|runner has received a shutdown signal/i, 'runner-lost'],
+  // The launch kit's workflows end every host diagnosis with this phrase.
+  [/the runner host needs attention, this is not a code failure/i, 'host-broken'],
   [/no runner matched|unable to find a runner|no self-hosted runner/i, 'no-runner'],
 ];
 

@@ -118,7 +118,7 @@ export const DEFAULTS = {
 };
 
 // Failure classes whose first move is not reading the diff (lib/failures.js).
-export const NOT_YOUR_CODE = ['runner-lost', 'account-blocked', 'account-quota', 'no-runner', 'admission-hold'];
+export const NOT_YOUR_CODE = ['runner-lost', 'host-broken', 'account-blocked', 'account-quota', 'no-runner', 'admission-hold'];
 
 const DISK_HOLD = /(\d+(?:\.\d+)?) GB disk free, below the (\d+(?:\.\d+)?) GB floor/;
 

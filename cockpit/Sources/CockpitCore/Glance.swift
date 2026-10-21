@@ -352,6 +352,7 @@ public struct FailureRow: Codable, Sendable, Equatable, Identifiable {
     public var label: String {
         switch cls {
         case "runner-lost": "Runner lost contact — the host, not the code"
+        case "host-broken": "Host needs attention — fix it, then re-run"
         case "account-blocked": "Refused by GitHub — billing, not the code"
         case "account-quota": "Storage quota full — the job ran, publishing failed"
         case "no-runner": "No runner matched — configuration, not the code"
