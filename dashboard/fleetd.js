@@ -721,6 +721,10 @@ const lastVersionState = new Map();
 // restart does not blank the fleet.
 const hostState = new Map();
 const LOCAL_HOST_ID = CONFIG.replicaId;
+// A record under this machine's own id is the coordinator reporting itself
+// through the agent path; the live local entry always supersedes it, and once
+// it ages out it reads as a second host that has gone down.
+const remoteHosts = () => [...hostState.values()].filter((h) => h.id !== LOCAL_HOST_ID);
 
 const REMOTE_ACTIONS = new Set([
   'runner.duplicate',
@@ -2985,13 +2989,14 @@ const server = http.createServer(async (req, res) => {
 
   if (url.pathname === '/metrics') {
     const now = Date.now();
-    const staleHosts = [...hostState.values()].filter((h) =>
+    const remotes = remoteHosts();
+    const staleHosts = remotes.filter((h) =>
       !h.lastHeartbeat || now - h.lastHeartbeat > STALE_HEARTBEAT_MS
     ).length;
     const body = renderPrometheusMetrics(snapshot, {
       now,
       collectorStaleMs: CONFIG.collectorStaleMs,
-      hostCount: 1 + hostState.size,
+      hostCount: 1 + remotes.length,
       hostStaleCount: staleHosts,
     });
     res.writeHead(200, {
@@ -3692,7 +3697,7 @@ const server = http.createServer(async (req, res) => {
       drained: Boolean(hostDrainState(CONFIG.root)),
       off: hostDrainState(CONFIG.root) === 'off',
     };
-    const merged = mergeHostSnapshots({ hosts: [local, ...hostState.values()] });
+    const merged = mergeHostSnapshots({ hosts: [local, ...remoteHosts()] });
     for (const h of merged.hosts) h.impact = snapshot.hostImpact?.[h.id] ?? null;
 
     // Recent placement decisions for the Hosts tab. Operators need to see why
@@ -4137,6 +4142,7 @@ async function main() {
       'SELECT host_id, labels, agent_version, last_seen, last_payload FROM hosts'
     ).all();
     for (const row of rows) {
+      if (row.host_id === LOCAL_HOST_ID) continue;
       try {
         const payload = JSON.parse(row.last_payload ?? '{}');
         hostState.set(row.host_id, {
