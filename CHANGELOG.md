@@ -116,6 +116,12 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Fixed
 
+- **The Hosts tab no longer lists the coordinator as a second, stale host.**
+  `buildHostList` already dropped a heartbeat record under the coordinator's
+  own id, but the `/api/hosts` handler and the `/metrics` stale-host count
+  read every record, and startup restored the coordinator's own row from the
+  `hosts` table. A row left over from 2026-09-30 put "1 of 3 hosts are stale"
+  in a serious banner for three weeks. All three now skip it.
 - **A runner offline for a minute no longer raises a critical.** The verdict
   already called an offline runner "settling" for its first 5 minutes, but the
   alert opened, and notified, on the first tick. In the week to 2026-10-20,
