@@ -136,7 +136,7 @@ level.
 | `label-mismatch` | The job's `runs-on:` matches no runner's labels | **No** — a copy has the same labels |
 | `runner-down` | Every runner for the repo is offline, dead or draining | No — repair it |
 | `concurrency-block` | An idle runner exists and the run is still not dispatched; a workflow `concurrency:` group is holding it | No |
-| `host-saturation` | No runner is free and the headroom gate is refusing additions | No — it would be refused |
+| `host-saturation` | No runner is free and the headroom gate is refusing additions, or the tiers controller parked the runner until a lane slot frees | No — it would be refused |
 | `repo-capacity` | Every runner for the repo is busy, and there is headroom | **Yes** |
 | `github-delay` | Nothing is wrong here; dispatch is slow | No |
 

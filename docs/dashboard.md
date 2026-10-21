@@ -174,7 +174,7 @@ name. On a single host the switch sits above the runner grid. Capacity separates
 | `label-mismatch` | No runner has all required labels | No |
 | `runner-down` | All runners for this repo are offline/drained | No |
 | `concurrency-block` | Another job from this run is using the only runner | No |
-| `host-saturation` | No runner is free and the headroom gate is refusing additions | No |
+| `host-saturation` | No runner is free and the headroom gate is refusing additions, or the tiers controller parked the runner until a lane slot frees | No |
 | `repo-capacity` | More jobs than runners for this repo | **Yes** |
 | `github-delay` | Runner is ready but GitHub has not dispatched | No |
 
