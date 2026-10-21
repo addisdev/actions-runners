@@ -123,7 +123,7 @@ the MCP server, the Shortcuts and other local dashboards answer in milliseconds.
 ```json
 {
   "writtenAt": 1790781990012,
-  "route": "runner-host",
+  "route": "ultra",
   "connection": "live",
   "verdict": { "id": "waiting", "tone": "ok", "title": "Working", "...": "..." },
   "glance": { "schema": 1, "...": "the full GET /api/glance payload" }

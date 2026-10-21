@@ -18,8 +18,8 @@ struct AppSettings: Codable, Equatable {
     }
 
     var mode: Mode = .tunnel
-    var aliases: String = "runner-host, runner-ts"
-    var remotePort: Int = 7878
+    var aliases: String = TransportConfig.defaultAliases.joined(separator: ", ")
+    var remotePort: Int = TransportConfig.defaultRemotePort
     var directURL: String = "http://127.0.0.1:7878"
     var fixture: String = "live"
     var showCounts: Bool = true

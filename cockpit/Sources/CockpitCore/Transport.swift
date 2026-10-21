@@ -14,7 +14,15 @@ public enum TransportConfig: Codable, Sendable, Equatable {
     case direct(URL)
     case fixture(String)
 
-    public static let `default` = TransportConfig.tunnel(aliases: ["runner-host", "runner-ts"], remotePort: 7878)
+    /// The ssh aliases tried, in order, when nothing else is configured: the
+    /// coordinator's LAN name, then its tailnet name. This is the one place the
+    /// default route is written down; the app's settings, the CLI's `--via` and
+    /// the sentinel all start from it. A fleet on another host is a setting
+    /// (Settings → Connection, or `--via`), not a new build.
+    public static let defaultAliases = ["ultra", "ultra-ts"]
+    public static let defaultRemotePort = 7878
+
+    public static let `default` = TransportConfig.tunnel(aliases: defaultAliases, remotePort: defaultRemotePort)
 }
 
 /// The route in use right now, shown in the popover footer.

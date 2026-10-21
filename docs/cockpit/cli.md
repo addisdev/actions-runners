@@ -19,11 +19,11 @@ trustworthy, in this order:
    90 seconds old and you did not pass `--fresh`, `--url` or `--via`. This
    answers in milliseconds and opens nothing.
 3. **Its own connection**: `--url` directly, otherwise an SSH tunnel through
-   `--via` aliases (default `runner-host`, then `runner-ts`), exactly as the app
+   `--via` aliases (default `ultra`, then `ultra-ts`), exactly as the app
    would open one.
 
 The human output always ends with the route it used, for example
-`via app (runner-host, 12s ago)` or `via runner-ts`.
+`via app (ultra, 12s ago)` or `via ultra-ts`.
 
 `why`, `wait`, `run` and `mcp` ask the dashboard's [`/api/v1`](../api.md#version-1-apiv1)
 instead, over the same route, and never read the snapshot or a fixture. The
@@ -37,7 +37,7 @@ than `/api/v1` gets the message to update actions-runners on the host.
 |---|---|
 | `--json` | Machine-readable output (pretty-printed, sorted keys) |
 | `--fixture <name>` | Use a bundled fixture instead of the live fleet (`cockpit fixtures` lists them) |
-| `--via <alias>` | SSH alias to tunnel through; repeat for a fallback list. Default `runner-host`, `runner-ts` |
+| `--via <alias>` | SSH alias to tunnel through; repeat for a fallback list. Default `ultra`, `ultra-ts` |
 | `--url <url>` | Reach the dashboard directly, for example over Tailscale Serve |
 | `--fresh` | Ignore the app's snapshot and connect now |
 | `--port <n>` | The dashboard's port on the host, for `sentinel`. Other commands tunnel to 7878; use `--url` for a dashboard on another port |
@@ -65,7 +65,7 @@ $ cockpit status
   · 3 jobs held at Set up runner: comet-web, comet-backend, ember-ios
   · Waiting does not fix this; freeing disk does
   → Preview cleanup
-  0 running, 0 queued, 3 held, 54 runners · via app (runner-host, 4s ago)
+  0 running, 0 queued, 3 held, 54 runners · via app (ultra, 4s ago)
 ```
 
 The mark is `✔` for ok and info, `▲` warning, `✖` critical, `?` unknown. `→` is
@@ -288,10 +288,10 @@ runner on another machine, githubstatus.com. Prints the verdict from the
 
 ```console
 $ cockpit sentinel
-✖ runner-host is asleep, off or off the network
+✖ ultra is asleep, off or off the network
   mini in the same house is online, so power and the network are fine. Only someone there can wake it.
   · SSH port closed on every route
-  · GitHub: 0 of 3 checked runners on runner-host online
+  · GitHub: 0 of 3 checked runners on ultra online
   · mini: online
   → Wake it in person
   via out of band
@@ -317,7 +317,7 @@ Spotlight is using 150% CPU — it is indexing, most likely the runner work tree
    11.2%  mdworker_shared
 ```
 
-`--via <alias>` picks the host (default `runner-host`). `--json` prints
+`--via <alias>` picks the host (default `ultra`). `--json` prints
 `{ verdict, spotlightCPU, top }`. Exit `1` when Spotlight is using 50% CPU or
 more, `3` when `ps` could not be run, else `0`.
 
@@ -361,12 +361,12 @@ Pairs the command line with the dashboard, with a token of its own, separate
 from the app's and revocable on its own.
 
 ```bash
-cockpit pair                              # over runner-host
-cockpit pair --via runner-ts --fleet-root ~/actions-runners
+cockpit pair                              # over ultra
+cockpit pair --via ultra-ts --fleet-root ~/actions-runners
 ```
 
 It runs `fleetctl.sh pair` on the host over the first `--via` alias (default
-`runner-host`) to mint a six-digit code, exchanges it for a device token named
+`ultra`) to mint a six-digit code, exchanges it for a device token named
 "cockpit CLI on <this Mac>", and saves the token to
 `~/Library/Application Support/FleetCockpit/cli-token-cli:<host>` with mode
 `0600`. `--fleet-root` is where the repository lives on the host (default

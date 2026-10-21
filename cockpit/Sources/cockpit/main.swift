@@ -36,7 +36,7 @@ commands:
 options:
   --json              machine-readable output
   --fixture <name>    use a bundled fixture instead of the live fleet
-  --via <alias>       ssh alias to tunnel through (repeatable; default: runner-host, runner-ts)
+  --via <alias>       ssh alias to tunnel through (repeatable; default: \(TransportConfig.defaultAliases.joined(separator: ", ")))
   --url <url>         reach the dashboard directly
   --fresh             ignore the app's snapshot and connect now
   --port <n>          the dashboard's port on the host (default 7878)
@@ -125,11 +125,16 @@ func obtain(_ o: Options) async -> Source {
             return Source(glance: g, verdict: g.verdict, route: "fixture: \(name)")
         } catch { fail("no fixture named \(name) (try: cockpit fixtures)") }
     }
-    if !o.fresh, o.url == nil, o.via.isEmpty, let snap = try? SnapshotFile.read(), snap.ageMs() < 90_000 {
-        return Source(glance: snap.glance, verdict: trusted(snap.verdict, snap.glance), route: "app (\(snap.route ?? "?"), \(Format.ago(snap.writtenAt, now: Format.nowMs())))")
+    // The app's view when it is fresh. If the app is not connected right now,
+    // try our own route first and keep its view (which may carry an
+    // out-of-band "host down") as the answer only when ours fails too.
+    let snap = (!o.fresh && o.url == nil && o.via.isEmpty) ? (try? SnapshotFile.read()).flatMap { $0.ageMs() < 90_000 ? $0 : nil } : nil
+    func fromApp(_ s: SnapshotFile) -> Source {
+        Source(glance: s.glance, verdict: trusted(s.verdict, s.glance), route: "app (\(s.route ?? "?"), \(Format.ago(s.writtenAt, now: Format.nowMs())))")
     }
+    if let snap, snap.isConnected { return fromApp(snap) }
     let transport: Transport = o.url.map { DirectTransport(url: $0) }
-        ?? TunnelTransport(aliases: o.via.isEmpty ? ["runner-host", "runner-ts"] : o.via)
+        ?? TunnelTransport(aliases: o.via.isEmpty ? defaultAliases : o.via)
     do {
         let route = try await transport.open()
         let client = FleetClient(base: route.baseURL)
@@ -137,6 +142,7 @@ func obtain(_ o: Options) async -> Source {
         return Source(glance: g, verdict: trusted(g.verdict, g), route: route.label, client: client, transport: transport)
     } catch {
         transport.close()
+        if let snap { return fromApp(snap) }
         let v = Verdict(id: "unreachable", tone: .unknown, title: "Dashboard unreachable",
                         sentence: "Could not reach the dashboard: \(error)", evidence: [], next: nil, rung: nil, open: [])
         return Source(glance: nil, verdict: v, route: "none")
@@ -166,7 +172,7 @@ final class RouteCache: @unchecked Sendable {
     }
 }
 
-let defaultAliases = ["runner-host", "runner-ts"]
+let defaultAliases = TransportConfig.defaultAliases
 
 func transport(_ o: Options) -> Transport {
     o.url.map { DirectTransport(url: $0) } ?? TunnelTransport(aliases: o.via.isEmpty ? defaultAliases : o.via)
@@ -257,7 +263,7 @@ case "status":
     src.transport?.close()
     exit(exitCode(src.verdict))
 case "sentinel":
-    let aliases = opts.via.isEmpty ? ["runner-host", "runner-ts"] : opts.via
+    let aliases = opts.via.isEmpty ? defaultAliases : opts.via
     let targets = (try? SnapshotFile.read())?.glance.flatMap { SentinelTargets.from($0) }
     var probe = SentinelProbe(aliases: aliases)
     if let port = opts.flags["port"].flatMap(Int.init) { probe.remotePort = port }
@@ -271,7 +277,7 @@ case "sentinel":
     }
     exit(exitCode(v))
 case "pair":
-    let alias = opts.via.first ?? "runner-host"
+    let alias = opts.via.first ?? defaultAliases[0]
     let src = await obtain(Options(command: "status", fresh: true, positional: [], flags: [:]).with(via: opts.via, url: opts.url))
     guard let client = src.client, let g = src.glance else { fail("cannot reach the dashboard to pair") }
     let account = "cli:" + (g.hosts.first { $0.local == true }?.id ?? alias)
@@ -430,7 +436,7 @@ case "wait":
         fail(e)
     }
 case "top":
-    let alias = opts.via.first ?? "runner-host"
+    let alias = opts.via.first ?? defaultAliases[0]
     guard let top = await HostProbe.topCPU(alias: alias) else { fail("could not run ps on \(alias)", code: 3) }
     if opts.json {
         struct Top: Encodable { let verdict: String; let spotlightCPU: Double; let top: [String] }

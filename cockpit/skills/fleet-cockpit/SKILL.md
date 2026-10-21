@@ -91,5 +91,5 @@ frozen; mention it.
 - `cockpit sentinel` checks SSH reachability, GitHub's view of the host's
   runners, and another machine.
 - `fleet` reports `unreachable`: check `FLEET_URL`, or forward the port with
-  `ssh -L 7878:localhost:7878 <runner-host>`.
+  `ssh -L 7878:localhost:7878 <runner host alias>`.
 - `cockpit brief` prints a markdown incident brief to paste into a report.

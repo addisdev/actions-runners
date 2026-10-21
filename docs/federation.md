@@ -4,6 +4,15 @@ Federation lets the dashboard coordinate runners across several Macs. Each
 extra Mac runs a lightweight agent (`agent.js`) that reports outbound to the
 coordinator — no inbound port is needed on agent hosts.
 
+!!! note "Current topology (2026-10-21)"
+    One Mac, `ultra`, is both the coordinator (fleetd, replica id `ultra`) and
+    the only runner host, with `FLEET_TIERS_MODE=off`. The previous runner host
+    was retired after [moving the coordinator](#moving-the-coordinator-to-another-mac).
+    Fleet Cockpit reaches the dashboard through the ssh aliases `ultra`, then
+    `ultra-ts`; a different or extra coordinator is a setting there, not a new
+    build. To add a runner host, follow
+    [Adding a second runner host](#adding-a-second-runner-host).
+
 ## Architecture
 
 ![Two agent Macs above a coordinator Mac and a browser. Each agent runs agent.js and its own runners and opens no inbound port; its only connection is an outbound heartbeat every 30 seconds, with commands riding back in the reply. The second agent has been silent for six minutes and is marked stale, its runners greyed rather than removed. The coordinator runs fleetd, the dashboard and its own runners. Side notes say each host computes its own headroom, and that a coordinator may drain, resume, switch off and health-check an agent's runners, but removing one needs that host's own opt-in](img/federation.png)

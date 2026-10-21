@@ -15,8 +15,8 @@
 #
 # Configuration lives in ~/.config/fleet-sentinel.env (mode 0600), sourced here:
 #
-#   SENTINEL_NAME=runner-host              # what the messages call the host
-#   SENTINEL_TARGET=runner                 # tailnet name or IP to probe
+#   SENTINEL_NAME=ultra                    # what the messages call the host (default: the target)
+#   SENTINEL_TARGET=ultra                  # tailnet name or IP to probe
 #   SENTINEL_PROBE=tailscale               # tailscale (ping over the tailnet) | tcp (nc -z host 22)
 #   SENTINEL_TAILSCALE=/opt/homebrew/opt/tailscale/bin/tailscale
 #   SENTINEL_TS_SOCKET=                    # --socket for a userspace tailscaled, if any
@@ -33,8 +33,8 @@ ENV_FILE="${SENTINEL_ENV:-$HOME/.config/fleet-sentinel.env}"
 # shellcheck source=/dev/null
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
 
-NAME="${SENTINEL_NAME:-runner-host}"
 TARGET="${SENTINEL_TARGET:-runner}"
+NAME="${SENTINEL_NAME:-$TARGET}"
 PROBE="${SENTINEL_PROBE:-tailscale}"
 TS_BIN="${SENTINEL_TAILSCALE:-/opt/homebrew/opt/tailscale/bin/tailscale}"
 TS_SOCKET="${SENTINEL_TS_SOCKET:-}"

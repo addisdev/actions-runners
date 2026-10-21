@@ -96,12 +96,12 @@ not the icon is visible.
 
 The dashboard binds to loopback on the runner host. The default route needs
 nothing changed there: the app opens an SSH tunnel through aliases from your
-`~/.ssh/config`, trying each in turn — by default `runner-host`, then
-`runner-ts` for a tailnet route. A minimal entry:
+`~/.ssh/config`, trying each in turn — by default `ultra`, then
+`ultra-ts` for a tailnet route. A minimal entry:
 
 ```
-Host runner-host
-  HostName runner-host.local
+Host ultra
+  HostName ultra.local
   User you
   IdentityFile ~/.ssh/id_ed25519
 ```
@@ -109,7 +109,7 @@ Host runner-host
 Test it the way the app will run it — no prompt allowed:
 
 ```bash
-ssh -o BatchMode=yes runner-host 'curl -s 127.0.0.1:7878/api/health'
+ssh -o BatchMode=yes ultra 'curl -s 127.0.0.1:7878/api/health'
 ```
 
 If you serve the dashboard over

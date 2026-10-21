@@ -9,11 +9,11 @@
 //
 // Three steps, each restartable:
 //
-//   ssh runner-host "/usr/bin/sqlite3 -json ~/actions-runners/dashboard/fleet.db \
+//   ssh ultra "/usr/bin/sqlite3 -json ~/actions-runners/dashboard/fleet.db \
 //     \"$(node scripts/settle-stale-jobs.mjs query)\"" > stale.json
 //   node scripts/settle-stale-jobs.mjs fetch --in stale.json --out fetched.ndjson
 //   node scripts/settle-stale-jobs.mjs sql --in fetched.ndjson \
-//     | ssh runner-host /usr/bin/sqlite3 ~/actions-runners/dashboard/fleet.db
+//     | ssh ultra /usr/bin/sqlite3 ~/actions-runners/dashboard/fleet.db
 //
 // fetch skips ids already in --out, so an interrupted run resumes. It paces
 // itself under GitHub's primary limit (sleeps to the reset below --floor) and

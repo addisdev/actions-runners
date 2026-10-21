@@ -1205,9 +1205,9 @@ Source: [`dashboard/scripts/settle-stale-jobs.mjs`](https://github.com/addisdev/
 
 ```bash
 cd dashboard
-ssh runner-host "/usr/bin/sqlite3 -json ~/actions-runners/dashboard/fleet.db \"$(node scripts/settle-stale-jobs.mjs query)\"" > stale.json
+ssh ultra "/usr/bin/sqlite3 -json ~/actions-runners/dashboard/fleet.db \"$(node scripts/settle-stale-jobs.mjs query)\"" > stale.json
 node scripts/settle-stale-jobs.mjs fetch --in stale.json --out fetched.ndjson
-node scripts/settle-stale-jobs.mjs sql --in fetched.ndjson | ssh runner-host /usr/bin/sqlite3 ~/actions-runners/dashboard/fleet.db
+node scripts/settle-stale-jobs.mjs sql --in fetched.ndjson | ssh ultra /usr/bin/sqlite3 ~/actions-runners/dashboard/fleet.db
 ```
 
 ### `dashboard/scripts/mirror-plan.mjs`

@@ -37,7 +37,7 @@ struct FleetProvider: TimelineProvider {
 
     static var sample: SnapshotFile? {
         guard let g = try? Fixtures.glance("waiting") else { return nil }
-        return SnapshotFile(writtenAt: Format.nowMs(), route: "runner-host", connection: "live", verdict: g.verdict, glance: g)
+        return SnapshotFile(writtenAt: Format.nowMs(), route: TransportConfig.defaultAliases[0], connection: "live", verdict: g.verdict, glance: g)
     }
 }
 

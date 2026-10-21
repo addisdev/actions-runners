@@ -562,7 +562,7 @@ final class AppModel {
     }
 
     func openTerminal(alias: String? = nil) {
-        let host = alias ?? settings.aliasList.first ?? "runner-host"
+        let host = alias ?? settings.aliasList.first ?? TransportConfig.defaultAliases[0]
         let script = "tell application \"Terminal\" to do script \"ssh \(host)\"\ntell application \"Terminal\" to activate"
         NSAppleScript(source: script)?.executeAndReturnError(nil)
     }

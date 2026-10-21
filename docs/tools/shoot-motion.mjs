@@ -84,7 +84,7 @@ const opt = (name, fallback = null) => {
   return i >= 0 && args[i + 1] && !args[i + 1].startsWith('--') ? args[i + 1] : fallback;
 };
 
-const SSH_HOST = opt('host', process.env.MOTION_SSH_HOST ?? 'runner-host');
+const SSH_HOST = opt('host', process.env.MOTION_SSH_HOST ?? 'ultra');
 const RUNNER_DIR = opt('runner', process.env.MOTION_RUNNER ?? null);
 const FLEET_PORT = Number(opt('fleet-port', process.env.MOTION_FLEET_PORT ?? 7878));
 const SERVE_ONLY = flag('serve');
