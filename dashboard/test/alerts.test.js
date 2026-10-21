@@ -19,10 +19,13 @@ let logged;
 // channels, because `notify()` logs every message it is about to send whether or
 // not a channel is configured. That makes the log the honest record of what
 // would have interrupted someone.
+//
+// An offline runner is the handiest alert to raise, so the settle window is off
+// unless a test is about it.
 function makeAlerts(config = {}) {
   logged = [];
   const log = (...args) => logged.push(args.join(' '));
-  return new Alerts({ db, config: { macos: false, webhook: null, ...config }, log, warn: log });
+  return new Alerts({ db, config: { macos: false, webhook: null, offlineSettleMs: 0, ...config }, log, warn: log });
 }
 
 const announced = () => logged.filter((l) => l.startsWith('ALERT ')).map((l) => l.replace(/^ALERT \[\w+\] /, ''));
@@ -394,6 +397,49 @@ describe('offline: a flapping runner is one alert', () => {
     const alerts = makeAlerts();
     alerts.evaluate(driftSnapshot(drift('orphan', 'runner-b')), T0);
     assert.equal(alerts.evaluate(driftSnapshot(), T0 + 15 * 1000).closed.length, 1);
+  });
+});
+
+describe('offline: a runner that reconnects inside the settle window raises nothing', () => {
+  const MIN = 60 * 1000;
+  const T0 = Date.parse('2026-10-20T20:48:00Z');
+  const offline = (...names) => ({ drift: names.map((n) => drift('offline', n)) });
+  const settling = () => makeAlerts({ offlineSettleMs: 5 * MIN });
+
+  test('offline for a minute after a resume opens no alert and announces nothing', () => {
+    const alerts = settling();
+    assert.equal(alerts.evaluate(offline('runner-a'), T0).opened.length, 0);
+    assert.equal(alerts.evaluate(offline('runner-a'), T0 + MIN).opened.length, 0);
+    assert.equal(alerts.evaluate(offline(), T0 + 2 * MIN).opened.length, 0);
+    assert.equal(alerts.snapshot().open.length, 0);
+    assert.deepEqual(announced(), []);
+  });
+
+  test('still offline once the window passes opens one alert', () => {
+    const alerts = settling();
+    alerts.evaluate(offline('runner-a'), T0);
+    assert.equal(alerts.evaluate(offline('runner-a'), T0 + 4 * MIN).opened.length, 0);
+    assert.equal(alerts.evaluate(offline('runner-a'), T0 + 5 * MIN).opened.length, 1);
+  });
+
+  test('reconnecting restarts the window', () => {
+    const alerts = settling();
+    alerts.evaluate(offline('runner-a'), T0);
+    alerts.evaluate(offline(), T0 + 4 * MIN);
+    alerts.evaluate(offline('runner-a'), T0 + 5 * MIN);
+    assert.equal(alerts.evaluate(offline('runner-a'), T0 + 9 * MIN).opened.length, 0);
+    assert.equal(alerts.evaluate(offline('runner-a'), T0 + 10 * MIN).opened.length, 1);
+  });
+
+  test('an alert already open is not closed by the window starting over', () => {
+    const alerts = settling();
+    alerts.evaluate(offline('runner-a'), T0);
+    alerts.evaluate(offline('runner-a'), T0 + 5 * MIN);
+    const restarted = settling();
+    const tick = restarted.evaluate(offline('runner-a'), T0 + 6 * MIN);
+    assert.equal(tick.opened.length, 0);
+    assert.equal(tick.closed.length, 0);
+    assert.equal(restarted.snapshot().open.length, 1);
   });
 });
 

@@ -116,6 +116,14 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Fixed
 
+- **A runner offline for a minute no longer raises a critical.** The verdict
+  already called an offline runner "settling" for its first 5 minutes, but the
+  alert opened, and notified, on the first tick. In the week to 2026-10-20,
+  234 of 238 per-runner offline alerts closed within 20 minutes, most within a
+  minute, and 199 of those opened within 5 minutes of the runner coming back
+  from a drain: GitHub catching up while the listener reconnects. A runner now has to stay offline for `offlineSettleMs`
+  (5 min) before it gets an alert. The host-wide outage alert still opens at
+  once.
 - **Queue causes judge only runners that can take the job.** The
   "idle runner exists, GitHub is holding this run" test counted every runner
   of the repo, so one repo's runs waiting for its `ci` runner read

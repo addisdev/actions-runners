@@ -58,6 +58,12 @@ export const DEFAULTS = {
   // On 2026-10-03, 5,873 of the 7,646 offline re-opens came within an hour of
   // the same runner's previous alert closing.
   offlineDebounceMs: 15 * 60 * 1000,
+  // How long one runner must stay offline before it gets an alert: the verdict's
+  // settle window, inside which a listener usually reconnects. In the week to
+  // 2026-10-20, 234 of 238 per-runner offline alerts closed within 20 minutes,
+  // most within a minute, 199 of them within 5 minutes of the runner coming back
+  // from a drain. Every one notified.
+  offlineSettleMs: 5 * 60 * 1000,
   // How long a runner must have run zero jobs before the unused-runner alert fires.
   unusedRunnerWindowMs: 7 * 24 * 60 * 60 * 1000,
   // A runner_state row the collector has not refreshed for this long is a runner
@@ -283,7 +289,7 @@ export class Alerts {
     }
 
     const host = snapshot.host ?? {};
-    const superseded = this.offlineFindings(offline, host, add);
+    const superseded = this.offlineFindings(offline, host, add, now);
 
     if (host.diskFreeGb != null) {
       const critical = host.diskFreeGb < c.diskCriticalGb;
@@ -546,7 +552,7 @@ export class Alerts {
   // offline is a runner problem again and gets its own alert. Returns the keys
   // of per-runner alerts the host alert replaces, which close at once rather
   // than sitting out a debounce for a condition that is now reported elsewhere.
-  offlineFindings(offline, host, add) {
+  offlineFindings(offline, host, add, now = Date.now()) {
     const c = this.config;
     const threshold = c.offlineHostThreshold ?? DEFAULTS.offlineHostThreshold;
     const hostWide = offline.length >= threshold;
@@ -572,9 +578,18 @@ export class Alerts {
     }
 
     const meta = DRIFT_ALERTS.offline;
+    const settleMs = c.offlineSettleMs ?? DEFAULTS.offlineSettleMs;
     for (const d of offline) {
-      add(`drift:offline:${d.subject}`, 'offline', meta.severity, `${meta.title}: ${d.subject}`,
+      const key = `drift:offline:${d.subject}`;
+      const settled = settleMs <= 0 || this.sustained(`settle:${key}`, true, settleMs, now);
+      if (!settled && !this.open.has(key)) continue;
+      add(key, 'offline', meta.severity, `${meta.title}: ${d.subject}`,
         `${d.detail}${d.hint ? `\n${d.hint}` : ''}`);
+    }
+    for (const key of [...this.pending.keys()]) {
+      if (key.startsWith('settle:drift:offline:') && !offline.some((d) => key === `settle:drift:offline:${d.subject}`)) {
+        this.pending.delete(key);
+      }
     }
     return superseded;
   }

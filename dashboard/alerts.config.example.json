@@ -32,6 +32,7 @@
   "stormThreshold": 5,
   "offlineHostThreshold": 3,
   "offlineDebounceMs": 900000,
+  "offlineSettleMs": 300000,
 
   "macos": true,
   "webhook": null
