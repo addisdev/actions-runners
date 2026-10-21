@@ -125,9 +125,14 @@ func obtain(_ o: Options) async -> Source {
             return Source(glance: g, verdict: g.verdict, route: "fixture: \(name)")
         } catch { fail("no fixture named \(name) (try: cockpit fixtures)") }
     }
-    if !o.fresh, o.url == nil, o.via.isEmpty, let snap = try? SnapshotFile.read(), snap.ageMs() < 90_000 {
-        return Source(glance: snap.glance, verdict: trusted(snap.verdict, snap.glance), route: "app (\(snap.route ?? "?"), \(Format.ago(snap.writtenAt, now: Format.nowMs())))")
+    // The app's view when it is fresh. If the app is not connected right now,
+    // try our own route first and keep its view (which may carry an
+    // out-of-band "host down") as the answer only when ours fails too.
+    let snap = (!o.fresh && o.url == nil && o.via.isEmpty) ? (try? SnapshotFile.read()).flatMap { $0.ageMs() < 90_000 ? $0 : nil } : nil
+    func fromApp(_ s: SnapshotFile) -> Source {
+        Source(glance: s.glance, verdict: trusted(s.verdict, s.glance), route: "app (\(s.route ?? "?"), \(Format.ago(s.writtenAt, now: Format.nowMs())))")
     }
+    if let snap, snap.isConnected { return fromApp(snap) }
     let transport: Transport = o.url.map { DirectTransport(url: $0) }
         ?? TunnelTransport(aliases: o.via.isEmpty ? defaultAliases : o.via)
     do {
@@ -137,6 +142,7 @@ func obtain(_ o: Options) async -> Source {
         return Source(glance: g, verdict: trusted(g.verdict, g), route: route.label, client: client, transport: transport)
     } catch {
         transport.close()
+        if let snap { return fromApp(snap) }
         let v = Verdict(id: "unreachable", tone: .unknown, title: "Dashboard unreachable",
                         sentence: "Could not reach the dashboard: \(error)", evidence: [], next: nil, rung: nil, open: [])
         return Source(glance: nil, verdict: v, route: "none")

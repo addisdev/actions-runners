@@ -223,6 +223,19 @@ struct SnapshotFileTests {
         let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int
         #expect(mode == 0o600)
     }
+
+    /// The app writes its connection state with String(describing:); a
+    /// snapshot from an app retrying a dead route must not read as connected.
+    @Test func connectedOnlyWhileTheAppTalksToADashboard() throws {
+        let g = try Fixtures.glance("live")
+        func snap(_ c: ConnectionState) -> SnapshotFile {
+            SnapshotFile(writtenAt: 1000, route: "ultra", connection: String(describing: c), verdict: g.verdict, glance: g)
+        }
+        #expect(snap(.live).isConnected)
+        #expect(snap(.collectorStale).isConnected)
+        #expect(!snap(.connecting).isConnected)
+        #expect(!snap(.reconnecting(attempt: 26, error: "No route to the dashboard (tried runner-host, runner-ts)")).isConnected)
+    }
 }
 
 @Suite("transport and client against a stub daemon", .serialized)

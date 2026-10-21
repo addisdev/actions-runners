@@ -18,6 +18,14 @@ public struct SnapshotFile: Codable, Sendable, Equatable {
         self.verdict = verdict; self.glance = glance
     }
 
+    /// True when the app was talking to a dashboard as it wrote this, not
+    /// connecting or retrying a route that may no longer exist (an alias for a
+    /// retired host keeps the snapshot fresh while its glance goes stale).
+    public var isConnected: Bool {
+        connection == String(describing: ConnectionState.live)
+            || connection == String(describing: ConnectionState.collectorStale)
+    }
+
     public static var defaultURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("FleetCockpit", isDirectory: true)
