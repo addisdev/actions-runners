@@ -15,10 +15,22 @@ controller (`dashboard/lib/tiers.js`) pulls it on every fast tick.
 | Primary | the primary host's runners | online | always, up to the primary's admission cap (see self-drain) |
 | Overflow | the standby host's runners not in the floor | drained | the primary is busy, has stuck work, or is unfit (below) |
 | Floor | the standby host's runners for `FLEET_TIERS_FLOOR_REPOS` | online | always; the controller never drains them |
+| Sole | a standby runner no runner outside the overflow tier can stand in for | online | always, like the floor |
 
 The floor exists for work the primary can barely take: on a host whose
 admission hook lets one Simulator job run at a time, an iOS repo's second job
 would otherwise wait out a resume every time.
+
+A standby runner is **sole** when no runner outside the overflow tier (a
+primary runner, a floor runner, or a runner on a host with no agent, such as
+the Mini's release runners) has the same repo, every one of its labels, and no
+operator drain. Draining it would not send its jobs to the primary; it would
+strand them. Pairing is by label set, not by repo: on 2026-10-19/20
+`ultra-home-agent` (`ci`) was home-agent's only `ci` runner, its "twin" on the
+Mini a `release` runner, and every home-agent PR queued behind the overflow
+drain until someone resumed it by hand. A sole runner is drained only on a host
+that cannot admit, like the floor. When GitHub does not report a runner's
+labels the controller keeps its last reading rather than guess.
 
 ## When the overflow tier comes online
 
@@ -29,11 +41,16 @@ Any one of these resumes it at once:
   `Runner.Worker` on the primary, which includes jobs the admission hook is
   holding;
 - a queued run has waited `FLEET_TIERS_QUEUE_AGE_S` (120 s) with no idle,
-  matching primary runner, and some standby runner could take it;
+  matching primary runner, and some overflow runner could take it;
 - the primary is unfit: the verdict shows `disk-floor`, `saturated` or a dead
   primary runner (`dead-service`), its memory pressure is critical, or (for a
   primary that is an agent) its heartbeat is older than
   `FLEET_TIERS_PRIMARY_STALE_S`.
+
+A queued run that no runner outside the overflow tier can take soon (online
+and not drained, or drained by the controller, which brings it back) wakes one
+overflow runner that fits it at once, without waking the tier and without the
+queue-age wait, and keeps it online while the run is queued.
 
 It never comes online on a standby host whose memory pressure is critical, and
 a standby host that reaches critical has its overflow drained early.
@@ -41,7 +58,9 @@ a standby host that reaches critical has its overflow drained early.
 ## When it is drained again
 
 After `FLEET_TIERS_DRAIN_AFTER_S` (10 min) in which every primary lane was below
-cap, nothing servable was queued and no trigger above was present. Resume is
+cap, nothing a primary or overflow runner could serve was queued and no trigger
+above was present. A run only a sole or floor runner fits is theirs, and does
+not hold the overflow tier online. Resume is
 immediate and drain is slow on purpose: a resumed runner is online in seconds,
 while a tier that flaps stops and starts dozens of listeners each time.
 
