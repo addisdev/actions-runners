@@ -175,7 +175,7 @@ export function classifyQueueCause({ run, runners, capacity, api = {}, collector
 
   // ---- runners exist but are down/draining --------------------------------
   // Judged on the runners that can take this job. The repo's other runners say
-  // nothing about it: on 2026-10-16 homelake's `ci` runner was parked while
+  // nothing about it: on 2026-10-16 one repo's `ci` runner was parked while
   // its idle `release` runner on another host was online, and every parked run
   // read "an idle runner exists, GitHub is holding this run" (concurrency-block),
   // which also dropped it from the tiers controller's queue.
@@ -197,6 +197,15 @@ export function classifyQueueCause({ run, runners, capacity, api = {}, collector
       } else {
         evidence.push(`${r.name} GitHub status: ${r.ghStatus}`);
       }
+    }
+    // A runner the tiers controller parked comes back when a lane slot frees,
+    // and this run is in the queue it reads to choose which. That is a wait for
+    // capacity, and runner-down would say the run never starts: a critical
+    // alert, a repair to run, and "pointless" to anyone waiting on its checks.
+    if (downRunners.some((r) => r.drainState && r.drainBy === 'tiers' && !r.hostOff)) {
+      return result(CAUSES.HOST_SATURATION, 'high', evidence, false, {
+        recommended: 'Nothing to do: the tiers controller resumes a parked runner for this run when a build-lane slot frees.',
+      });
     }
     return result(CAUSES.RUNNER_DOWN, 'high', evidence, false);
   }

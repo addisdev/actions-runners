@@ -478,7 +478,7 @@ describe('lint findings are matched per run', () => {
   });
 });
 
-// 2026-10-16: homelake's `ci` runner on runner-host was parked by the tiers
+// 2026-10-16: one repo's `ci` runner on the primary was parked by the tiers
 // controller while its `release` runner on the Mini sat idle and online. The
 // release runner cannot take a `ci` job, but the classifier counted it, so
 // every parked run read "an idle runner exists, GitHub is holding this run"
@@ -491,15 +491,39 @@ describe('only runners that can take the job count', () => {
   const releaseRunner = makeRunner({ name: 'mini-app-ios-release', labels: ['self-hosted', 'macos', 'arm64', 'release'] });
   const runLabels = ['self-hosted', 'macOS', 'ci'];
 
-  test('a parked ci runner with an idle release runner online is runner-down, not concurrency-block', () => {
+  // 2026-10-20: a parked runner's queued runs read "runner-down: will not start
+  // on its own", so the checks API called waiting on them pointless and the
+  // verdict sent people to repair a runner the controller was about to resume.
+  test('a parked ci runner with an idle release runner online is a wait for a slot, not concurrency-block', () => {
     const r = classifyQueueCause({
       run: run(),
       runners: [ciRunner({ drainState: 'drained', drainBy: 'tiers', ghStatus: 'offline' }), releaseRunner],
       capacity: goodCapacity,
       runLabels,
     });
-    assert.equal(r.cause, CAUSES.RUNNER_DOWN);
+    assert.equal(r.cause, CAUSES.HOST_SATURATION);
     assert.match(r.evidence.join(' '), /parked until a host slot frees/);
+    assert.match(r.recommended, /Nothing to do/);
+  });
+
+  test('a runner drained by hand is still runner-down', () => {
+    const r = classifyQueueCause({
+      run: run(),
+      runners: [ciRunner({ drainState: 'drained', drainBy: null, ghStatus: 'offline' }), releaseRunner],
+      capacity: goodCapacity,
+      runLabels,
+    });
+    assert.equal(r.cause, CAUSES.RUNNER_DOWN);
+  });
+
+  test('a tiers drain on a switched-off host is still runner-down', () => {
+    const r = classifyQueueCause({
+      run: run(),
+      runners: [ciRunner({ drainState: 'drained', drainBy: 'tiers', hostOff: true, ghStatus: 'offline' }), releaseRunner],
+      capacity: goodCapacity,
+      runLabels,
+    });
+    assert.equal(r.cause, CAUSES.RUNNER_DOWN);
   });
 
   test('an offline runner that fits is not a label mismatch', () => {

@@ -128,9 +128,13 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
   "idle runner exists, GitHub is holding this run" test counted every runner
   of the repo, so one repo's runs waiting for its `ci` runner read
   `concurrency-block` because its `release` runner on the Mini was idle, and
-  the tiers controller ignores such runs. A fitting runner that is offline or
-  parked now makes the run `runner-down` (with "parked until a host slot
-  frees" when tiers parked it), not a label mismatch.
+  the tiers controller ignores such runs. A fitting runner that is offline now
+  makes the run `runner-down`, not a label mismatch. One the tiers controller
+  parked makes it `host-saturation` ("parked until a host slot frees"): the
+  controller brings that runner back for it, so `runner-down` would claim the
+  run never starts, which on 2026-10-20 raised a critical, recommended a
+  repair, and told anyone waiting on the PR's checks that waiting was
+  pointless.
 - **A GitHub burst limit no longer takes the dashboard off GitHub for an
   hour.** A 429 (or a secondary-rate-limit 403) used to back off until the
   hourly reset even with 4,995 of 5,000 calls left (2026-10-14). The client
