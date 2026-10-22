@@ -10,12 +10,18 @@ import CockpitCore
 // read and every action is refused. The token `cockpit pair` saves holds
 // every scope, and an agent holding it could confirm its own previews of
 // anything, switching a host off included.
+//
+// The tunnel opens when a message needs the daemon and closes after `idle`
+// seconds with none in flight: one of these runs for every open Claude Code
+// session, and each held tunnel was one of the host's 42 ssh slots.
 
 enum MCPBridge {
     static let out = NSLock()
 
-    static func run(_ link: Transport) async {
-        let routes = RouteCache(link)
+    static let idle: TimeInterval = 90
+
+    static func run(_ link: Transport, idle: TimeInterval?) async {
+        let routes = OnDemandRoute(link, idle: idle)
         let token = ProcessInfo.processInfo.environment["FLEET_API_TOKEN"].flatMap { $0.isEmpty ? nil : $0 }
         await withTaskGroup(of: Void.self) { group in
             // wait_for_checks holds a call for minutes; a ping or a second
@@ -25,14 +31,14 @@ enum MCPBridge {
                 group.addTask { await forward(data, routes: routes, token: token) }
             }
         }
-        link.close()
+        routes.close()
     }
 
-    static func forward(_ data: Data, routes: RouteCache, token: String?) async {
+    static func forward(_ data: Data, routes: OnDemandRoute, token: String?) async {
         let id = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["id"]
         do {
-            let client = FleetClient(base: try await routes.base(), token: token)
-            if let reply = try await client.mcp(data) { write(reply) }
+            let reply = try await routes.use { base in try await FleetClient(base: base, token: token).mcp(data) }
+            if let reply { write(reply) }
         } catch {
             routes.invalidate()
             guard let id else { return }

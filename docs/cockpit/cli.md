@@ -409,7 +409,9 @@ success, `1` on failure or refusal.
 
 ## `cockpit mcp`
 
-The dashboard's MCP tools over stdio. See [Agent sessions](agents.md).
+The dashboard's MCP tools over stdio. The tunnel opens when a call needs it and
+closes after `--idle` seconds with none in flight (default `90`; `0` holds it
+for the whole session). See [Agent sessions](agents.md#the-mcp-server).
 
 ## `cockpit fixtures`
 

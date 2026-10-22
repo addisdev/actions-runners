@@ -30,7 +30,9 @@ commands:
                       anything but a read needs --yes
   mcp                 the dashboard's MCP tools over stdio (fleet_status, diagnose_repo,
                       wait_for_checks, list_queue, …). Read-only unless FLEET_API_TOKEN
-                      holds a scoped token (./fleetctl.sh api-token <name> --scopes read,act)
+                      holds a scoped token (./fleetctl.sh api-token <name> --scopes read,act).
+                      The tunnel opens when a call needs it and closes after --idle seconds
+                      with none (default 90; 0 holds it for the whole session)
   fixtures            list the bundled fixture names
 
 options:
@@ -149,29 +151,6 @@ func obtain(_ o: Options) async -> Source {
     }
 }
 
-/// The dashboard route for a wait: opened on first use, reopened once the
-/// tunnel process has died.
-final class RouteCache: @unchecked Sendable {
-    private let transport: Transport
-    private var route: Route?
-    private let lock = NSLock()
-    init(_ t: Transport) { transport = t }
-
-    func base() async throws -> URL {
-        if let r = lock.withLock({ route }), transport.isAlive { return r.baseURL }
-        let r = try await transport.open()
-        lock.withLock { route = r }
-        return r.baseURL
-    }
-
-    /// The route answered nothing: drop it, so the next use opens a new tunnel
-    /// instead of reconnecting to a forward whose far end is gone.
-    func invalidate() {
-        lock.withLock { route = nil }
-        transport.close()
-    }
-}
-
 let defaultAliases = TransportConfig.defaultAliases
 
 func transport(_ o: Options) -> Transport {
@@ -248,7 +227,8 @@ let opts = parse(Array(CommandLine.arguments.dropFirst()))
 
 switch opts.command {
 case "mcp":
-    await MCPBridge.run(transport(opts))
+    let idle = opts.flags["idle"].flatMap(TimeInterval.init) ?? MCPBridge.idle
+    await MCPBridge.run(transport(opts), idle: idle > 0 ? idle : nil)
 case "fixtures":
     for n in Fixtures.names { print(n) }
 case "status":
@@ -359,7 +339,7 @@ case "wait":
     }()
     if opts.fixture != nil { fail("wait asks the live dashboard; fixtures cover status, queue and brief", code: 64) }
     let link = transport(opts)
-    let routes = RouteCache(link)
+    let routes = OnDemandRoute(link)
     // The last word on the deadline, outside Swift concurrency altogether: if
     // anything below still has not answered `timeout` + 30 s from now, say so
     // and exit (2026-10-09: waits ran 1.5 h past --timeout).
