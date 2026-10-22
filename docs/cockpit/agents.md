@@ -23,6 +23,15 @@ claude mcp add --scope user fleet-cockpit -- ~/.local/bin/cockpit mcp
 claude mcp get fleet-cockpit        # Status: ✔ Connected
 ```
 
+The tunnel isn't held for the session's life. It opens when a call needs the
+daemon and closes after 90 seconds with no call in flight (a `wait_for_checks`
+that holds a call for minutes keeps it open until it returns). One `cockpit mcp`
+runs for every open Claude Code session, and each tunnel takes one of the host's
+SSH slots: launchd caps sshd at 42 at once, and on 2026-10-22 idle sessions'
+tunnels filled 40 of them. The first call after a quiet spell waits a second or
+two for SSH. `--idle <seconds>` changes the window; `--idle 0` holds the tunnel
+for the whole session, as before.
+
 Any MCP client that can launch a stdio server can use the same command. On the
 host itself, or through an SSH forward of port 7878, a client can talk to
 `http://localhost:7878/mcp` directly instead.

@@ -157,6 +157,112 @@ public final class TunnelTransport: Transport, @unchecked Sendable {
     deinit { close() }
 }
 
+/// A transport's route, opened when a call needs it and — with `idle` set —
+/// closed again once no call has used it for that long.
+///
+/// `cockpit mcp` runs for as long as its Claude Code session, idle nearly all
+/// of that time. Holding a tunnel the whole while cost the host one of its 42
+/// ssh slots per open session (launchd's cap on sshd instances); on 2026-10-22
+/// ultra reached 40 and every proxied MCP server failed to connect. With an
+/// idle close a session holds a slot only while it is asking the fleet.
+///
+/// Concurrent callers share one open: a second call that arrives while the
+/// tunnel is coming up waits for it rather than starting another (and
+/// `TunnelTransport.open` closes whatever it had before it starts).
+public final class OnDemandRoute: @unchecked Sendable {
+    private let transport: Transport
+    private let idle: TimeInterval?
+    private let lock = NSLock()
+    private var route: Route?
+    private var opening: Task<Route, Error>?
+    private var users = 0
+    /// Bumped whenever the route is taken or dropped, so an idle close that
+    /// was scheduled before then does nothing.
+    private var epoch = 0
+    private var closer: Task<Void, Never>?
+
+    public init(_ transport: Transport, idle: TimeInterval? = nil) {
+        self.transport = transport
+        self.idle = idle
+    }
+
+    /// The route's base URL, opening (or reopening, once the tunnel process
+    /// has died) as needed.
+    public func base() async throws -> URL {
+        let pending: Task<Route, Error> = lock.withLock {
+            if let route, transport.isAlive { return Task { route } }
+            route = nil
+            if let opening { return opening }
+            let t = Task { [transport] in try await transport.open() }
+            opening = t
+            return t
+        }
+        do {
+            let r = try await pending.value
+            lock.withLock {
+                if opening == pending { opening = nil; route = r }
+            }
+            return r.baseURL
+        } catch {
+            lock.withLock { if opening == pending { opening = nil } }
+            throw error
+        }
+    }
+
+    /// Runs `body` with the route held open; the idle clock starts when the
+    /// last call in flight returns.
+    public func use<T: Sendable>(_ body: @Sendable (URL) async throws -> T) async throws -> T {
+        acquire()
+        defer { release() }
+        return try await body(try await base())
+    }
+
+    /// The route answered nothing: drop it, so the next use opens a new tunnel
+    /// instead of reconnecting to a forward whose far end is gone.
+    public func invalidate() {
+        lock.withLock { route = nil; epoch += 1 }
+        transport.close()
+    }
+
+    /// Closes the route for good (the caller is exiting).
+    public func close() {
+        lock.withLock { closer?.cancel(); closer = nil }
+        invalidate()
+    }
+
+    /// True while a route is held and its tunnel is up.
+    public var isOpen: Bool { lock.withLock { route != nil } && transport.isAlive }
+
+    private func acquire() {
+        lock.withLock {
+            users += 1
+            epoch += 1
+            closer?.cancel()
+            closer = nil
+        }
+    }
+
+    private func release() {
+        lock.withLock {
+            users -= 1
+            guard users == 0, let idle else { return }
+            let mine = epoch
+            closer = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(idle * 1_000_000_000))
+                guard !Task.isCancelled, let self else { return }
+                // Closed under the lock, so a call that starts now opens
+                // its tunnel after this one is gone, not before.
+                self.lock.withLock {
+                    guard self.users == 0, self.epoch == mine else { return }
+                    self.route = nil
+                    self.closer = nil
+                    self.transport.close()
+                }
+            }
+        }
+    }
+}
+
 /// Asks the kernel for an unused loopback port.
 func freeLocalPort() -> Int? {
     let fd = socket(AF_INET, SOCK_STREAM, 0)
