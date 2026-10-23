@@ -19,7 +19,8 @@
 #   - never touch a runner's checkouts or build caches in _work; wiping them
 #     makes every job re-clone and recompile from cold. The one exception is
 #     the Playwright tool cache, and only under disk pressure.
-#   - never touch a simulator that is not a runner's own ci- device.
+#   - never touch a simulator or Android AVD that is not a runner's own
+#     ci- (or shots-) device.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -291,6 +292,10 @@ say "    ${n} directories"
 # could take. A device is erased only while it is shut down and its runner is
 # not building; a ci- device whose runner no longer exists is deleted. Other
 # devices (the person's, or a shared "iPhone 17") are never touched.
+# A repo that picks its own device can name it "ci-<runner> <app> <platform>
+# <version>" (Jerv's ci/sim.py: "ci-ultra-jerv-2 jerv iOS 27.0"). Matching only
+# the kit's shape missed those: on ultra (2026-10-22) nine of them held 19 GB
+# and none had ever been erased.
 # ---------------------------------------------------------------------------
 sim_limit="$SIM_MAX_GB"; [ "$PRESSURE" = 1 ] && sim_limit="$SIM_PRESSURE_GB"
 say "==> CI simulators over ${sim_limit} GB"
@@ -323,11 +328,73 @@ except Exception:
     sys.exit(0)
 for devs in devices.values():
     for d in devs:
-        m = re.match(r"ci-(\S+) (iOS|tvOS|watchOS|visionOS|xrOS) [0-9.]+$", d.get("name", ""))
+        m = re.match(r"ci-(\S+) (?:\S+ )?(iOS|tvOS|watchOS|visionOS|xrOS) [0-9.]+$", d.get("name", ""))
         if m:
             print("|".join([d["udid"], d.get("state", ""), str(d.get("dataPathSize", 0)), m.group(1)]))
 ')
 say "    ${n} devices"
+
+# ---------------------------------------------------------------------------
+# Each idle runner's own Android emulator. The kit's android-ci names one AVD
+# per runner "ci-<runner>" (Jerv's screenshots: "shots-<runner>"), and
+# android-emulator-runner creates it again at the start of every job
+# (force-avd-creation defaults to true), so between jobs an AVD is 1-1.5 GB
+# that the next job overwrites anyway. Nothing removed them: on ultra
+# (2026-10-22) 17 of them held 20 GB. An AVD is left alone while its runner is
+# building, while an emulator has it open, or within 30 minutes of its last
+# write (a job that is creating it). Other AVDs (night QA's fleet-explore-*, a
+# person's) are never touched.
+# ---------------------------------------------------------------------------
+AVD_HOME="${ANDROID_AVD_HOME:-$HOME/.android/avd}"
+AVD_PREFIXES="${FLEET_CLEANUP_AVD_PREFIXES:-ci shots}"
+avd_open() {
+  local dir="$1" pid
+  pid="$(cat "$dir/hardware-qemu.ini.lock" 2>/dev/null | tr -dc '0-9')"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
+  pgrep -f -- "-avd $2( |\$)" >/dev/null 2>&1
+}
+say "==> idle runners' Android emulators"
+n=0
+for dir in "$AVD_HOME"/*.avd; do
+  [ -d "$dir" ] || continue
+  avd="$(basename "$dir" .avd)"
+  runner=""
+  for p in $AVD_PREFIXES; do
+    case "$avd" in "$p"-?*) runner="${avd#"$p"-}"; break ;; esac
+  done
+  [ -n "$runner" ] || continue
+  building "$runner" && continue
+  [ -n "$(find "$dir" -maxdepth 1 -mmin -30 2>/dev/null | head -1)" ] && continue
+  avd_open "$dir" "$avd" && continue
+  why=""
+  case "$known" in *" $runner "*) ;; *) why=": no such runner here" ;; esac
+  say "    $(du -sh "$dir" 2>/dev/null | cut -f1)  $avd$why"
+  run rm -rf "$dir" "$AVD_HOME/$avd.ini"
+  n=$((n + 1))
+done
+say "    ${n} AVDs"
+
+# ---------------------------------------------------------------------------
+# A runner's leftover self-update. The runner unpacks a new version into
+# _work/_update, copies it into bin.<version>/externals.<version> and is meant
+# to remove the staging copy; nine runners on ultra kept theirs (0.45 GB each,
+# 2026-10-22). Only a copy older than six hours on an idle runner that no
+# process is running from goes: an update in progress takes minutes.
+# ---------------------------------------------------------------------------
+say "==> leftover runner self-updates"
+n=0
+for d in "$ROOT"/*/; do
+  d="${d%/}"
+  up="$d/_work/_update"
+  [ -f "$d/.runner" ] && [ -d "$up" ] || continue
+  [ -n "$(find "$up" -maxdepth 0 -mmin +360 2>/dev/null)" ] || continue
+  building "$(runner_name "$d")" && continue
+  pgrep -f "$up/" >/dev/null 2>&1 && continue
+  say "    $(du -sh "$up" 2>/dev/null | cut -f1)  $(basename "$d")/_work/_update"
+  run rm -rf "$up"
+  n=$((n + 1))
+done
+say "    ${n} directories"
 
 # ---------------------------------------------------------------------------
 # Under pressure only: each idle runner's Playwright browsers. They are 0.5-1.1 GB

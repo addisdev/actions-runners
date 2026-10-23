@@ -75,7 +75,7 @@ EOF
 }
 
 clean() {
-  HOME="$T/home" FLEET_ROOT="$T" PATH="$T/bin:$PATH" bash "$T/cleanup.sh" "$@" 2>&1
+  HOME="$T/home" FLEET_ROOT="$T" PATH="$T/bin:$PATH" ANDROID_AVD_HOME="" bash "$T/cleanup.sh" "$@" 2>&1
 }
 calls() { grep -c "$1" "$T/calls" 2>/dev/null; }
 gone() { [ -e "$1" ] && echo kept || echo removed; }
@@ -221,6 +221,65 @@ echo 160 > "$T/usable"
 clean --apply > "$T/out"
 ok "no missing-file noise" "$(grep -c -E 'No such file|command not found' "$T/out")" "0"
 ok "went by df, so under pressure" "$(grep -c 'UNDER PRESSURE' "$T/out")" "1"
+
+echo "== a repo's own ci-<runner> <app> devices count as CI devices =="
+setup 12
+echo 120 > "$T/free"
+echo 1 > "$T/.cleanup-last-full"
+echo "RL-web" > "$T/busy"
+cat > "$T/sims.json" <<'EOF'
+{"devices": {
+  "com.apple.CoreSimulator.SimRuntime.iOS-27-0": [
+    {"name": "ci-RL-ios jerv iOS 27.0", "udid": "U-JERV", "state": "Shutdown", "dataPathSize": 5368709120},
+    {"name": "ci-RL-web jerv iOS 27.0", "udid": "U-JWEB", "state": "Shutdown", "dataPathSize": 5368709120},
+    {"name": "iPhone 17 Pro", "udid": "U-PERSON", "state": "Shutdown", "dataPathSize": 12884901888}
+  ],
+  "com.apple.CoreSimulator.SimRuntime.watchOS-27-0": [
+    {"name": "ci-RL-gone jerv watchOS 27.0", "udid": "U-JGONE", "state": "Shutdown", "dataPathSize": 1048576}
+  ]}}
+EOF
+clean --apply > "$T/out"
+ok "erased an idle runner's app device over 3 GB" "$(calls 'simctl erase U-JERV')" "1"
+ok "left a busy runner's app device" "$(calls 'U-JWEB')" "0"
+ok "deleted an app device whose runner is gone" "$(calls 'simctl delete U-JGONE')" "1"
+ok "never touched a device outside CI" "$(calls 'U-PERSON')" "0"
+
+echo "== idle runners' AVDs and leftover self-updates go, nothing else =="
+setup 13
+echo 120 > "$T/free"
+echo 1 > "$T/.cleanup-last-full"
+echo "RL-web" > "$T/busy"
+A="$T/home/.android/avd"
+mkdir -p "$A"
+avd() {
+  mkdir -p "$A/$1.avd"; : > "$A/$1.avd/userdata-qemu.img.qcow2"; echo "path=$A/$1.avd" > "$A/$1.ini"
+  [ "${2:-old}" = old ] && touch -t 202601010000 "$A/$1.avd/userdata-qemu.img.qcow2" "$A/$1.avd"
+}
+avd ci-RL-ios; avd shots-RL-android; avd ci-RL-web; avd ci-RL-gone; avd fleet-explore-1
+avd ci-RL-android new
+avd shots-RL-ios
+sleep 300 >/dev/null 2>&1 &
+EMU=$!
+echo "$EMU" > "$A/shots-RL-ios.avd/hardware-qemu.ini.lock"
+touch -t 202601010000 "$A/shots-RL-ios.avd/hardware-qemu.ini.lock" "$A/shots-RL-ios.avd"
+for r in ios web android; do mkdir -p "$T/$r/_work/_update/bin"; done
+touch -t 202601010000 "$T/ios/_work/_update" "$T/web/_work/_update"
+clean > "$T/out"
+ok "a dry run keeps every AVD" "$(gone "$A/ci-RL-ios.avd")" "kept"
+ok "a dry run keeps the leftover update" "$(gone "$T/ios/_work/_update")" "kept"
+clean --apply > "$T/out"
+ok "removed an idle runner's AVD" "$(gone "$A/ci-RL-ios.avd")" "removed"
+ok "and its .ini" "$(gone "$A/ci-RL-ios.ini")" "removed"
+ok "removed an idle runner's screenshot AVD" "$(gone "$A/shots-RL-android.avd")" "removed"
+ok "removed the AVD of a runner that no longer exists" "$(gone "$A/ci-RL-gone.avd")" "removed"
+ok "kept a busy runner's AVD" "$(gone "$A/ci-RL-web.avd")" "kept"
+ok "kept an AVD written in the last 30 minutes" "$(gone "$A/ci-RL-android.avd")" "kept"
+ok "kept an AVD an emulator has open" "$(gone "$A/shots-RL-ios.avd")" "kept"
+ok "never touched an AVD outside CI" "$(gone "$A/fleet-explore-1.avd")" "kept"
+ok "removed an idle runner's old self-update" "$(gone "$T/ios/_work/_update")" "removed"
+ok "kept a busy runner's self-update" "$(gone "$T/web/_work/_update")" "kept"
+ok "kept a self-update under six hours old" "$(gone "$T/android/_work/_update")" "kept"
+{ kill "$EMU"; wait "$EMU"; } 2>/dev/null
 
 echo
 echo "passed $PASS, failed $FAIL"
