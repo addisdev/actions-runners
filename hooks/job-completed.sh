@@ -27,6 +27,12 @@ ROOT="${FLEET_ROOT:-$(cd "$HERE/.." && pwd)}"
 # this completion hook.
 [ -f "$HERE/simulator-control.sh" ] && FLEET_ROOT="$ROOT" bash "$HERE/simulator-control.sh" complete
 
+# Stop an Android emulator this job left running (a cancelled or timed-out
+# emulator step), with the console's `emu kill` before any signal, so the kit's
+# per-runner quick-boot snapshot is never cut off mid-save and the AVD's lock is
+# free for this runner's next job. FLEET_EMULATOR_CLEANUP=0 turns it off.
+[ -f "$HERE/emulator-control.sh" ] && FLEET_ROOT="$ROOT" bash "$HERE/emulator-control.sh" complete
+
 # Same sweep as the started hook. Running it here too means a host that goes
 # quiet after a cancelled Postgres job is not left near the 32-segment cap until
 # the next job happens to start.

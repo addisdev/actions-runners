@@ -10,6 +10,28 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Added
 
+- **`cleanup.sh` keeps runners' quick-boot snapshot AVDs.** The launch kit's
+  android-ci `emulator_snapshot` boots each runner's emulator from a snapshot
+  saved in its own AVD, `ci-<runner>-a<api>-<target>-<profile>` (~6 GB). The
+  AVD step deleted every idle runner's `ci-` AVD after 30 minutes, so the next
+  job would have booted three times (initialise, save, test) instead of once.
+  Now a snapshot AVD is kept while its runner exists and booted it in the last
+  `FLEET_CLEANUP_AVD_KEEP_DAYS` (14); the snapshot AVDs in all are held under
+  `FLEET_CLEANUP_AVD_KEEP_GB` (30) by dropping the least recently used idle
+  snapshots (even on a quiet `--auto` tick), and below the admission floor every
+  idle snapshot goes first, before any other step. Plain `ci-<runner>` AVDs,
+  recreated every job, still go after 30 idle minutes, and an AVD of a runner
+  that no longer exists still goes.
+- **Orphaned CI emulators are stopped.** android-emulator-runner leaves its
+  emulator detached, and a cancelled or timed-out job left it running (ultra,
+  2026-10-23: two greenfolio emulators for 9 h); shims/ps answers the runner's
+  own orphan scan, so nothing stopped them. The job-completed hook now stops an
+  emulator left on its runner's AVD (`hooks/emulator-control.sh`), and every
+  cleanup tick stops one whose parent is launchd and whose runner runs no job.
+  Both use `adb emu kill`, then SIGTERM, SIGKILL last (dropping that AVD's
+  snapshot if the boot could have been saving), so a snapshot is never cut off
+  mid-save.
+
 - **Admission lanes (`FLEET_ADMIT_LANES`).** One host-wide FIFO made a
   5-second job wait behind 12-minute Xcode builds: on ultra load rose about 8
   per concurrent job on 30 cores, and 74 % of jobs finish in under 90 s. Each
