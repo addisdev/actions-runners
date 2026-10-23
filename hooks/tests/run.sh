@@ -742,6 +742,288 @@ wait_for "1" "events admitted" 10
 ok "it is admitted once the head is gone and a slot frees" "$(events admitted)" "1"
 end_jobs
 
+# ---------------------------------------------------------------------------
+# Lanes (FLEET_ADMIT_LANES). Runners named h-* run heavy jobs and l-* light
+# ones, by pattern, unless a case says otherwise.
+# ---------------------------------------------------------------------------
+lanes_setup() {
+  # $1 = FLEET_ADMIT_LANES, $2 = total (FLEET_ADMIT_MAX_CONCURRENT),
+  # $3 = heavy limit, $4 = light limit
+  setup enforce "$2" 30 1
+  {
+    echo "FLEET_ADMIT_LANES=$1"
+    echo "FLEET_ADMIT_HEAVY_MAX_CONCURRENT=$3"
+    echo "FLEET_ADMIT_LIGHT_MAX_CONCURRENT=$4"
+    echo 'FLEET_ADMIT_HEAVY_PATTERNS="acme/h-*:*"'
+    echo 'FLEET_ADMIT_LIGHT_PATTERNS="l-*:build"'
+  } >> "$ROOT/fleet.env"
+}
+# The newest log line for a runner and event.
+row() { grep "\"event\":\"$2\"" "$LOG" | grep "\"runner\":\"$1\"" | tail -1; }
+# Matching lines in a file that may not exist (grep -c then prints nothing).
+count_in() {
+  local n
+  n="$(grep -c "$1" "$2" 2>/dev/null)"
+  printf '%s' "${n:-0}"
+}
+# A field of one log line: a string's text, or a bare number/true/false/null.
+field() {
+  case "$1" in
+    *"\"$2\":\""*) printf '%s' "$1" | sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p" ;;
+    *) printf '%s' "$1" | sed -n "s/.*\"$2\":\([^,}]*\).*/\1/p" ;;
+  esac
+}
+
+# Classifies the job of runner $1 with the case's fleet.env plus extra
+# assignments in $2, and prints lane/source.
+classify() {
+  FLEET_ROOT="$ROOT" RUNNER_NAME="$1" GITHUB_REPOSITORY="acme/$1" GITHUB_JOB="${3:-build}" \
+    PATH="$BIN:$PATH" FAKE_CURL_LOG="$ROOT/curl-calls" bash -c '
+    ROOT="$FLEET_ROOT"; '"${2:-:}"'
+    . "'"$HOOKS"'/common.sh"
+    admit_classify; echo "$ADMIT_LANE/$ADMIT_LANE_SOURCE"; trap - EXIT'
+}
+
+echo "== lanes off: no lane logic, the log line is unchanged =="
+setup enforce 2 4 1
+cat > "$BIN/curl" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$ROOT/curl-calls"
+exit 7
+EOF
+chmod +x "$BIN/curl"
+echo 'FLEET_ADMIT_HEAVY_PATTERNS="*:*"' >> "$ROOT/fleet.env"
+start alpha
+ok "admitted" "$(events admitted)" "1"
+ok "no lane fields" "$(grep -c '"lane"' "$LOG")" "0"
+ok "nobody asked the daemon for a class" "$(count_in job-class "$ROOT/curl-calls")" "0"
+ok "nothing is classified" "$(classify alpha)" "/"
+
+echo "== classification: Simulator runner, patterns, history, fallback =="
+setup enforce 4 4 1
+{
+  echo 'FLEET_ADMIT_LANES=enforce'
+  echo 'FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT=1'
+  echo 'FLEET_SIMULATOR_RUNNERS=*-ios'
+  echo 'FLEET_ADMIT_HEAVY_PATTERNS="acme/h-*:* *:e2e"'
+  echo 'FLEET_ADMIT_LIGHT_PATTERNS="l-one:build,acme/h-x:lint"'
+  echo 'FLEET_ADMIT_CLASS_URL=http://fleet.test/api/job-class'
+} >> "$ROOT/fleet.env"
+# The daemon: words is light, test is heavy, new has too few runs to say.
+cat > "$BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_CURL_LOG"
+case "$*" in
+  *fleet.test/api/job-class*job=words*) printf '{"class":"light","p50Ms":12000,"n":40}' ;;
+  *fleet.test/api/job-class*job=test*) printf '{"class":"heavy","p50Ms":533000,"n":59}' ;;
+  *fleet.test/api/job-class*job=new*) printf '{"class":"unknown","p50Ms":null,"n":2}' ;;
+  *) exit 7 ;;
+esac
+EOF
+chmod +x "$BIN/curl"
+ok "a Simulator runner is the simulator lane" "$(classify app-ios)" "simulator/runner"
+ok "a heavy pattern with the owner" "$(classify h-api)" "heavy/pattern"
+ok "a heavy pattern on the job alone" "$(classify web '' e2e)" "heavy/pattern"
+ok "a light pattern without the owner" "$(classify l-one)" "light/pattern"
+ok "heavy patterns win over light ones" "$(classify h-x '' lint)" "heavy/pattern"
+ok "the daemon's history says light" "$(classify docs-site '' words)" "light/history"
+ok "the daemon's history says heavy" "$(classify mobile '' test)" "heavy/history"
+ok "too few runs to say is heavy" "$(classify fresh '' new)" "heavy/unknown"
+ok "an unreachable daemon is heavy" "$(classify other '' gone)" "heavy/fallback"
+: > "$ROOT/curl-calls"
+ok "the answer is cached" "$(classify docs-site '' words)" "light/history"
+ok "...so the daemon was not asked again" "$(grep -c 'job=words' "$ROOT/curl-calls")" "0"
+
+echo "== an empty FLEET_ADMIT_STATUS_URL means no daemon to ask for a class =="
+setup enforce 4 4 1
+echo 'FLEET_ADMIT_LANES=enforce' >> "$ROOT/fleet.env"
+cat > "$BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_CURL_LOG"
+printf '{"class":"light","p50Ms":1000,"n":40}'
+EOF
+chmod +x "$BIN/curl"
+ok "heavy, as a fallback" "$(classify docs-site '' words)" "heavy/fallback"
+ok "curl was not called" "$(count_in job-class "$ROOT/curl-calls")" "0"
+
+echo "== lanes enforce: the heavy limit holds a heavy job and names the lane =="
+lanes_setup enforce 10 2 5
+start_bg h-1
+start_bg h-2
+wait_for "2" "events admitted" 10
+start_bg h-3
+wait_for "1" "events held" 10
+ok "third heavy job held" "$(events held)" "1"
+ok "the reason names the heavy lane" \
+  "$(field "$(row h-3 held)" reason)" "2 heavy job(s) already running, at the heavy limit of 2"
+ok "the held row carries its lane" "$(field "$(row h-3 held)" lane)" "heavy"
+ok "...and the lane counts" "$(field "$(row h-3 held)" heavy_busy)" "2"
+ok "the decided limit is the total" "$(field "$(row h-3 held)" limit)" "10"
+
+echo "== lanes enforce: a light job passes an older heavy waiter =="
+BEFORE=$(date +%s)
+start l-1
+AFTER=$(date +%s)
+ok "light job admitted" "$(field "$(row l-1 admitted)" lane)" "light"
+ok "...at once" "$([ $((AFTER - BEFORE)) -le 3 ] && echo prompt || echo slow)" "prompt"
+ok "the heavy waiter still waits" "$(events admitted)" "3"
+complete h-1
+wait_for "4" "events admitted" 15
+ok "the heavy waiter took the freed heavy slot" "$(field "$(row h-3 admitted)" lane)" "heavy"
+ok "a release carries the lane it freed" "$(field "$(row h-1 released)" lane)" "heavy"
+end_jobs
+
+echo "== lanes enforce: the light limit, and FIFO within a lane =="
+lanes_setup enforce 10 2 1
+start_bg l-1
+wait_for "1" "events admitted" 10
+start_bg l-2
+sleep 1
+start_bg l-3
+wait_for "2" "events held" 10
+ok "light limit reason" "$(field "$(row l-2 held)" reason)" "1 light job(s) already running, at the light limit of 1"
+start h-1
+ok "a heavy job is not held by the light line" "$(field "$(row h-1 admitted)" lane)" "heavy"
+complete l-1
+wait_for "3" "events admitted" 15
+ok "the oldest light waiter went first" \
+  "$(grep '"event":"admitted"' "$LOG" | grep '"lane":"light"' | tail -1 | sed -n 's/.*"runner":"\([^"]*\)".*/\1/p')" "l-2"
+end_jobs
+
+echo "== lanes enforce: the total cap still applies =="
+lanes_setup enforce 2 5 5
+start_bg h-1
+start_bg l-1
+wait_for "2" "events admitted" 10
+start_bg l-2
+wait_for "1" "events held" 10
+ok "held at the total, in the old words" "$(field "$(row l-2 held)" reason)" "2 job(s) already running, at the limit of 2"
+end_jobs
+
+echo "== lanes enforce: a Simulator job counts as heavy =="
+lanes_setup enforce 10 1 5
+{
+  echo 'FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT=2'
+  echo 'FLEET_SIMULATOR_RUNNERS=*-ios'
+} >> "$ROOT/fleet.env"
+start_bg a-ios
+wait_for "1" "events admitted" 10
+ok "the Simulator job's lane" "$(field "$(row a-ios admitted)" lane)" "simulator"
+start_bg h-1
+wait_for "1" "events held" 10
+ok "a heavy job waits for the Simulator job's heavy slot" \
+  "$(field "$(row h-1 held)" reason)" "1 heavy job(s) already running, at the heavy limit of 1"
+end_jobs
+
+echo "== lanes enforce: unknown jobs fall back to heavy =="
+lanes_setup enforce 10 1 5
+echo 'FLEET_ADMIT_HEAVY_PATTERNS=' >> "$ROOT/fleet.env"
+start_bg x-1
+wait_for "1" "events admitted" 10
+start_bg x-2
+wait_for "1" "events held" 10
+ok "an unclassified job is heavy" "$(field "$(row x-2 held)" lane)" "heavy"
+ok "...and says why" "$(field "$(row x-2 held)" lane_source)" "fallback"
+end_jobs
+
+echo "== legacy alias: FLEET_ADMIT_SHORT_MAX_CONCURRENT is the light limit =="
+setup enforce 10 30 1
+{
+  echo 'FLEET_ADMIT_LANES=enforce'
+  echo 'FLEET_ADMIT_SHORT_MAX_CONCURRENT=1'
+  echo 'FLEET_ADMIT_LIGHT_PATTERNS="*:*"'
+} >> "$ROOT/fleet.env"
+start_bg l-1
+wait_for "1" "events admitted" 10
+start_bg l-2
+wait_for "1" "events held" 10
+ok "short max reads as the light limit" "$(field "$(row l-2 held)" light_limit)" "1"
+ok "...and holds" "$(field "$(row l-2 held)" reason)" "1 light job(s) already running, at the light limit of 1"
+echo 'FLEET_ADMIT_LIGHT_MAX_CONCURRENT=3' >> "$ROOT/fleet.env"
+start l-3
+ok "the new name wins over the alias" "$(field "$(row l-3 admitted)" light_limit)" "3"
+end_jobs
+
+echo "== lanes observe: the single lane decides, the lanes are recorded =="
+# Single lane: 1 at a time. Lanes: 1 heavy, 3 light, 5 in all.
+setup enforce 1 30 1
+{
+  echo 'FLEET_ADMIT_LANES=observe'
+  echo 'FLEET_ADMIT_TOTAL_MAX_CONCURRENT=5'
+  echo 'FLEET_ADMIT_HEAVY_MAX_CONCURRENT=1'
+  echo 'FLEET_ADMIT_LIGHT_MAX_CONCURRENT=3'
+  echo 'FLEET_ADMIT_HEAVY_PATTERNS="h-*:*"'
+  echo 'FLEET_ADMIT_LIGHT_PATTERNS="l-*:*"'
+} >> "$ROOT/fleet.env"
+start_bg h-1
+wait_for "1" "events admitted" 10
+ok "the lanes would have admitted it too" "$(field "$(row h-1 admitted)" lane_would_hold)" "false"
+start_bg l-1
+wait_for "1" "events held" 10
+ok "the single lane held the light job" "$(field "$(row l-1 held)" reason)" "1 job(s) already running, at the limit of 1"
+ok "...where the lanes would not have" "$(field "$(row l-1 held)" lane_would_hold)" "false"
+ok "...from the start of the wait" "$(field "$(row l-1 held)" lane_wait_s)" "0"
+ok "the row says which policy decided" "$(field "$(row l-1 held)" lanes)" "observe"
+ok "the single lane's limit is the one reported" "$(field "$(row l-1 held)" limit)" "1"
+start_bg h-2
+wait_for "2" "events held" 10
+ok "the lanes would have held a second heavy job" "$(field "$(row h-2 held)" lane_would_hold)" "true"
+ok "...for the heavy limit" "$(field "$(row h-2 held)" lane_reason)" "1 heavy job(s) already running, at the heavy limit of 1"
+complete h-1
+wait_for "2" "events admitted" 15
+ok "the single lane admitted its oldest waiter" \
+  "$(grep '"event":"admitted"' "$LOG" | tail -1 | sed -n 's/.*"runner":"\([^"]*\)".*/\1/p')" "l-1"
+ok "it waited under the single lane" \
+  "$([ "$(field "$(row l-1 admitted)" waited_s)" -ge 1 ] && echo waited || echo instant)" "waited"
+ok "the lanes would have let it in at once" "$(field "$(row l-1 admitted)" lane_wait_s)" "0"
+end_jobs
+
+echo "== lanes observe with admission observe: would-hold carries the lane view =="
+setup observe 5
+{
+  echo 'FLEET_ADMIT_LANES=enforce'
+  echo 'FLEET_ADMIT_HEAVY_MAX_CONCURRENT=1'
+  echo 'FLEET_ADMIT_HEAVY_PATTERNS="*:*"'
+} >> "$ROOT/fleet.env"
+start alpha; start beta
+ok "the lanes' heavy limit is what would have held" \
+  "$(field "$(row beta would-hold)" reason)" "1 heavy job(s) already running, at the heavy limit of 1"
+
+echo "== the lockless check, per lane =="
+setup enforce 1 30 1
+echo 'FLEET_ADMIT_LANES=enforce' >> "$ROOT/fleet.env"
+W="$ROOT/.admission/waiters"
+mkdir -p "$W"
+behind_lane() {
+  # $1 = this waiter's file name, $2 = its lane
+  FLEET_ROOT="$ROOT" bash -c '
+    ROOT="$FLEET_ROOT"; set -a; . "$ROOT/fleet.env"; set +a
+    . "'"$HOOKS"'/common.sh"
+    ADMIT_LANE='"$2"'
+    ADMIT_WAITER="$ADMIT_WAITERS/'"$1"'"
+    admit_waiting_behind_older_in_lane && echo behind || echo decide
+    trap - EXIT'
+}
+sleep 300 >/dev/null 2>&1 &
+HEAD_PID=$!
+printf 'pid=%s\nrunner=h-1\nlane=heavy\n' "$HEAD_PID" > "$W/00000000000000000001-0000000001-heavy-h-1"
+printf 'pid=%s\nrunner=l-1\nlane=light\n' "$$" > "$W/00000000000000000002-0000000002-light-l-1"
+printf 'pid=%s\nrunner=h-2\nlane=heavy\n' "$$" > "$W/00000000000000000003-0000000003-heavy-h-2"
+printf 'pid=%s\nrunner=l-2\nlane=light\n' "$$" > "$W/00000000000000000004-0000000004-light-l-2"
+ok "a light waiter is not behind an older heavy one" \
+  "$(behind_lane 00000000000000000002-0000000002-light-l-1 light)" "decide"
+ok "a heavy waiter is behind the older heavy one" \
+  "$(behind_lane 00000000000000000003-0000000003-heavy-h-2 heavy)" "behind"
+ok "a light waiter is behind the older light one" \
+  "$(behind_lane 00000000000000000004-0000000004-light-l-2 light)" "behind"
+printf 'pid=%s\nrunner=old\n' "$HEAD_PID" > "$W/00000000000000000000-0000000000-old-runner"
+ok "a waiter from before lanes counts as heavy" \
+  "$(behind_lane 00000000000000000002-0000000002-light-l-1 light)" "decide"
+ok "...and is ahead of the heavy ones" \
+  "$(behind_lane 00000000000000000001-0000000001-heavy-h-1 heavy)" "behind"
+kill "$HEAD_PID" 2>/dev/null
+wait "$HEAD_PID" 2>/dev/null
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

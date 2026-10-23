@@ -21,6 +21,8 @@ commands:
                       --recover (with --pr): recover this PR's orphaned runs (force-cancel,
                       then re-run) instead of stopping; recorded in the dashboard's action log
   top                 the host's top CPU users, naming Spotlight when it is the culprit
+  load                host load1 p50/p90 by number of busy runners (--days N, default 7),
+                      to re-tune the admission lanes' heavy limit
   sentinel            check the host out of band (SSH, GitHub, the other machine) —
                       what the app does when the dashboard does not answer
   brief               a markdown incident brief of the current state
@@ -426,6 +428,15 @@ case "top":
         for l in top.lines.prefix(10) { print(String(format: "  %5.1f%%  %@", l.cpu, (l.command as NSString).lastPathComponent)) }
     }
     exit(top.spotlightCPU >= 50 ? 1 : 0)
+case "load":
+    if opts.fixture != nil { fail("load asks the live dashboard", code: 64) }
+    let days = opts.flags["days"].flatMap(Int.init) ?? 7
+    let (client, link) = await connect(opts)
+    let raw: Data
+    do { raw = try await client.get("/api/load-by-busy", query: ["days": String(days)]) } catch { link.close(); fail(error) }
+    link.close()
+    if opts.json { printRaw(raw); exit(0) }
+    do { print(try LoadTable.decode(raw).text()) } catch { fail("the dashboard's answer did not parse: \(error)", code: 3) }
 case "brief":
     let src = await obtain(opts)
     print(IncidentBrief.markdown(verdict: src.verdict, glance: src.glance, route: src.route, connection: "cli"))

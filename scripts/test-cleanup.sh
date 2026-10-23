@@ -281,6 +281,44 @@ ok "kept a busy runner's self-update" "$(gone "$T/web/_work/_update")" "kept"
 ok "kept a self-update under six hours old" "$(gone "$T/android/_work/_update")" "kept"
 { kill "$EMU"; wait "$EMU"; } 2>/dev/null
 
+echo "== warm build caches: a week unused goes, all of an idle runner's under pressure =="
+setup 30
+echo 120 > "$T/free"
+echo "RL-web" > "$T/busy"
+for r in ios web android; do
+  mkdir -p "$T/$r/_work/$r/DerivedData-App/Build" "$T/$r/_work/$r/spm-App" \
+    "$T/$r/_work/$r/.build-cache-x" "$T/$r/_work/$r/$r/.git"
+done
+# ios: everything stale. android: DerivedData used yesterday. web: building.
+for c in "$T"/*/_work/*/DerivedData-App "$T"/*/_work/*/spm-App "$T"/*/_work/*/.build-cache-x; do
+  touch -t 202601010000 "$c/state"
+  touch -t 202601010000 "$c"
+done
+touch -t 202601010000 "$T"/*/_work/*/DerivedData-App/Build
+touch "$T/android/_work/android/DerivedData-App/Build"
+# A checkout named like a cache, and a cache under the runner's own _temp.
+mkdir -p "$T/ios/_work/spm-tools/spm-tools/.git" "$T/ios/_work/_temp/DerivedData"
+touch -t 202601010000 "$T/ios/_work/spm-tools/spm-tools" "$T/ios/_work/_temp/DerivedData"
+rm -f "$T/web/_work/.metadata_never_index"
+clean > "$T/out"
+ok "a dry run keeps the caches" "$(gone "$T/ios/_work/ios/DerivedData-App")" "kept"
+ok "a dry run writes no Spotlight marker" "$(gone "$T/web/_work/.metadata_never_index")" "removed"
+clean --apply > "$T/out"
+ok "removed a week-old DerivedData" "$(gone "$T/ios/_work/ios/DerivedData-App")" "removed"
+ok "removed a week-old SwiftPM cache" "$(gone "$T/ios/_work/ios/spm-App")" "removed"
+ok "removed a week-old build cache" "$(gone "$T/ios/_work/ios/.build-cache-x")" "removed"
+ok "kept a DerivedData built in this week" "$(gone "$T/android/_work/android/DerivedData-App")" "kept"
+ok "but removed that runner's stale SwiftPM cache" "$(gone "$T/android/_work/android/spm-App")" "removed"
+ok "kept a building runner's caches" "$(gone "$T/web/_work/web/DerivedData-App")" "kept"
+ok "never touched a checkout" "$(gone "$T/ios/_work/ios/ios")" "kept"
+ok "never touched a git checkout named like a cache" "$(gone "$T/ios/_work/spm-tools/spm-tools")" "kept"
+ok "never touched the runner's own _temp" "$(gone "$T/ios/_work/_temp/DerivedData")" "kept"
+ok "wrote the missing Spotlight marker" "$(gone "$T/web/_work/.metadata_never_index")" "kept"
+echo 45 > "$T/free"
+clean --apply > "$T/out"
+ok "under pressure, an idle runner's recent cache goes too" "$(gone "$T/android/_work/android/DerivedData-App")" "removed"
+ok "...but never a building runner's" "$(gone "$T/web/_work/web/DerivedData-App")" "kept"
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

@@ -121,6 +121,72 @@ ADMIT_MUTEX_TRIES="$(admit_int "${FLEET_ADMIT_MUTEX_TRIES:-}" 50)"
 # live after a reboot recycled the number.
 ADMIT_SLOT_TTL="$(admit_int "${FLEET_ADMIT_SLOT_TTL_S:-}" 21600)"
 
+# LANES. One host-wide limit treats a 5-second grep like a 12-minute Xcode
+# build: on ultra (30 cores) load rises about 8 per concurrent job, 74 % of jobs
+# finish in under 90 s, and with one FIFO the short ones queued behind the long
+# ones. Lanes classify each job as `light`, `heavy` or `simulator` (a heavy job
+# on a runner FLEET_SIMULATOR_RUNNERS selects) and limit each lane on its own,
+# under FLEET_ADMIT_MAX_CONCURRENT as the total cap, with the waiting line kept
+# per lane: the oldest light job is never behind an older heavy one.
+#
+# off      — no lane logic at all (the default): today's single lane.
+# observe  — the single lane still decides; every decision also records what
+#            the lanes would have decided, so the limits can be checked first.
+# enforce  — the lanes decide.
+case "${FLEET_ADMIT_LANES:-off}" in
+  observe) ADMIT_LANES=observe ;;
+  enforce) ADMIT_LANES=enforce ;;
+  *) ADMIT_LANES=off ;;
+esac
+# The total cap the lanes apply, FLEET_ADMIT_MAX_CONCURRENT unless set. Its own
+# setting so that in observe the lanes can be judged at the total they will
+# enforce, while the single lane keeps deciding at its own limit; switching to
+# enforce is then FLEET_ADMIT_LANES alone.
+ADMIT_TOTAL_MAX="$(admit_int "${FLEET_ADMIT_TOTAL_MAX_CONCURRENT:-}" "$ADMIT_MAX")"
+[ "$ADMIT_TOTAL_MAX" -lt 1 ] && ADMIT_TOTAL_MAX=1
+# A simulator job counts against the heavy limit too.
+ADMIT_HEAVY_MAX="$(admit_int "${FLEET_ADMIT_HEAVY_MAX_CONCURRENT:-}" 4)"
+[ "$ADMIT_HEAVY_MAX" -lt 1 ] && ADMIT_HEAVY_MAX=1
+# FLEET_ADMIT_SHORT_MAX_CONCURRENT is the name this setting had in fleet.env
+# before anything read it; still honoured.
+ADMIT_LIGHT_MAX="$(admit_int "${FLEET_ADMIT_LIGHT_MAX_CONCURRENT:-${FLEET_ADMIT_SHORT_MAX_CONCURRENT:-}}" 12)"
+[ "$ADMIT_LIGHT_MAX" -lt 1 ] && ADMIT_LIGHT_MAX=1
+# A job whose recent median run is under this many seconds is light.
+ADMIT_SHORT_JOB_S="$(admit_int "${FLEET_ADMIT_SHORT_JOB_S:-}" 90)"
+# How long the dashboard's answer for one repo:job is reused. A burst of a
+# dozen jobs from one push then costs the daemon one request per job name.
+ADMIT_CLASS_TTL="$(admit_int "${FLEET_ADMIT_CLASS_CACHE_S:-}" 300)"
+ADMIT_CLASSES="$ADMIT_STATE/job-class"
+# Where the job's class is asked, next to /api/run-status by default: an empty
+# FLEET_ADMIT_STATUS_URL (a host whose daemon is elsewhere) skips this too.
+if [ -n "${FLEET_ADMIT_CLASS_URL+x}" ]; then
+  ADMIT_CLASS_URL="$FLEET_ADMIT_CLASS_URL"
+elif [ -n "${FLEET_ADMIT_STATUS_URL+x}" ]; then
+  case "$FLEET_ADMIT_STATUS_URL" in
+    '') ADMIT_CLASS_URL="" ;;
+    */api/run-status) ADMIT_CLASS_URL="${FLEET_ADMIT_STATUS_URL%/api/run-status}/api/job-class" ;;
+    *) ADMIT_CLASS_URL="http://127.0.0.1:${FLEET_PORT:-7878}/api/job-class" ;;
+  esac
+else
+  ADMIT_CLASS_URL="http://127.0.0.1:${FLEET_PORT:-7878}/api/job-class"
+fi
+
+# The limit a log line reports: the total cap that is actually deciding.
+if [ "$ADMIT_LANES" = enforce ]; then ADMIT_LOG_LIMIT="$ADMIT_TOTAL_MAX"; else ADMIT_LOG_LIMIT="$ADMIT_MAX"; fi
+
+# Set by admit_classify (job-started.sh) or read back from the slot
+# (job-completed.sh). Empty while lanes are off.
+ADMIT_LANE=""
+ADMIT_LANE_SOURCE=""
+# The lane policy's view of the current decision, for the log. VIEWED is 0 when
+# it was not worked out (lanes off, or a poll that could not take the mutex).
+ADMIT_HEAVY_BUSY=0
+ADMIT_LIGHT_BUSY=0
+ADMIT_LANE_BLOCKER=""
+ADMIT_LANE_VIEWED=0
+# observe: seconds into a hold at which the lanes would first have admitted.
+ADMIT_LANE_WAIT=""
+
 # Resolved by admit_resolve_owner when a slot is claimed. Declared here so the
 # log line is well-formed for decisions taken before any claim, such as a hold.
 ADMIT_OWNER_PID=""
@@ -186,7 +252,7 @@ admit_log() {
   # waited_s is time this job spent waiting for a slot; ran_s is how long a
   # released slot was occupied. Separate fields because they are separate
   # quantities — the release used to report its occupancy as a wait.
-  printf '{"ts":%s,"event":"%s","mode":"%s","runner":"%s","repo":"%s","run":"%s","job":"%s","waited_s":%s,"ran_s":%s,"busy":%s,"limit":%s,"owner_kind":"%s","owner_pid":"%s","reason":"%s"}\n' \
+  printf '{"ts":%s,"event":"%s","mode":"%s","runner":"%s","repo":"%s","run":"%s","job":"%s","waited_s":%s,"ran_s":%s,"busy":%s,"limit":%s,"owner_kind":"%s","owner_pid":"%s","reason":"%s"%s}\n' \
     "$(admit_now)" \
     "$(admit_json_str "$event")" \
     "$(admit_json_str "$ADMIT_MODE")" \
@@ -194,11 +260,33 @@ admit_log() {
     "$(admit_json_str "${GITHUB_REPOSITORY:-}")" \
     "$(admit_json_str "${GITHUB_RUN_ID:-}")" \
     "$(admit_json_str "${GITHUB_JOB:-}")" \
-    "${waited:-0}" "${ran:-0}" "${busy:-0}" "$ADMIT_MAX" \
+    "${waited:-0}" "${ran:-0}" "${busy:-0}" "$ADMIT_LOG_LIMIT" \
     "$(admit_json_str "$ADMIT_OWNER_KIND")" \
     "$(admit_json_str "$ADMIT_OWNER_PID")" \
     "$(admit_json_str "$reason")" \
+    "$(admit_lane_json)" \
     >> "$ADMIT_LOG" 2>/dev/null || true
+}
+
+# The lane fields of a log line, with their leading comma, or nothing while
+# lanes are off: an off host writes exactly the line it always has.
+# lane_reason is the lane policy's own reason text. In enforce it is the hold's
+# reason; in observe it is what the lanes would have said (empty: admit now).
+admit_lane_json() {
+  [ "$ADMIT_LANES" = off ] && return 0
+  local would=null wait=null
+  if [ "$ADMIT_LANE_VIEWED" = 1 ]; then
+    if [ -n "$ADMIT_LANE_BLOCKER" ]; then would=true; else would=false; fi
+  fi
+  case "$ADMIT_LANE_WAIT" in '' | *[!0-9]*) ;; *) wait="$ADMIT_LANE_WAIT" ;; esac
+  printf ',"lanes":"%s","lane":"%s","lane_source":"%s","heavy_busy":%s,"light_busy":%s,"heavy_limit":%s,"light_limit":%s,"total_limit":%s,"lane_would_hold":%s,"lane_wait_s":%s,"lane_reason":"%s"' \
+    "$ADMIT_LANES" \
+    "$(admit_json_str "$ADMIT_LANE")" \
+    "$(admit_json_str "$ADMIT_LANE_SOURCE")" \
+    "${ADMIT_HEAVY_BUSY:-0}" "${ADMIT_LIGHT_BUSY:-0}" \
+    "$ADMIT_HEAVY_MAX" "$ADMIT_LIGHT_MAX" "$ADMIT_TOTAL_MAX" \
+    "$would" "$wait" \
+    "$(admit_json_str "$ADMIT_LANE_BLOCKER")"
 }
 
 # mkdir is the portable atomic test-and-set. macOS ships no flock(1), and this
@@ -327,10 +415,10 @@ admit_claim_slot() {
   local key="$1"
   mkdir -p "$ADMIT_SLOTS" 2>/dev/null || return 1
   admit_resolve_owner
-  printf 'pid=%s\nowner=%s\nts=%s\nrunner=%s\nrepo=%s\nrun=%s\njob=%s\n' \
+  printf 'pid=%s\nowner=%s\nts=%s\nrunner=%s\nrepo=%s\nrun=%s\njob=%s\nlane=%s\n' \
     "$ADMIT_OWNER_PID" "$ADMIT_OWNER_KIND" "$(admit_now)" \
     "${RUNNER_NAME:-}" \
-    "${GITHUB_REPOSITORY:-}" "${GITHUB_RUN_ID:-}" "${GITHUB_JOB:-}" \
+    "${GITHUB_REPOSITORY:-}" "${GITHUB_RUN_ID:-}" "${GITHUB_JOB:-}" "$ADMIT_LANE" \
     > "$ADMIT_SLOTS/$key" 2>/dev/null || return 1
   return 0
 }
@@ -349,10 +437,18 @@ admit_join_waiters() {
   [ -n "$ADMIT_WAITER" ] && [ -f "$ADMIT_WAITER" ] && return 0
   mkdir -p "$ADMIT_WAITERS" 2>/dev/null || return 1
   stamp="$(printf '%020d-%010d' "$(admit_now)" "$$")"
-  ADMIT_WAITER="$ADMIT_WAITERS/$stamp-$key"
-  printf 'pid=%s\nts=%s\nrunner=%s\nrepo=%s\nrun=%s\njob=%s\n' \
+  # With lanes on, the lane's line is in the name (after the fixed-width
+  # stamp), so the lockless check can find the head of its own line from one
+  # directory listing. The stamp still comes first: sorting by name is still
+  # arrival order across every line.
+  if [ "$ADMIT_LANES" = off ]; then
+    ADMIT_WAITER="$ADMIT_WAITERS/$stamp-$key"
+  else
+    ADMIT_WAITER="$ADMIT_WAITERS/$stamp-$(admit_lane_line "$ADMIT_LANE")-$key"
+  fi
+  printf 'pid=%s\nts=%s\nrunner=%s\nrepo=%s\nrun=%s\njob=%s\nlane=%s\n' \
     "$$" "$(admit_now)" "${RUNNER_NAME:-}" "${GITHUB_REPOSITORY:-}" \
-    "${GITHUB_RUN_ID:-}" "${GITHUB_JOB:-}" \
+    "${GITHUB_RUN_ID:-}" "${GITHUB_JOB:-}" "$ADMIT_LANE" \
     > "$ADMIT_WAITER" 2>/dev/null || { ADMIT_WAITER=""; return 1; }
 }
 
@@ -478,6 +574,233 @@ admit_waiting_behind_older() {
   local first pid runner
   [ -n "$ADMIT_WAITER" ] && [ -f "$ADMIT_WAITER" ] || return 1
   first="$(LC_ALL=C ls -1 "$ADMIT_WAITERS" 2>/dev/null | head -1)"
+  [ -n "$first" ] || return 1
+  [ "$ADMIT_WAITERS/$first" = "$ADMIT_WAITER" ] && return 1
+  pid="$(sed -n 's/^pid=//p' "$ADMIT_WAITERS/$first" 2>/dev/null | head -1)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+  if [ "$ADMIT_SIMULATOR_MAX" -gt 0 ]; then
+    runner="$(sed -n 's/^runner=//p' "$ADMIT_WAITERS/$first" 2>/dev/null | head -1)"
+    admit_runner_matches "$runner" && return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Lanes (FLEET_ADMIT_LANES). Every function here returns 0 unless it is a test
+# used in a condition: the runner runs this hook under `bash -e`, and a failed
+# command substitution there would exit the hook, whose EXIT trap then admits
+# the job without a slot.
+# ---------------------------------------------------------------------------
+
+# The waiting line a lane belongs to. A simulator job waits in the heavy line,
+# because it takes a heavy slot as well as a Simulator one.
+admit_lane_line() {
+  case "${1:-}" in
+    light) printf 'light' ;;
+    *) printf 'heavy' ;;
+  esac
+}
+
+# Sets ADMIT_WAITER_LINE from a waiter file's name: <20-digit ts>-<10-digit
+# pid>-<line>-<runner>. A name from before lanes (no line) reads as heavy, the
+# safe side, and so does anything else unexpected.
+ADMIT_WAITER_LINE=""
+admit_waiter_line_of() {
+  local rest="${1:32}"
+  case "${rest%%-*}" in
+    light) ADMIT_WAITER_LINE=light ;;
+    *) ADMIT_WAITER_LINE=heavy ;;
+  esac
+  return 0
+}
+
+# True when this job matches one of a space- (or comma-) separated list of
+# `repo:job` shell patterns. The job is GITHUB_JOB, the id (YAML key) of the
+# job that runs, which inside a reusable workflow is that workflow's own key
+# (`test`, not `ios / test`). The repo may be written with or without its
+# owner: `acme/app:test`, `app:test`, `*:e2e` and `site:*` all work.
+admit_job_matches() {
+  local list="${1:-}" pattern full short
+  local -a patterns
+  [ -n "$list" ] || return 1
+  full="${GITHUB_REPOSITORY:-}:${GITHUB_JOB:-}"
+  short="${GITHUB_REPOSITORY##*/}:${GITHUB_JOB:-}"
+  list="${list//,/ }"
+  read -r -a patterns <<< "$list"
+  for pattern in "${patterns[@]}"; do
+    # shellcheck disable=SC2254
+    case "$full" in $pattern) return 0 ;; esac
+    # shellcheck disable=SC2254
+    case "$short" in $pattern) return 0 ;; esac
+  done
+  return 1
+}
+
+# The dashboard's class for this repo:job (light, heavy or unknown), from its
+# own history of how long the job runs; cached for ADMIT_CLASS_TTL seconds in
+# the state directory. Returns non-zero, printing nothing, when there is no
+# answer: no URL, no curl, or the daemon is down or too old to know the route.
+admit_class_from_daemon() {
+  local repo="${GITHUB_REPOSITORY:-}" job="${GITHUB_JOB:-}" key file now ts cls body tmp
+  [ -n "$repo" ] && [ -n "$job" ] || return 1
+  [ -n "$ADMIT_CLASS_URL" ] && command -v curl >/dev/null 2>&1 || return 1
+  key="$(printf '%s__%s' "$repo" "$job" | tr -c 'A-Za-z0-9._-' '_')"
+  file="$ADMIT_CLASSES/$key"
+  now="$(admit_now)"
+  if [ -f "$file" ]; then
+    ts="$(sed -n 's/^ts=//p' "$file" 2>/dev/null | head -1)"
+    cls="$(sed -n 's/^class=//p' "$file" 2>/dev/null | head -1)"
+    case "$ts" in
+      '' | *[!0-9]*) ;;
+      *)
+        if [ $((now - ts)) -lt "$ADMIT_CLASS_TTL" ] && [ -n "$cls" ]; then
+          printf '%s' "$cls"
+          return 0
+        fi
+        ;;
+    esac
+  fi
+  body="$(curl -fsS --max-time 3 -G "$ADMIT_CLASS_URL" \
+    --data-urlencode "repo=$repo" --data-urlencode "job=$job" \
+    --data-urlencode "short_s=$ADMIT_SHORT_JOB_S" 2>/dev/null)" || return 1
+  cls="$(printf '%s' "$body" | sed -n 's/.*"class":"\([a-z]*\)".*/\1/p' | head -1)"
+  case "$cls" in
+    light | heavy | unknown) ;;
+    *) return 1 ;;
+  esac
+  # Written aside and renamed, so a concurrent reader never sees half a file.
+  mkdir -p "$ADMIT_CLASSES" 2>/dev/null || true
+  tmp="$file.$$"
+  if printf 'class=%s\nts=%s\n' "$cls" "$now" > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  fi
+  printf '%s' "$cls"
+  return 0
+}
+
+# Sets ADMIT_LANE and ADMIT_LANE_SOURCE. In order: the Simulator runner rule,
+# FLEET_ADMIT_HEAVY_PATTERNS, FLEET_ADMIT_LIGHT_PATTERNS, the dashboard's
+# history; anything it cannot place is heavy, because a heavy job let into the
+# light lane is what overloads the host, and a light job in the heavy lane only
+# waits a little longer.
+admit_classify() {
+  local cls=""
+  ADMIT_LANE=""
+  ADMIT_LANE_SOURCE=""
+  [ "$ADMIT_LANES" = off ] && return 0
+  if admit_is_simulator_job; then
+    ADMIT_LANE=simulator
+    ADMIT_LANE_SOURCE=runner
+    return 0
+  fi
+  if admit_job_matches "${FLEET_ADMIT_HEAVY_PATTERNS:-}"; then
+    ADMIT_LANE=heavy
+    ADMIT_LANE_SOURCE=pattern
+    return 0
+  fi
+  if admit_job_matches "${FLEET_ADMIT_LIGHT_PATTERNS:-}"; then
+    ADMIT_LANE=light
+    ADMIT_LANE_SOURCE=pattern
+    return 0
+  fi
+  cls="$(admit_class_from_daemon)" || cls=""
+  case "$cls" in
+    light) ADMIT_LANE=light ; ADMIT_LANE_SOURCE=history ;;
+    heavy) ADMIT_LANE=heavy ; ADMIT_LANE_SOURCE=history ;;
+    unknown) ADMIT_LANE=heavy ; ADMIT_LANE_SOURCE=unknown ;;
+    *) ADMIT_LANE=heavy ; ADMIT_LANE_SOURCE=fallback ;;
+  esac
+  return 0
+}
+
+# Sets ADMIT_HEAVY_BUSY and ADMIT_LIGHT_BUSY from the slot files, given the
+# total ($1, from admit_live_slots, which has just reaped the dead ones). A slot
+# written without a lane (lanes off, or a hook from before lanes) is heavy.
+admit_lane_counts() {
+  local total="${1:-0}" light
+  light="$(grep -l '^lane=light$' "$ADMIT_SLOTS"/* 2>/dev/null | wc -l | tr -d ' ')"
+  case "$light" in '' | *[!0-9]*) light=0 ;; esac
+  case "$total" in '' | *[!0-9]*) total=0 ;; esac
+  ADMIT_LIGHT_BUSY="$light"
+  ADMIT_HEAVY_BUSY=$((total - light))
+  [ "$ADMIT_HEAVY_BUSY" -lt 0 ] && ADMIT_HEAVY_BUSY=0
+  return 0
+}
+
+# Why the lanes would hold this job on capacity alone, or empty. The total cap
+# and the Simulator limit keep the reasons they have always had, word for word:
+# the lake classifies holds by this text.
+admit_lane_capacity_blocker() {
+  local busy="${1:-0}" simulator_busy="${2:-0}"
+  if [ "$busy" -ge "$ADMIT_TOTAL_MAX" ]; then
+    printf '%s job(s) already running, at the limit of %s' "$busy" "$ADMIT_TOTAL_MAX"
+    return 0
+  fi
+  if [ "$ADMIT_LANE" = simulator ] && admit_simulator_blocked "$simulator_busy"; then
+    printf '%s Simulator job(s) already running, at the limit of %s' \
+      "$simulator_busy" "$ADMIT_SIMULATOR_MAX"
+    return 0
+  fi
+  if [ "$ADMIT_LANE" = light ]; then
+    if [ "$ADMIT_LIGHT_BUSY" -ge "$ADMIT_LIGHT_MAX" ]; then
+      printf '%s light job(s) already running, at the light limit of %s' \
+        "$ADMIT_LIGHT_BUSY" "$ADMIT_LIGHT_MAX"
+    fi
+    return 0
+  fi
+  if [ "$ADMIT_HEAVY_BUSY" -ge "$ADMIT_HEAVY_MAX" ]; then
+    printf '%s heavy job(s) already running, at the heavy limit of %s' \
+      "$ADMIT_HEAVY_BUSY" "$ADMIT_HEAVY_MAX"
+  fi
+  return 0
+}
+
+# The hold reason for a job behind an older one in its own line. Starts like
+# the single-lane reason so the lake files both as queue order.
+admit_lane_queue_reason() {
+  printf 'an older job is waiting for the next %s slot' "$(admit_lane_line "$ADMIT_LANE")"
+}
+
+# The per-lane FIFO, under the mutex: true when this waiter is the oldest one
+# in its own line that could take a slot. As in the single line, a Simulator
+# job held by the Simulator limit is skipped rather than allowed to block the
+# heavy jobs behind it. $2=noreap skips the reaping a caller has just done.
+admit_waiter_is_first_in_lane() {
+  local simulator_busy="${1:-0}" f name first="" mine runner
+  [ -n "$ADMIT_WAITER" ] || return 1
+  [ "${2:-}" = noreap ] || admit_reap_waiters
+  mine="$(admit_lane_line "$ADMIT_LANE")"
+  for f in "$ADMIT_WAITERS"/*; do
+    [ -f "$f" ] || continue
+    name="${f##*/}"
+    admit_waiter_line_of "$name"
+    [ "$ADMIT_WAITER_LINE" = "$mine" ] || continue
+    if [ "$ADMIT_SIMULATOR_MAX" -gt 0 ] && [ "$simulator_busy" -ge "$ADMIT_SIMULATOR_MAX" ]; then
+      runner="$(sed -n 's/^runner=//p' "$f" 2>/dev/null | head -1)"
+      admit_runner_matches "$runner" && continue
+    fi
+    if [ -z "$first" ] || [ "$name" \< "${first##*/}" ]; then
+      first="$f"
+    fi
+  done
+  [ "$first" = "$ADMIT_WAITER" ]
+}
+
+# The lockless check of admit_waiting_behind_older, per line: true when a live
+# waiter ahead of this one is in this job's own line. Anything it cannot vouch
+# for falls through to the locked check, as there.
+admit_waiting_behind_older_in_lane() {
+  local name first="" mine pid runner
+  [ -n "$ADMIT_WAITER" ] && [ -f "$ADMIT_WAITER" ] || return 1
+  mine="$(admit_lane_line "$ADMIT_LANE")"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    admit_waiter_line_of "$name"
+    if [ "$ADMIT_WAITER_LINE" = "$mine" ]; then
+      first="$name"
+      break
+    fi
+  done < <(LC_ALL=C ls -1 "$ADMIT_WAITERS" 2>/dev/null)
   [ -n "$first" ] || return 1
   [ "$ADMIT_WAITERS/$first" = "$ADMIT_WAITER" ] && return 1
   pid="$(sed -n 's/^pid=//p' "$ADMIT_WAITERS/$first" 2>/dev/null | head -1)"

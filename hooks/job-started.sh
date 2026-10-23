@@ -57,10 +57,10 @@ ROOT="${FLEET_ROOT:-$(cd "$HERE/.." && pwd)}"
 
 KEY="$(admit_key)"
 
-# Why the job would be held right now, or empty if there is room. Callers must
+# Why the single lane would hold the job on capacity, or empty. Callers must
 # hold the mutex, because the count it reads is only meaningful under it.
-admit_blocker() {
-  local busy="$1" simulator_busy="$2" disk
+admit_capacity_blocker() {
+  local busy="$1" simulator_busy="$2"
   if [ "$busy" -ge "$ADMIT_MAX" ]; then
     printf '%s job(s) already running, at the limit of %s' "$busy" "$ADMIT_MAX"
     return 0
@@ -70,6 +70,12 @@ admit_blocker() {
       "$simulator_busy" "$ADMIT_SIMULATOR_MAX"
     return 0
   fi
+  return 0
+}
+
+# The disk floors, shared by both policies.
+admit_disk_blocker() {
+  local disk
   # `|| disk=""`: production runs this under bash -e, where a failed read
   # would exit the hook, and its EXIT trap admits the job without a slot.
   disk="$(admit_free_disk_gb)" || disk=""
@@ -85,6 +91,68 @@ admit_blocker() {
   return 0
 }
 
+# Works out both policies' answer for this moment, under the mutex. Sets
+# ADMIT_GATE_BLOCKER (what decides: the lanes in lanes-enforce, the single lane
+# otherwise; empty = room) and, with lanes on, ADMIT_LANE_BLOCKER (the lanes'
+# answer, logged beside the decision). The per-lane and single-lane queue
+# order are the caller's, because only a waiter has a place in a line.
+ADMIT_GATE_BLOCKER=""
+admit_decide() {
+  local busy="$1" simulator_busy="$2" legacy="" lane="" disk=""
+  [ "$ADMIT_LANES" = enforce ] || legacy="$(admit_capacity_blocker "$busy" "$simulator_busy")"
+  if [ "$ADMIT_LANES" != off ]; then
+    admit_lane_counts "$busy"
+    lane="$(admit_lane_capacity_blocker "$busy" "$simulator_busy")"
+  fi
+  if { [ "$ADMIT_LANES" != enforce ] && [ -z "$legacy" ]; } \
+    || { [ "$ADMIT_LANES" != off ] && [ -z "$lane" ]; }; then
+    disk="$(admit_disk_blocker)"
+  fi
+  [ -n "$legacy" ] || legacy="$disk"
+  [ -n "$lane" ] || lane="$disk"
+  if [ "$ADMIT_LANES" = enforce ]; then
+    ADMIT_GATE_BLOCKER="$lane"
+  else
+    ADMIT_GATE_BLOCKER="$legacy"
+  fi
+  if [ "$ADMIT_LANES" != off ]; then
+    ADMIT_LANE_BLOCKER="$lane"
+    ADMIT_LANE_VIEWED=1
+  fi
+  return 0
+}
+
+# observe-lanes only: the lanes' answer for a waiter the single line keeps
+# behind an older job, read without the mutex (slots are counted, not reaped,
+# and the disk is re-read at most every 30 s). It is a log field, not a
+# decision, and it stops being worked out once the lanes would have admitted.
+ADMIT_DISK_AT=-1000
+ADMIT_DISK_REASON=""
+admit_lane_view_lockless() {
+  local total simulator_busy now
+  total="$(ls -1 "$ADMIT_SLOTS" 2>/dev/null | wc -l | tr -d ' ')"
+  simulator_busy="$(admit_live_simulator_slots)"
+  admit_lane_counts "$total"
+  ADMIT_LANE_BLOCKER="$(admit_lane_capacity_blocker "$total" "$simulator_busy")"
+  if [ -z "$ADMIT_LANE_BLOCKER" ]; then
+    now="$(admit_now)"
+    if [ $((now - ADMIT_DISK_AT)) -ge 30 ]; then
+      ADMIT_DISK_REASON="$(admit_disk_blocker)"
+      ADMIT_DISK_AT="$now"
+    fi
+    ADMIT_LANE_BLOCKER="$ADMIT_DISK_REASON"
+  fi
+  if [ -z "$ADMIT_LANE_BLOCKER" ] && admit_waiting_behind_older_in_lane; then
+    ADMIT_LANE_BLOCKER="$(admit_lane_queue_reason)"
+  fi
+  ADMIT_LANE_VIEWED=1
+  return 0
+}
+
+# Network, so outside the mutex and once per job: the lane cannot change while
+# the job waits.
+admit_classify
+
 # observe: take the slot so the count stays honest, never delay anything, and
 # record whether enforcing would have held this job. Mirrors autoscaleDryRun —
 # the log has to look right before the mechanism is allowed to cost a build.
@@ -95,7 +163,8 @@ if [ "$ADMIT_MODE" = "observe" ]; then
   if admit_lock; then
     BUSY="$(admit_live_slots)"
     SIMULATOR_BUSY="$(admit_live_simulator_slots)"
-    BLOCKER="$(admit_blocker "$BUSY" "$SIMULATOR_BUSY")"
+    admit_decide "$BUSY" "$SIMULATOR_BUSY"
+    BLOCKER="$ADMIT_GATE_BLOCKER"
     admit_claim_slot "$KEY"
     admit_unlock
   else
@@ -136,17 +205,53 @@ while :; do
     echo "fleet: job cancelled while waiting — releasing this runner"
     exit 0
   fi
-  if admit_waiting_behind_older; then
+  # Only the oldest waiter in a line can be admitted, so a later one decides
+  # nothing under the mutex (see admit_waiting_behind_older). With lanes
+  # enforced the line is the job's own lane, not the host.
+  BEHIND=0
+  if [ "$ADMIT_LANES" = enforce ]; then
+    if admit_waiting_behind_older_in_lane; then
+      BEHIND=1
+      BLOCKER="$(admit_lane_queue_reason)"
+      ADMIT_LANE_BLOCKER="$BLOCKER"
+      ADMIT_LANE_VIEWED=1
+    fi
+  elif admit_waiting_behind_older; then
+    BEHIND=1
     BLOCKER="an older job is waiting for the next host slot"
+    if [ "$ADMIT_LANES" = observe ] && [ -z "$ADMIT_LANE_WAIT" ]; then
+      admit_lane_view_lockless
+      [ -n "$ADMIT_LANE_BLOCKER" ] || ADMIT_LANE_WAIT="$WAITED"
+    fi
+  fi
+  if [ "$BEHIND" -eq 1 ]; then
+    :
   elif admit_lock; then
     admit_join_waiters "$KEY" || true
     BUSY="$(admit_live_slots)"
     SIMULATOR_BUSY="$(admit_live_simulator_slots)"
     admit_simulator_blocked "$SIMULATOR_BUSY" && STRICT_LIMIT=1
-    BLOCKER="$(admit_blocker "$BUSY" "$SIMULATOR_BUSY")"
-    if [ -z "$BLOCKER" ] \
+    admit_decide "$BUSY" "$SIMULATOR_BUSY"
+    BLOCKER="$ADMIT_GATE_BLOCKER"
+    if [ "$ADMIT_LANES" = enforce ]; then
+      if [ -z "$BLOCKER" ] \
+        && ! admit_waiter_is_first_in_lane "$SIMULATOR_BUSY"; then
+        BLOCKER="$(admit_lane_queue_reason)"
+        ADMIT_LANE_BLOCKER="$BLOCKER"
+      fi
+    elif [ -z "$BLOCKER" ] \
       && ! admit_waiter_is_first_eligible "$SIMULATOR_BUSY"; then
       BLOCKER="an older job is waiting for the next host slot"
+    fi
+    # observe-lanes: would the job's own line have let it go? And from when.
+    if [ "$ADMIT_LANES" = observe ]; then
+      # noreap: the single line's own check has just reaped, or had no need
+      # to (the host was full, which holds the lanes too).
+      if [ -z "$ADMIT_LANE_BLOCKER" ] \
+        && ! admit_waiter_is_first_in_lane "$SIMULATOR_BUSY" noreap; then
+        ADMIT_LANE_BLOCKER="$(admit_lane_queue_reason)"
+      fi
+      [ -n "$ADMIT_LANE_BLOCKER" ] || [ -n "$ADMIT_LANE_WAIT" ] || ADMIT_LANE_WAIT="$WAITED"
     fi
     if [ -z "$BLOCKER" ]; then
       admit_claim_slot "$KEY"

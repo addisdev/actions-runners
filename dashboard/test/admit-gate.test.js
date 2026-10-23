@@ -22,7 +22,7 @@ describe('parseEnvFile', () => {
 
 describe('admissionSettings', () => {
   test('defaults match hooks/common.sh: off, 40 GB, 15 GB', () => {
-    assert.deepEqual(admissionSettings({ root: '/r', env: {}, read: noFile }), { mode: 'off', minFreeDiskGb: 40, minPlainFreeGb: 15 });
+    assert.deepEqual(admissionSettings({ root: '/r', env: {}, read: noFile }), { mode: 'off', minFreeDiskGb: 40, minPlainFreeGb: 15, shortJobS: 90 });
   });
 
   test('fleet.env is sourced over the environment, as the hook sources it', () => {
@@ -31,12 +31,12 @@ describe('admissionSettings', () => {
       env: { FLEET_ADMIT_MODE: 'observe', FLEET_ADMIT_MIN_FREE_DISK_GB: '50', FLEET_ADMIT_MIN_PLAIN_FREE_GB: '20' },
       read: fileOf('FLEET_ADMIT_MODE=enforce\nFLEET_ADMIT_MIN_FREE_DISK_GB=100\n'),
     });
-    assert.deepEqual(s, { mode: 'enforce', minFreeDiskGb: 100, minPlainFreeGb: 20 });
+    assert.deepEqual(s, { mode: 'enforce', minFreeDiskGb: 100, minPlainFreeGb: 20, shortJobS: 90 });
   });
 
   test('a typo is the default, never the most expensive reading', () => {
     const s = admissionSettings({ root: '/r', env: {}, read: fileOf('FLEET_ADMIT_MODE=enforec\nFLEET_ADMIT_MIN_FREE_DISK_GB=1OO\n') });
-    assert.deepEqual(s, { mode: 'off', minFreeDiskGb: 40, minPlainFreeGb: 15 });
+    assert.deepEqual(s, { mode: 'off', minFreeDiskGb: 40, minPlainFreeGb: 15, shortJobS: 90 });
   });
 });
 

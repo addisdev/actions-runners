@@ -201,3 +201,52 @@ describe('countInstalled', () => {
     assert.ok(admission.summary().hooks.checkedAt > 0);
   });
 });
+
+describe('lanes', () => {
+  const lane = (o) => line({ lanes: 'observe', lane: 'heavy', lane_source: 'pattern', heavy_busy: 1,
+    light_busy: 0, heavy_limit: 4, light_limit: 12, total_limit: 16, lane_would_hold: false,
+    lane_wait_s: null, lane_reason: '', ...o });
+
+  test('a line from a hook with lanes off has no lane summary', () => {
+    const { admission } = fresh([line({ event: 'admitted' })]);
+    assert.equal(admission.summary().lanes, null);
+  });
+
+  test('lane fields are stored as written', () => {
+    const { db } = fresh([lane({ event: 'held', runner: 'r1', lane_would_hold: true,
+      lane_reason: '4 heavy job(s) already running, at the heavy limit of 4', lane_wait_s: 0 })]);
+    const r = db.prepare('SELECT * FROM admission_events').get();
+    assert.equal(r.lanes, 'observe');
+    assert.equal(r.lane, 'heavy');
+    assert.equal(r.lane_source, 'pattern');
+    assert.equal(r.lane_would_hold, 1);
+    assert.equal(r.lane_wait_s, 0);
+    assert.equal(r.total_limit, 16);
+    assert.equal(r.lane_reason, '4 heavy job(s) already running, at the heavy limit of 4');
+  });
+
+  test('the summary counts running and waiting jobs per lane, and what the lanes would have done', () => {
+    const { admission } = fresh([
+      lane({ event: 'admitted', runner: 'h1', lane: 'heavy' }),
+      lane({ event: 'admitted', runner: 'h2', lane: 'heavy', lane_would_hold: true }),
+      lane({ event: 'admitted', runner: 'l1', lane: 'light' }),
+      lane({ event: 'admitted', runner: 's1', lane: 'simulator' }),
+      lane({ event: 'held', runner: 'l2', lane: 'light', reason: '8 job(s) already running, at the limit of 8',
+        lane_would_hold: false, lane_wait_s: 0 }),
+      lane({ event: 'admitted', runner: 'l3', lane: 'light', waited_s: 40, lane_wait_s: 0 }),
+      lane({ event: 'admitted', runner: 'x', lane: 'light' }),
+      lane({ event: 'released', runner: 'x', lane: 'light' }),
+    ]);
+    const s = admission.summary();
+    assert.equal(s.lanes.mode, 'observe');
+    assert.deepEqual(s.lanes.limits, { heavy: 4, light: 12, total: 16 });
+    assert.deepEqual(s.lanes.running, { heavy: 2, light: 2, simulator: 1 });
+    assert.deepEqual(s.lanes.waiting, { heavy: 0, light: 1, simulator: 0 });
+    assert.equal(s.lanes.last24h.heldLanesWouldAdmit, 1);
+    assert.equal(s.lanes.last24h.admittedLanesWouldHold, 1);
+    assert.equal(s.lanes.last24h.waitedS, 40);
+    assert.equal(s.lanes.last24h.laneWaitS, 0);
+    assert.equal(s.waiting[0].lane, 'light');
+    assert.equal(s.waiting[0].laneWouldHold, false);
+  });
+});

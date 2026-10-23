@@ -52,8 +52,19 @@ function rowFrom(line) {
     e.owner_kind || e.owner || null,
     e.owner_pid || null,
     e.reason || null,
+    // Lanes, present only on lines from a hook with FLEET_ADMIT_LANES on.
+    e.lanes || null,
+    e.lane || null,
+    e.lane_source || null,
+    num(e.heavy_busy), num(e.light_busy),
+    num(e.heavy_limit), num(e.light_limit), num(e.total_limit),
+    e.lane_would_hold === true ? 1 : e.lane_would_hold === false ? 0 : null,
+    num(e.lane_wait_s),
+    e.lane_reason || null,
   ];
 }
+
+const num = (v) => (v != null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : null);
 
 /**
  * @param {object} opts
@@ -65,8 +76,11 @@ export function createAdmission({ db, logPath, warn = () => {}, hostId = null })
   const insert = db.prepare(`
     INSERT INTO admission_events (ts, event, mode, runner, repo, run_id, job,
                                   waited_s, ran_s, busy, limit_n, owner_kind,
-                                  owner_pid, reason, host_id)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+                                  owner_pid, reason,
+                                  lanes, lane, lane_source, heavy_busy, light_busy,
+                                  heavy_limit, light_limit, total_limit,
+                                  lane_would_hold, lane_wait_s, lane_reason, host_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   // Rows from before host_id existed were all written by this host's hooks.
   if (hostId) {
     try {
@@ -85,7 +99,8 @@ export function createAdmission({ db, logPath, warn = () => {}, hostId = null })
     // live rather than after the fact, because an unexplained pause before a
     // job's first step is otherwise invisible.
     latestPerRunner: db.prepare(`
-      SELECT runner, repo, event, ts, reason, busy, limit_n, host_id
+      SELECT runner, repo, event, ts, reason, busy, limit_n, host_id, lane, lanes,
+             lane_would_hold, lane_reason
       FROM admission_events
       WHERE id IN (
         SELECT MAX(id) FROM admission_events WHERE runner IS NOT NULL GROUP BY host_id, runner
@@ -95,8 +110,21 @@ export function createAdmission({ db, logPath, warn = () => {}, hostId = null })
       FROM admission_events WHERE ts >= ? GROUP BY event`),
     recent: db.prepare(`
       SELECT ts, event, mode, runner, repo, job, waited_s, ran_s, busy, limit_n,
-             owner_kind, owner_pid, reason, host_id
+             owner_kind, owner_pid, reason, host_id,
+             lanes, lane, lane_source, heavy_busy, light_busy, heavy_limit, light_limit,
+             total_limit, lane_would_hold, lane_wait_s, lane_reason
       FROM admission_events ORDER BY ts DESC LIMIT ?`),
+    // The newest line from a hook with lanes on: their mode and limits.
+    lastLanes: db.prepare(`
+      SELECT ts, lanes, heavy_limit, light_limit, total_limit FROM admission_events
+      WHERE lanes IS NOT NULL AND ${LOCAL} ORDER BY id DESC LIMIT 1`),
+    // What the lanes did, or in observe would have done, over a window.
+    laneCountsSince: db.prepare(`
+      SELECT event, lane, lane_would_hold AS would, COUNT(*) AS n,
+             SUM(COALESCE(waited_s, 0)) AS waited, SUM(COALESCE(lane_wait_s, 0)) AS lane_waited,
+             SUM(CASE WHEN lane_wait_s IS NOT NULL THEN 1 ELSE 0 END) AS lane_wait_n
+      FROM admission_events WHERE ts >= @since AND lanes IS NOT NULL AND ${LOCAL}
+      GROUP BY event, lane, lane_would_hold`),
     // Restricted to rows that actually carry a mode. Reporting the newest row
     // unconditionally would let one event written without one — an older hook,
     // a hand-appended line — read as "installed but switched off" while the
@@ -130,6 +158,52 @@ export function createAdmission({ db, logPath, warn = () => {}, hostId = null })
   // completely different responses, so the distinction is worth 29 file reads
   // on the slow loop.
   let installed = { installed: 0, total: 0, checkedAt: null };
+
+  // Lanes on this host: their mode and limits from the newest line that has
+  // them, jobs running and waiting per lane from each runner's newest event
+  // (a runner whose newest line admitted a job is running it), and, over 24 h,
+  // what the lanes did or would have done. null while no hook has lanes on.
+  function lanesSummary(latest, since) {
+    const last = stmt.lastLanes.get(local);
+    if (!last) return null;
+    const isLocal = (r) => r.host_id == null || r.host_id === hostId;
+    const running = { heavy: 0, light: 0, simulator: 0 };
+    const waiting = { heavy: 0, light: 0, simulator: 0 };
+    for (const r of latest) {
+      if (!isLocal(r) || !r.lane || !(r.lane in running)) continue;
+      if (['admitted', 'timeout', 'observed', 'would-hold'].includes(r.event)) running[r.lane] += 1;
+      else if (r.event === 'held') waiting[r.lane] += 1;
+    }
+    const day = {
+      // observe: held by the single lane, where the lanes would have admitted
+      // at once (lane_wait_s 0) or sooner; and admitted by it where the lanes
+      // would have held.
+      heldLanesWouldAdmit: 0, admittedLanesWouldHold: 0,
+      // observe: summed waits of jobs that finished waiting, under each policy.
+      waitedS: 0, laneWaitS: 0, finishedWaits: 0,
+      byLane: {},
+    };
+    for (const row of stmt.laneCountsSince.all({ since, local: local.local })) {
+      const lane = row.lane ?? 'unknown';
+      day.byLane[lane] ??= {};
+      day.byLane[lane][row.event] = (day.byLane[lane][row.event] ?? 0) + row.n;
+      if (row.event === 'held' && row.would === 0) day.heldLanesWouldAdmit += row.n;
+      if ((row.event === 'admitted' || row.event === 'observed') && row.would === 1) day.admittedLanesWouldHold += row.n;
+      if ((row.event === 'admitted' || row.event === 'timeout') && row.lane_wait_n > 0) {
+        day.waitedS += row.waited ?? 0;
+        day.laneWaitS += row.lane_waited ?? 0;
+        day.finishedWaits += row.lane_wait_n;
+      }
+    }
+    return {
+      mode: last.lanes,
+      limits: { heavy: last.heavy_limit, light: last.light_limit, total: last.total_limit },
+      running,
+      waiting,
+      last24h: day,
+      lastDecisionAt: last.ts,
+    };
+  }
 
   return {
     /**
@@ -217,8 +291,8 @@ export function createAdmission({ db, logPath, warn = () => {}, hostId = null })
         if (row.event === 'admitted' || row.event === 'timeout') heldSeconds += row.waited ?? 0;
       }
       const last = stmt.last.get(local);
-      const waiting = stmt.latestPerRunner
-        .all()
+      const latest = stmt.latestPerRunner.all();
+      const waiting = latest
         .filter((r) => r.event === 'held')
         .map((r) => ({
           runner: r.runner,
@@ -228,6 +302,9 @@ export function createAdmission({ db, logPath, warn = () => {}, hostId = null })
           busy: r.busy,
           limit: r.limit_n,
           host: r.host_id ?? hostId,
+          lane: r.lane ?? null,
+          laneWouldHold: r.lane_would_hold == null ? null : r.lane_would_hold === 1,
+          laneReason: r.lane_reason ?? null,
         }));
       // Mode and limit per host, newest decision each. A fleet where one host
       // enforces 2 and another 6 is not described by a single number.
@@ -239,6 +316,7 @@ export function createAdmission({ db, logPath, warn = () => {}, hostId = null })
         if (w.host && byHost[w.host]) byHost[w.host].waiting += 1;
       }
       return {
+        lanes: lanesSummary(latest, since),
         // Reported from the events rather than from configuration. fleet.env is
         // read by the hooks inside a job, not by this process, so the events are
         // the only honest source for what mode is actually in force.

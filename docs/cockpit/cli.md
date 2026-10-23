@@ -321,6 +321,28 @@ Spotlight is using 150% CPU — it is indexing, most likely the runner work tree
 `{ verdict, spotlightCPU, top }`. Exit `1` when Spotlight is using 50% CPU or
 more, `3` when `ps` could not be run, else `0`.
 
+## `cockpit load`
+
+Host load by how many runners were busy, from the dashboard's per-minute host
+samples (`/api/load-by-busy`): load1 p50 and p90 for each busy-runner count,
+and p90 per core. This is the table the [admission lanes](../admission-and-scaling.md#lanes)'
+heavy limit is set from; re-read it when the job mix changes.
+
+```console
+$ cockpit load --days 7
+ultra: load1 by busy runners, last 7 day(s), 9841 sample(s), 30 cores
+  busy  samples  load1 p50  load1 p90  p90/core
+     0     2210        3.0        8.0       0.3
+     2      890       12.0       27.0       0.9
+     4      640       28.0       53.0       1.8
+lanes observe: heavy 4, light 12, total 16
+busy counts runners GitHub shows busy, including jobs held by admission.
+```
+
+`--days N` (1 to 90, default 7) sets the window. `--json` prints the daemon's
+answer. Busy runners include jobs the admission hook is holding, which use no
+CPU, so on a host that holds a lot the low rows read high.
+
 ## `cockpit brief`
 
 A markdown incident brief of the current state: the verdict, its evidence and

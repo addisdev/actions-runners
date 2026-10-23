@@ -171,6 +171,10 @@ LABELS="${LABEL:+--labels $LABEL}"
   --name "$RUNNER_NAME" $LABELS \
   --work _work --unattended --ephemeral >/dev/null
 
+# Spotlight stays out of the build tree, as register.sh does for every runner.
+mkdir -p _work
+touch _work/.metadata_never_index
+
 echo "==> waiting for one job (Ctrl-C to give up and clean up)"
 # Foreground, no service install. run.sh exits after the single job completes,
 # and the trap then removes the directory. Installing a LaunchAgent would outlive

@@ -405,6 +405,19 @@ export function openDb(path) {
   addColumn(db, 'admission_events', 'host_id', 'TEXT');
   addColumn(db, 'host_samples', 'host_id', 'TEXT');
 
+  // Admission lanes (FLEET_ADMIT_LANES in hooks/common.sh). Written only by a
+  // hook with lanes on; NULL everywhere else. `lanes` is the policy mode
+  // (observe/enforce), `lane` the job's lane, lane_would_hold/lane_reason/
+  // lane_wait_s what the lanes decided or, in observe, would have.
+  for (const [col, type] of [
+    ['lanes', 'TEXT'], ['lane', 'TEXT'], ['lane_source', 'TEXT'],
+    ['heavy_busy', 'INTEGER'], ['light_busy', 'INTEGER'],
+    ['heavy_limit', 'INTEGER'], ['light_limit', 'INTEGER'], ['total_limit', 'INTEGER'],
+    ['lane_would_hold', 'INTEGER'], ['lane_wait_s', 'INTEGER'], ['lane_reason', 'TEXT'],
+  ]) addColumn(db, 'admission_events', col, type);
+  // /api/job-class reads a job's recent releases by repo and job id.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_admission_repo_job ON admission_events(repo, job, ts DESC)');
+
   // Which branch the repo considers canonical. Needed to tell "this finding is
   // on the branch you would open a PR against" from "this finding is on a branch
   // that merely still gets pushes".
