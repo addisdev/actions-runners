@@ -10,6 +10,18 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Added
 
+- **`shims/ps`: a finishing job no longer pins a core for minutes.** At "Complete job" the GitHub
+  runner checks every process that started during the job for its `RUNNER_TRACKING_ID`; macOS has no
+  `/proc`, so it spawns `ps e -p <pid> -o command` once per process. On a busy shared host that is
+  hundreds of spawns per job, quadratic in load: on ultra (2026-10-22) 81,867 spawns over 400 jobs, a
+  3-minute "Complete job" after a 1-minute job, ~15 Runner.Workers at ~96 % CPU at once (load ~240 on 30
+  cores), and zero orphans ever killed. The scan cannot be disabled from a workflow (`process.clean` is a
+  runner variable GitHub never sends). `shims/ps` answers exactly that call with "could not read" (exit 1,
+  the outcome the runner already reached) and passes every other `ps` to `/bin/ps`;
+  `scripts/install-ps-shim.sh --apply` links it into the runners' first PATH directory
+  (`/opt/homebrew/bin`), effective on the next spawn with no restarts. `FLEET_PS_SHIM=off` restores the
+  scan. Tests: `scripts/test-ps-shim.sh` (in CI).
+
 - **Parking: held time becomes queue time, not job time.** A held job is in
   progress as far as GitHub is concerned, so the admission hook's wait counts
   against `timeout-minutes`, and the hook cannot see that limit to budget
