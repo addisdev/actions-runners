@@ -27,7 +27,7 @@ setup() {
   mkdir -p "$T/bin" "$T/home/Library/Developer/Xcode/DerivedData"
   mkdir -p "$T/hooks"
   cp "$HERE/cleanup.sh" "$T/"
-  cp "$HERE/hooks/free-disk.sh" "$T/hooks/"
+  cp "$HERE/hooks/free-disk.sh" "$HERE/hooks/emulator-control.sh" "$T/hooks/"
   for r in web android ios; do
     mkdir -p "$T/$r/_work/_tool/ms-playwright/chromium" "$T/$r/_diag"
     printf '{"agentName":"RL-%s","gitHubUrl":"https://github.com/acme/%s"}' "$r" "$r" > "$T/$r/.runner"
@@ -71,11 +71,26 @@ EOF
 #!/usr/bin/env bash
 cat "$T/busy"
 EOF
+  # Only this case's processes (stand-in emulators and workers), never a real
+  # emulator on the machine running the tests.
+  cat > "$T/bin/fakeps" <<EOF
+#!/usr/bin/env bash
+/bin/ps "\$@" | grep -F "$T/"
+EOF
+  # adb's \`emu kill\` stops the stand-in on that port, when it listens.
+  cat > "$T/bin/adb" <<EOF
+#!/usr/bin/env bash
+echo "adb \$*" >> "$T/calls"
+port="\${2#emulator-}"
+pkill -TERM -f -- "-port \$port -avd" 2>/dev/null
+exit 0
+EOF
   chmod +x "$T/bin/"*
 }
 
 clean() {
-  HOME="$T/home" FLEET_ROOT="$T" PATH="$T/bin:$PATH" ANDROID_AVD_HOME="" bash "$T/cleanup.sh" "$@" 2>&1
+  HOME="$T/home" FLEET_ROOT="$T" PATH="$T/bin:$PATH" ANDROID_AVD_HOME="" \
+    FLEET_PS="$T/bin/fakeps" FLEET_ADB="$T/bin/adb" bash "$T/cleanup.sh" "$@" 2>&1
 }
 calls() { grep -c "$1" "$T/calls" 2>/dev/null; }
 gone() { [ -e "$1" ] && echo kept || echo removed; }
@@ -318,6 +333,125 @@ echo 45 > "$T/free"
 clean --apply > "$T/out"
 ok "under pressure, an idle runner's recent cache goes too" "$(gone "$T/android/_work/android/DerivedData-App")" "removed"
 ok "...but never a building runner's" "$(gone "$T/web/_work/web/DerivedData-App")" "kept"
+
+echo "== snapshot AVDs: kept for a runner here, gone when stale or orphaned =="
+setup 40
+echo 120 > "$T/free"
+echo 1 > "$T/.cleanup-last-full"
+echo "RL-web" > "$T/busy"
+A="$T/home/.android/avd"
+mkdir -p "$A"
+# snap <name> <age: old|days N|new> [with-snapshot]
+snap() {
+  mkdir -p "$A/$1.avd"; : > "$A/$1.avd/userdata-qemu.img.qcow2"; echo "path=$A/$1.avd" > "$A/$1.ini"
+  [ "${4:-}" = with-snapshot ] && { mkdir -p "$A/$1.avd/snapshots/default_boot"; : > "$A/$1.avd/snapshots/default_boot/ram.bin"; echo key > "$A/$1.avd/ci-snapshot.key"; }
+  case "$2" in
+    old) stamp=202601010000 ;;
+    days) stamp="$(date -v-"$3"d +%Y%m%d%H%M)" ;;
+    *) return 0 ;;
+  esac
+  find "$A/$1.avd" -exec touch -t "$stamp" {} +
+}
+snap ci-RL-ios-a34-google_apis-pixel_6 days 2 with-snapshot
+snap ci-RL-ios-a34-android-tv-tv_1080p days 3 with-snapshot
+snap ci-RL-android-a34-google_apis-pixel_6 days 20 with-snapshot
+snap ci-RL-web-a34-google_apis-pixel_6 old with-snapshot
+snap ci-RL-gone-a34-android-tv-tv_1080p days 2 with-snapshot
+snap ci-RL-ios-2-a34-google_apis-pixel_6 days 2 with-snapshot
+snap ci-RL-android x x
+touch -t 202601010000 "$A/ci-RL-android.avd/userdata-qemu.img.qcow2" "$A/ci-RL-android.avd"
+clean --apply > "$T/out"
+ok "kept an idle runner's snapshot AVD used this week" "$(gone "$A/ci-RL-ios-a34-google_apis-pixel_6.avd/snapshots/default_boot")" "kept"
+ok "kept the same runner's TV snapshot AVD" "$(gone "$A/ci-RL-ios-a34-android-tv-tv_1080p.avd/snapshots")" "kept"
+ok "removed a snapshot AVD with no boot in 14 days" "$(gone "$A/ci-RL-android-a34-google_apis-pixel_6.avd")" "removed"
+ok "and its .ini" "$(gone "$A/ci-RL-android-a34-google_apis-pixel_6.ini")" "removed"
+ok "kept a building runner's snapshot AVD, however old" "$(gone "$A/ci-RL-web-a34-google_apis-pixel_6.avd")" "kept"
+ok "removed the snapshot AVD of a runner that no longer exists" "$(gone "$A/ci-RL-gone-a34-android-tv-tv_1080p.avd")" "removed"
+ok "RL-ios-2's AVD is not RL-ios's (no such runner: removed)" "$(gone "$A/ci-RL-ios-2-a34-google_apis-pixel_6.avd")" "removed"
+ok "still removed an idle runner's plain AVD" "$(gone "$A/ci-RL-android.avd")" "removed"
+
+echo "== below the admission floor, idle runners' snapshots go first =="
+setup 41
+echo 30 > "$T/free"
+date +%s > "$T/.cleanup-last-full"
+echo "RL-web" > "$T/busy"
+A="$T/home/.android/avd"
+mkdir -p "$A"
+snap ci-RL-ios-a34-google_apis-pixel_6 days 2 with-snapshot
+snap ci-RL-web-a34-google_apis-pixel_6 days 2 with-snapshot
+snap ci-RL-android-a34-google_apis-pixel_6 new x with-snapshot
+clean --apply --auto > "$T/out"
+ok "said it is below the floor" "$(grep -c 'BELOW THE FLOOR' "$T/out")" "1"
+ok "dropped an idle runner's snapshot" "$(gone "$A/ci-RL-ios-a34-google_apis-pixel_6.avd/snapshots")" "removed"
+ok "and its snapshot key" "$(gone "$A/ci-RL-ios-a34-google_apis-pixel_6.avd/ci-snapshot.key")" "removed"
+ok "but kept the AVD itself" "$(gone "$A/ci-RL-ios-a34-google_apis-pixel_6.avd/userdata-qemu.img.qcow2")" "kept"
+ok "kept a building runner's snapshot" "$(gone "$A/ci-RL-web-a34-google_apis-pixel_6.avd/snapshots")" "kept"
+ok "kept a snapshot written in the last 30 minutes" "$(gone "$A/ci-RL-android-a34-google_apis-pixel_6.avd/snapshots")" "kept"
+ok "the snapshots went before any other step" \
+  "$(awk '/Android emulators/ {a = NR} /DerivedData older/ {d = NR} END {print (a && d && a < d) ? "first" : "not first"}' "$T/out")" "first"
+
+echo "== over FLEET_CLEANUP_AVD_KEEP_GB, the least recently used snapshots go, even on a quiet --auto tick =="
+setup 42
+echo 120 > "$T/free"
+date +%s > "$T/.cleanup-last-full"
+A="$T/home/.android/avd"
+mkdir -p "$A"
+snap ci-RL-ios-a34-google_apis-pixel_6 x x with-snapshot
+snap ci-RL-android-a34-google_apis-pixel_6 x x with-snapshot
+dd if=/dev/zero of="$A/ci-RL-ios-a34-google_apis-pixel_6.avd/snapshots/default_boot/ram.bin" bs=1048576 count=700 2>/dev/null
+dd if=/dev/zero of="$A/ci-RL-android-a34-google_apis-pixel_6.avd/snapshots/default_boot/ram.bin" bs=1048576 count=700 2>/dev/null
+find "$A/ci-RL-ios-a34-google_apis-pixel_6.avd" -exec touch -t "$(date -v-3d +%Y%m%d%H%M)" {} +
+find "$A/ci-RL-android-a34-google_apis-pixel_6.avd" -exec touch -t "$(date -v-1d +%Y%m%d%H%M)" {} +
+OUT="$(FLEET_CLEANUP_AVD_KEEP_GB=2 clean --apply --auto)"
+ok "under the limit, a quiet tick stays quiet" "$OUT" ""
+FLEET_CLEANUP_AVD_KEEP_GB=1 clean --apply --auto > "$T/out"
+ok "over the limit, a quiet tick runs" "$(grep -c 'snapshot AVDs over 1 GB' "$T/out")" "1"
+ok "dropped the least recently used snapshot" "$(gone "$A/ci-RL-ios-a34-google_apis-pixel_6.avd/snapshots")" "removed"
+ok "kept its AVD" "$(gone "$A/ci-RL-ios-a34-google_apis-pixel_6.avd")" "kept"
+ok "and stopped once under the limit" "$(gone "$A/ci-RL-android-a34-google_apis-pixel_6.avd/snapshots/default_boot/ram.bin")" "kept"
+rm -rf "$A"
+
+echo "== orphaned CI emulators are stopped the snapshot-safe way =="
+setup 43
+echo 120 > "$T/free"
+date +%s > "$T/.cleanup-last-full"
+A="$T/home/.android/avd"
+mkdir -p "$A" "$T/emu" "$T/web/bin"
+snap ci-RL-ios-a34-google_apis-pixel_6 days 1 with-snapshot
+cat > "$T/emu/qemu-system-aarch64-headless" <<'EOF'
+#!/usr/bin/env bash
+case " $* " in *" -stubborn "*) trap '' TERM ;; *) trap 'exit 0' TERM ;; esac
+while :; do sleep 1; done
+EOF
+chmod +x "$T/emu/qemu-system-aarch64-headless"
+# Detached, so launchd is the parent, as android-emulator-runner leaves it.
+emu() { ( "$T/emu/qemu-system-aarch64-headless" "$@" >/dev/null 2>&1 & ); }
+emu -port 5554 -avd ci-RL-android-a34-google_apis-pixel_6 -no-snapshot-save
+emu -port 5556 -avd ci-RL-web-a34-google_apis-pixel_6 -no-snapshot-save
+emu -port 5558 -avd ci-RL-ios-a34-google_apis-pixel_6 -stubborn
+emu -port 5560 -avd fleet-explore-1
+emu -port 5562 -avd ci-RL-gone -no-snapshot
+# RL-web is running a job: a Runner.Worker under its directory.
+ln -s /bin/sleep "$T/web/bin/Runner.Worker"
+( "$T/web/bin/Runner.Worker" 300 >/dev/null 2>&1 & )
+sleep 1
+alive() { pgrep -f -- "-avd $1" >/dev/null 2>&1 && echo running || echo stopped; }
+FLEET_CLEANUP_EMU_ORPHAN_MIN_S=0 clean --auto > "$T/out"
+ok "a dry run stops nothing" "$(alive ci-RL-android-a34)" "running"
+ok "a dry run says what it would stop" "$(grep -c '\[dry-run\] stop ci-RL-android-a34' "$T/out")" "1"
+FLEET_CLEANUP_EMU_ORPHAN_MIN_S=3600 clean --apply --auto > "$T/out"
+ok "a young emulator is not an orphan yet" "$(alive ci-RL-android-a34)" "running"
+FLEET_CLEANUP_EMU_ORPHAN_MIN_S=0 FLEET_EMU_KILL_WAIT_S=2 FLEET_EMU_TERM_WAIT_S=1 clean --apply --auto > "$T/out"
+ok "stopped an idle runner's emulator" "$(alive ci-RL-android-a34)" "stopped"
+ok "with the console's emu kill" "$(grep -c 'adb -s emulator-5554 emu kill' "$T/calls")" "1"
+ok "and said so" "$(grep -c 'ci-RL-android-a34.*stopped (emu kill)' "$T/out")" "1"
+ok "left the emulator of a runner running a job" "$(alive ci-RL-web-a34)" "running"
+ok "never touched night QA's emulator" "$(alive fleet-explore-1)" "running"
+ok "stopped the emulator of a runner that no longer exists" "$(alive 'ci-RL-gone ')" "stopped"
+ok "SIGKILLed one that ignored emu kill and SIGTERM" "$(alive ci-RL-ios-a34)" "stopped"
+ok "and, since it could have been saving, dropped its snapshot" "$(gone "$A/ci-RL-ios-a34-google_apis-pixel_6.avd/snapshots/default_boot")" "removed"
+ok "but kept the AVD" "$(gone "$A/ci-RL-ios-a34-google_apis-pixel_6.avd")" "kept"
+pkill -f -- "$T/" 2>/dev/null
 
 echo
 echo "passed $PASS, failed $FAIL"

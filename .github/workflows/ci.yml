@@ -126,6 +126,9 @@ jobs:
       - name: Simulator cleanup tests
         run: bash hooks/tests/simulator.sh
 
+      - name: Emulator stop tests
+        run: bash hooks/tests/emulator.sh
+
       - name: Admission control tests
         run: bash hooks/tests/run.sh
 

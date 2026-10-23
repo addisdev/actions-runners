@@ -74,6 +74,11 @@ Used by `cleanup.sh` and `cleanupctl.sh`. See
 | `FLEET_CLEANUP_SIM_MAX_GB` | `3` | Erase an idle runner's `ci-` simulator past this size. |
 | `FLEET_CLEANUP_SIM_PRESSURE_GB` | `1` | ...and past this under pressure. |
 | `FLEET_CLEANUP_FULL_EVERY_S` | `86400` | `--auto` runs a full pass at least this often. |
+| `FLEET_CLEANUP_AVD_KEEP_DAYS` | `14` | Keep a runner's quick-boot snapshot AVD (`ci-<runner>-a<api>-<target>-<profile>`, the kit's `emulator_snapshot`) until it has gone this long without a boot. |
+| `FLEET_CLEANUP_AVD_KEEP_GB` | `30` | The snapshot AVDs in all. Over it, even on a quiet `--auto` tick, idle runners' snapshots (`snapshots/` inside the AVD) go, least recently used first; the AVD stays. Below the admission floor every idle snapshot goes, before any other step. |
+| `FLEET_CLEANUP_AVD_PREFIXES` | `ci shots` | AVD name prefixes that mark a runner's own emulator. Nothing else is touched. |
+| `FLEET_CLEANUP_EMU_ORPHAN_MIN_S` | `300` | Stop a CI emulator whose parent is launchd and whose runner runs no job once it is this old (on every tick). |
+| `FLEET_EMULATOR_CLEANUP` | `1` | The job-completed hook stops an emulator the job left running on its runner's AVD (`adb emu kill`, then SIGTERM, SIGKILL last). `0` turns it off. |
 | `FLEET_CLEANUP_INTERVAL` | `900` | Seconds between `--auto` ticks. Reinstall after changing: `./cleanupctl.sh install`. |
 | `FLEET_CLEANUP_LOG` | `~/Library/Logs/runner-cleanup.log` | Where the cleanup LaunchAgent writes stdout/stderr. |
 

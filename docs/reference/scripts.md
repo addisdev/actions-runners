@@ -27,7 +27,7 @@ without `--repair` — have no `--apply` because there is nothing to guard.
 | `healthctl.sh` | Install a LaunchAgent that runs `health.sh --repair` on a timer | n/a — subcommands |
 | `cleanupctl.sh` | Install a LaunchAgent that runs `cleanup.sh --apply --auto` every 15 minutes | n/a — subcommands |
 | `runs.sh` | What is building across every repo, and on which machine | read-only |
-| `cleanup.sh` | Erase idle CI simulators; prune stale DerivedData, dead simulators, old `_diag`, superseded runner versions | **yes** |
+| `cleanup.sh` | Erase idle CI simulators and AVDs (keeping runners' snapshot AVDs), stop orphaned CI emulators; prune stale DerivedData, dead simulators, old `_diag`, superseded runner versions | **yes** |
 | `preflight.sh` | Check a host against what the workflows assume | read-only, installs nothing |
 | `scripts/deregister.sh` | Remove one named runner completely | **yes** |
 | `scripts/drain-runner.sh` | Stop a runner gracefully, or resume it | no — every state it writes is reversible |
@@ -258,6 +258,9 @@ Source: [`cleanup.sh`](https://github.com/addisdev/actions-runners/blob/main/cle
 | `FLEET_CLEANUP_SIM_MAX_GB` | 3 | Erase a runner's `ci-` simulator past this size |
 | `FLEET_CLEANUP_SIM_PRESSURE_GB` | 1 | ...and past this under pressure |
 | `FLEET_CLEANUP_FULL_EVERY_S` | 86400 | `--auto` runs a full pass at least this often |
+| `FLEET_CLEANUP_AVD_KEEP_DAYS` | 14 | Keep a runner's snapshot AVD until this long without a boot |
+| `FLEET_CLEANUP_AVD_KEEP_GB` | 30 | Snapshot AVDs in all; over it, least recently used snapshots go |
+| `FLEET_CLEANUP_EMU_ORPHAN_MIN_S` | 300 | Age at which an unowned CI emulator is stopped |
 
 Host-wide steps, only while no job is building: DerivedData directories older
 than 7 days, simulators whose runtime is no longer installed, and stale
@@ -271,6 +274,23 @@ past the size limit, and a `ci-` device whose runner no longer exists is
 deleted. Under pressure, idle runners' Playwright browsers in
 `_work/_tool/ms-playwright` are removed; the next job that needs them downloads
 them again.
+
+Runners' Android emulators, first of the deleting steps. A plain
+`ci-<runner>` (or `shots-<runner>`) AVD, which android-emulator-runner recreates
+every job, goes once its runner is idle and it is 30 minutes untouched. A
+snapshot AVD, `ci-<runner>-a<api>-<target>-<profile>` (the launch kit's
+`emulator_snapshot`), is kept while its runner exists and has booted it in the
+last `FLEET_CLEANUP_AVD_KEEP_DAYS`: deleting it would make that runner's next
+job boot three times instead of once. Over `FLEET_CLEANUP_AVD_KEEP_GB`, idle
+runners' snapshots (`snapshots/`, not the AVD) go least recently used first;
+below the admission floor every idle runner's snapshot goes before anything
+else. A building runner's AVD, one an emulator has open, and one written in the
+last 30 minutes are never touched.
+
+Every tick, even a quiet `--auto` one: a CI emulator (`-avd ci-…`/`shots-…`)
+whose parent is launchd, older than `FLEET_CLEANUP_EMU_ORPHAN_MIN_S`, whose
+runner runs no job (no `Runner.Worker` under its directory) or no longer exists
+is stopped as `hooks/emulator-control.sh` does it.
 
 Always: runner `_diag` logs older than 14 days and runner versions older than
 the linked one (a self-update leaves the previous pair behind). It prints free
@@ -772,6 +792,21 @@ shuts down only newly booted devices after the final selected job ends. Each
 lease has a detached `Runner.Worker` guardian, so cancellation and abrupt worker
 failure follow the same cleanup path.
 Source: [`hooks/simulator-control.sh`](https://github.com/addisdev/actions-runners/blob/main/hooks/simulator-control.sh).
+
+### `hooks/emulator-control.sh`
+
+Internal helper used by the job-completed hook (`complete`) and sourced by
+`cleanup.sh`. It stops an Android emulator the job left running on its
+runner's own AVD (`ci-<runner>…`, `shots-<runner>…`) the way a quick-boot
+snapshot survives: the console's `adb emu kill`, then SIGTERM, then SIGKILL; a
+save-capable boot that needed SIGKILL has its snapshot removed, since it may
+have been mid-save. Night QA's `fleet-explore-*` and any other AVD are never
+touched. `FLEET_EMULATOR_CLEANUP=0` turns the hook path off.
+Source: [`hooks/emulator-control.sh`](https://github.com/addisdev/actions-runners/blob/main/hooks/emulator-control.sh).
+
+```bash
+hooks/tests/emulator.sh   # stand-in emulators, fake adb; no real emulator is touched
+```
 
 ### `hooks/shm-reap.sh`
 

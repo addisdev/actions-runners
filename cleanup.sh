@@ -24,6 +24,10 @@
 #     browsers.
 #   - never touch a simulator or Android AVD that is not a runner's own
 #     ci- (or shots-) device.
+#   - never throw away a runner's quick-boot snapshot AVD (the kit's
+#     emulator_snapshot) while its runner exists and used it in the last
+#     FLEET_CLEANUP_AVD_KEEP_DAYS, except to stay under
+#     FLEET_CLEANUP_AVD_KEEP_GB or, below the admission floor, first of all.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -77,6 +81,92 @@ else
 fi
 free_gb() { fleet_usable_free_gb; }
 PLAIN_HARD_GB="${FLEET_ADMIT_MIN_PLAIN_FREE_GB:-15}"
+# The admission floor itself: below it every job is held, so the snapshots go
+# first (see the AVD step).
+FLOOR_GB="${FLEET_ADMIT_MIN_FREE_DISK_GB:-40}"
+
+# A runner's name as the kit spells it in AVD and simulator names.
+runner_name() {
+  python3 -c "import json,sys;print(json.load(open(sys.argv[1],encoding='utf-8-sig'))['agentName'])" \
+    "$1/.runner" 2>/dev/null
+}
+
+AVD_HOME="${ANDROID_AVD_HOME:-$HOME/.android/avd}"
+AVD_PREFIXES="${FLEET_CLEANUP_AVD_PREFIXES:-ci shots}"
+AVD_KEEP_DAYS="${FLEET_CLEANUP_AVD_KEEP_DAYS:-14}"
+case "$AVD_KEEP_DAYS" in '' | *[!0-9]*) AVD_KEEP_DAYS=14 ;; esac
+AVD_KEEP_GB="${FLEET_CLEANUP_AVD_KEEP_GB:-30}"
+case "$AVD_KEEP_GB" in '' | *[!0-9]*) AVD_KEEP_GB=30 ;; esac
+EMU_ORPHAN_MIN_S="${FLEET_CLEANUP_EMU_ORPHAN_MIN_S:-300}"
+case "$EMU_ORPHAN_MIN_S" in '' | *[!0-9]*) EMU_ORPHAN_MIN_S=300 ;; esac
+# emu_list, emu_avd_owner, emu_stop: the job-completed hook's emulator helpers.
+if [ -f "$HERE/hooks/emulator-control.sh" ]; then
+  # shellcheck source=hooks/emulator-control.sh
+  . "$HERE/hooks/emulator-control.sh"
+fi
+EMU_PREFIXES="$AVD_PREFIXES"
+EMU_AVD_HOME="$AVD_HOME"
+
+# The kit's snapshot AVDs ("<prefix>-<runner>-a<api>-<target>-<profile>"), in
+# KB. A few du calls on a handful of directories: cheap enough for every tick.
+avd_snapshot_kb() {
+  local t=0 kb d p
+  for p in $AVD_PREFIXES; do
+    for d in "$AVD_HOME/$p"-*-a[0-9]*-*.avd; do
+      [ -d "$d" ] || continue
+      kb="$(du -sk "$d" 2>/dev/null | cut -f1)"
+      case "$kb" in '' | *[!0-9]*) kb=0 ;; esac
+      t=$((t + kb))
+    done
+  done
+  printf '%s' "$t"
+}
+
+# ---------------------------------------------------------------------------
+# Orphaned CI emulators, on every tick (it costs one ps when there are none).
+# android-emulator-runner starts the emulator detached, so it belongs to launchd
+# even while its job runs, and a job cancelled or timed out mid-step leaves it
+# running: on ultra (2026-10-23) two greenfolio emulators ran 9 h that way,
+# each holding 4 GB of RAM and its runner's AVD. One goes when its parent is
+# launchd, it is older than FLEET_CLEANUP_EMU_ORPHAN_MIN_S, and its runner is
+# running no job (no Runner.Worker under the runner's directory) or no longer
+# exists. It is stopped the snapshot-safe way (hooks/emulator-control.sh).
+# ---------------------------------------------------------------------------
+reap_orphan_emulators() {
+  command -v emu_list >/dev/null 2>&1 || return 0
+  local procs map names workers d name pid secs avd port save owner runner where dir
+  procs="$(emu_list | awk -v min="$EMU_ORPHAN_MIN_S" '$2 == 1 && $3 >= min')"
+  [ -n "$procs" ] || return 0
+  map=""
+  for d in "$ROOT"/*/; do
+    [ -f "$d/.runner" ] || continue
+    name="$(runner_name "$d" | tr -c 'A-Za-z0-9._\n-' '_')"
+    [ -n "$name" ] && map="$map$name ${d%/}
+"
+  done
+  names="$(printf '%s' "$map" | awk '{print $1}' | tr '\n' ' ')"
+  workers="$("${FLEET_PS:-/bin/ps}" -axo command= 2>/dev/null | grep 'Runner\.Worker')"
+  say "==> orphaned CI emulators (parent launchd, runner running no job)"
+  while read -r pid _ secs avd port save; do
+    [ -n "$pid" ] || continue
+    owner="$(emu_avd_owner "$avd" "$names")" || continue
+    runner="${owner%% *}"
+    where="${owner##* }"
+    if [ "$where" = here ]; then
+      dir="$(printf '%s' "$map" | awk -v n="$runner" '$1 == n { sub(/^[^ ]+ /, ""); print; exit }')"
+      if [ -n "$dir" ] && printf '%s\n' "$workers" \
+        | awk -v d="$dir/bin" 'index($0, d) == 1 { f = 1 } END { exit !f }'; then
+        continue
+      fi
+    fi
+    if [ "$APPLY" = "1" ]; then
+      say "    $avd (pid $pid, port $port, up ${secs}s, runner $runner $where): $(emu_stop "$pid" "$port" "$avd" "$save")"
+    else
+      say "    [dry-run] stop $avd (pid $pid, port $port, up ${secs}s, runner $runner $where)"
+    fi
+  done <<< "$procs"
+}
+reap_orphan_emulators
 
 # --auto runs every 15 minutes, so its no-op has to cost two cheap reads and
 # nothing else: the host it guards is usually saturated when the disk is short.
@@ -85,7 +175,13 @@ PLAIN_NOW="$(fleet_plain_free_gb)"
 PRESSURE=0
 [ -n "$FREE_NOW" ] && [ "$FREE_NOW" -lt "$PRESSURE_GB" ] && PRESSURE=1
 [ -n "$PLAIN_NOW" ] && [ "$PLAIN_NOW" -lt $((PLAIN_HARD_GB + 10)) ] && PRESSURE=1
-if [ "$AUTO" = "1" ] && [ "$PRESSURE" = "0" ]; then
+FLOOR=0
+[ -n "$FREE_NOW" ] && [ "$FREE_NOW" -lt "$FLOOR_GB" ] && FLOOR=1
+[ -n "$PLAIN_NOW" ] && [ "$PLAIN_NOW" -lt "$PLAIN_HARD_GB" ] && FLOOR=1
+AVD_SNAP_KB="$(avd_snapshot_kb)"
+AVD_OVER=0
+[ "$AVD_SNAP_KB" -gt $((AVD_KEEP_GB * 1048576)) ] && AVD_OVER=1
+if [ "$AUTO" = "1" ] && [ "$PRESSURE" = "0" ] && [ "$AVD_OVER" = "0" ]; then
   last="$(cat "$STAMP" 2>/dev/null)"
   case "$last" in '' | *[!0-9]*) last=0 ;; esac
   if [ $(( $(date +%s) - last )) -lt "$FULL_EVERY_S" ]; then
@@ -101,7 +197,7 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   fi
 fi
 trap 'rm -rf "$LOCK"' EXIT
-say "==> $(date '+%F %T')  free ${FREE_NOW} GB (${PLAIN_NOW} GB without purgeable), pressure line ${PRESSURE_GB} GB$([ "$PRESSURE" = 1 ] && echo '  — UNDER PRESSURE')"
+say "==> $(date '+%F %T')  free ${FREE_NOW} GB (${PLAIN_NOW} GB without purgeable), pressure line ${PRESSURE_GB} GB$([ "$PRESSURE" = 1 ] && echo '  — UNDER PRESSURE')$([ "$FLOOR" = 1 ] && echo ', BELOW THE FLOOR')$([ "$AVD_OVER" = 1 ] && echo "  — snapshot AVDs over ${AVD_KEEP_GB} GB")"
 
 # ---------------------------------------------------------------------------
 # Jobs in flight. Deleting DerivedData out from under a live xcodebuild produces
@@ -111,11 +207,6 @@ say "==> $(date '+%F %T')  free ${FREE_NOW} GB (${PLAIN_NOW} GB without purgeabl
 # only the runners that are building. Refusing everything while any job ran
 # meant this never ran on a busy day, which is when the disk runs out.
 # ---------------------------------------------------------------------------
-# A runner directory's GitHub name, which is what GitHub and the slots use.
-runner_name() {
-  python3 -c "import json,sys;print(json.load(open(sys.argv[1],encoding='utf-8-sig'))['agentName'])" \
-    "$1/.runner" 2>/dev/null
-}
 # The runners on THIS host. GitHub lists every runner of a repository, so with
 # the same repo mirrored on two hosts (runner-host and ultra, 2026-10-09) the
 # other host's busy runners came back too, and each host's host-wide steps
@@ -210,6 +301,113 @@ host_idle() {
 }
 before=$(free_gb)
 say "==> free before: ${before} GB"
+
+# This host's runners, spelled as the kit spells them in device and AVD names.
+known=" "
+for d in "$ROOT"/*/; do
+  [ -f "$d/.runner" ] || continue
+  known="$known$(runner_name "$d" | tr -c 'A-Za-z0-9._\n-' '_') "
+done
+
+# ---------------------------------------------------------------------------
+# Runners' own Android emulators (AVDs). First, because below the admission
+# floor their snapshots are what goes before anything else.
+#
+# Plain "ci-<runner>" (Jerv's screenshots: "shots-<runner>"): android-emulator-
+# runner creates it again at the start of every job (force-avd-creation), so
+# between jobs it is 1-1.5 GB the next job overwrites anyway; on ultra
+# (2026-10-22) 17 of them held 20 GB. One goes once its runner is idle and it is
+# 30 minutes untouched.
+#
+# Snapshot "ci-<runner>-a<api>-<target>-<profile>" (the kit's android-ci with
+# emulator_snapshot, taylab-launch-kit v1.38.0): the AVD and its quick-boot
+# snapshot (~6 GB; the guest's 4 GB of RAM is most of it) are what the runner's
+# next job boots from in seconds instead of cold. Deleting one makes that job
+# boot three times (initialise, save, test) instead of once, so it is KEPT
+# while its runner exists, until FLEET_CLEANUP_AVD_KEEP_DAYS without a boot.
+# Two limits on the kept ones, both met by dropping snapshots/ (the AVD stays,
+# so the next job only saves a new snapshot), least recently used first, never
+# a building runner's, an open one, or one written in the last 30 minutes:
+#   - FLEET_CLEANUP_AVD_KEEP_GB: the snapshot AVDs in all;
+#   - below the admission floor (FLEET_ADMIT_MIN_FREE_DISK_GB, usable): every
+#     idle snapshot, before any other step, since the floor holds every job.
+# A snapshot AVD whose runner no longer exists goes like a plain one. Other
+# AVDs (night QA's fleet-explore-*, a person's) are never touched.
+# ---------------------------------------------------------------------------
+avd_open() {
+  local dir="$1" pid
+  pid="$(cat "$dir/hardware-qemu.ini.lock" 2>/dev/null | tr -dc '0-9')"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
+  pgrep -f -- "-avd $2( |\$)" >/dev/null 2>&1
+}
+avd_last_use() {
+  find "$1" -maxdepth 1 -exec stat -f %m {} + 2>/dev/null | sort -n | tail -1
+}
+du_kb() {
+  local kb
+  kb="$(du -sk "$1" 2>/dev/null | cut -f1)"
+  case "$kb" in '' | *[!0-9]*) kb=0 ;; esac
+  printf '%s' "$kb"
+}
+say "==> runners' Android emulators (snapshot AVDs: kept ${AVD_KEEP_DAYS}d unused, ${AVD_KEEP_GB} GB in all)$([ "$FLOOR" = 1 ] && echo ' — below the floor: idle snapshots go first')"
+AVD_KEPT="$(mktemp -t cleanup-avd 2>/dev/null || echo "/tmp/.cleanup-avd-$$")"
+: > "$AVD_KEPT"
+snap_total="$AVD_SNAP_KB"
+n=0
+s=0
+for dir in "$AVD_HOME"/*.avd; do
+  [ -d "$dir" ] || continue
+  avd="$(basename "$dir" .avd)"
+  owner="$(emu_avd_owner "$avd" "$known" 2>/dev/null)" || continue
+  runner="${owner%% *}"
+  rest="${owner#* }"
+  kind="${rest%% *}"
+  where="${rest##* }"
+  building "$runner" && continue
+  avd_open "$dir" "$avd" && continue
+  recent=0
+  [ -n "$(find "$dir" -maxdepth 1 -mmin -30 2>/dev/null | head -1)" ] && recent=1
+  if [ "$kind" = snapshot ] && [ "$where" = here ]; then
+    if [ -z "$(find "$dir" -maxdepth 1 -mtime -"$AVD_KEEP_DAYS" -print -quit 2>/dev/null)" ]; then
+      kb="$(du_kb "$dir")"
+      say "    $(du -sh "$dir" 2>/dev/null | cut -f1)  $avd: no boot in ${AVD_KEEP_DAYS}d"
+      run rm -rf "$dir" "$AVD_HOME/$avd.ini"
+      snap_total=$((snap_total - kb))
+      n=$((n + 1))
+      continue
+    fi
+    [ "$recent" = 1 ] && continue
+    [ -d "$dir/snapshots" ] || continue
+    if [ "$FLOOR" = 1 ]; then
+      kb="$(du_kb "$dir/snapshots")"
+      say "    $(du -sh "$dir/snapshots" 2>/dev/null | cut -f1)  $avd/snapshots: below the floor"
+      run rm -rf "$dir/snapshots" "$dir/ci-snapshot.key"
+      snap_total=$((snap_total - kb))
+      s=$((s + 1))
+      continue
+    fi
+    echo "$(avd_last_use "$dir") $(du_kb "$dir/snapshots") $dir" >> "$AVD_KEPT"
+    continue
+  fi
+  [ "$recent" = 1 ] && continue
+  why=""
+  [ "$where" = gone ] && why=": no such runner here"
+  [ "$kind" = snapshot ] && snap_total=$((snap_total - $(du_kb "$dir")))
+  say "    $(du -sh "$dir" 2>/dev/null | cut -f1)  $avd$why"
+  run rm -rf "$dir" "$AVD_HOME/$avd.ini"
+  n=$((n + 1))
+done
+cap_kb=$((AVD_KEEP_GB * 1048576))
+while read -r _ kb dir; do
+  [ -n "$dir" ] || continue
+  [ "$snap_total" -gt "$cap_kb" ] || break
+  say "    $(du -sh "$dir/snapshots" 2>/dev/null | cut -f1)  $(basename "$dir" .avd)/snapshots: least recently used over ${AVD_KEEP_GB} GB"
+  run rm -rf "$dir/snapshots" "$dir/ci-snapshot.key"
+  snap_total=$((snap_total - kb))
+  s=$((s + 1))
+done < <(sort -n "$AVD_KEPT")
+rm -f "$AVD_KEPT"
+say "    ${n} AVDs, ${s} snapshots; snapshot AVDs now $((snap_total / 1048576)) GB"
 
 # ---------------------------------------------------------------------------
 # DerivedData older than a week. Xcode rebuilds whatever it needs; the only cost
@@ -306,11 +504,6 @@ say "    ${n} directories"
 # ---------------------------------------------------------------------------
 sim_limit="$SIM_MAX_GB"; [ "$PRESSURE" = 1 ] && sim_limit="$SIM_PRESSURE_GB"
 say "==> CI simulators over ${sim_limit} GB"
-known=" "
-for d in "$ROOT"/*/; do
-  [ -f "$d/.runner" ] || continue
-  known="$known$(runner_name "$d" | tr -c 'A-Za-z0-9._\n-' '_') "
-done
 n=0
 while IFS='|' read -r udid state bytes runner; do
   [ -n "$udid" ] || continue
@@ -340,46 +533,6 @@ for devs in devices.values():
             print("|".join([d["udid"], d.get("state", ""), str(d.get("dataPathSize", 0)), m.group(1)]))
 ')
 say "    ${n} devices"
-
-# ---------------------------------------------------------------------------
-# Each idle runner's own Android emulator. The kit's android-ci names one AVD
-# per runner "ci-<runner>" (Jerv's screenshots: "shots-<runner>"), and
-# android-emulator-runner creates it again at the start of every job
-# (force-avd-creation defaults to true), so between jobs an AVD is 1-1.5 GB
-# that the next job overwrites anyway. Nothing removed them: on ultra
-# (2026-10-22) 17 of them held 20 GB. An AVD is left alone while its runner is
-# building, while an emulator has it open, or within 30 minutes of its last
-# write (a job that is creating it). Other AVDs (night QA's fleet-explore-*, a
-# person's) are never touched.
-# ---------------------------------------------------------------------------
-AVD_HOME="${ANDROID_AVD_HOME:-$HOME/.android/avd}"
-AVD_PREFIXES="${FLEET_CLEANUP_AVD_PREFIXES:-ci shots}"
-avd_open() {
-  local dir="$1" pid
-  pid="$(cat "$dir/hardware-qemu.ini.lock" 2>/dev/null | tr -dc '0-9')"
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
-  pgrep -f -- "-avd $2( |\$)" >/dev/null 2>&1
-}
-say "==> idle runners' Android emulators"
-n=0
-for dir in "$AVD_HOME"/*.avd; do
-  [ -d "$dir" ] || continue
-  avd="$(basename "$dir" .avd)"
-  runner=""
-  for p in $AVD_PREFIXES; do
-    case "$avd" in "$p"-?*) runner="${avd#"$p"-}"; break ;; esac
-  done
-  [ -n "$runner" ] || continue
-  building "$runner" && continue
-  [ -n "$(find "$dir" -maxdepth 1 -mmin -30 2>/dev/null | head -1)" ] && continue
-  avd_open "$dir" "$avd" && continue
-  why=""
-  case "$known" in *" $runner "*) ;; *) why=": no such runner here" ;; esac
-  say "    $(du -sh "$dir" 2>/dev/null | cut -f1)  $avd$why"
-  run rm -rf "$dir" "$AVD_HOME/$avd.ini"
-  n=$((n + 1))
-done
-say "    ${n} AVDs"
 
 # ---------------------------------------------------------------------------
 # A runner's leftover self-update. The runner unpacks a new version into
