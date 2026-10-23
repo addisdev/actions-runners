@@ -1,0 +1,28 @@
+#!/bin/bash
+# `ps`, minus the one call that pinned a CPU core per finishing CI job.
+#
+# At "Complete job" the GitHub runner looks for orphans: every process that
+# started during the job is checked for the job's RUNNER_TRACKING_ID. Linux
+# reads /proc/<pid>/environ; macOS has no /proc, so the runner spawns
+# `ps e -p <pid> -o command` once PER PROCESS (actions/runner,
+# src/Runner.Common/ProcessExtensions.cs). On a shared host every other job's
+# processes started "during" this job, so it is hundreds of spawns per job, a
+# Runner.Worker at ~96 % CPU for minutes, and quadratic in how busy the host
+# is. Measured on ultra 2026-10-22: 81,867 spawns over the last 400 jobs, a
+# 3-minute "Complete job" on a job whose steps took one minute, ~15 workers at
+# full CPU at once (host load ~240 on 30 cores) — and ZERO orphans killed. The
+# fleet's own hooks reap what jobs leave behind (simulators, Gradle, shm).
+#
+# The scan cannot be turned off from a workflow: it is gated on a runner
+# variable (`process.clean`) GitHub never sends to self-hosted jobs. So this
+# answers exactly the runner's call, `ps e -p <digits> -o command`, with "could
+# not read" (exit 1, no output), which the runner treats as "not this job's
+# process" — the same outcome it reached on every one of those 81,867 calls,
+# without the spawn of /bin/ps. Everything else goes straight to /bin/ps.
+#
+# FLEET_PS_SHIM=off restores the runner's own scan (e.g. to hunt a real orphan).
+if [ "$#" -eq 5 ] && [ "$1" = e ] && [ "$2" = -p ] && [ "$4" = -o ] && [ "$5" = command ] \
+   && [[ "$3" =~ ^[0-9]+$ ]] && [ "${FLEET_PS_SHIM:-on}" != off ]; then
+  exit 1
+fi
+exec /bin/ps "$@"

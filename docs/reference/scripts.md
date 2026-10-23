@@ -37,12 +37,14 @@ without `--repair` — have no `--apply` because there is nothing to guard.
 | `scripts/ephemeral-runner.sh` | One job in a fresh directory, then delete it | **yes** |
 | `scripts/reap-ephemeral.sh` | Remove ephemeral directories a crash left behind | **yes** |
 | `scripts/install-hooks.sh` | Point every runner at the job hooks | **yes** |
+| `scripts/install-ps-shim.sh` | Put `shims/ps` first on the runners' PATH so the runner's orphan scan stops spawning `ps` per process | **yes** (one symlink; `--remove`) |
 | `scripts/release-check.sh` | Fail if anything host-specific reached a tracked file | read-only except `--install-hook` |
 | `scripts/check-docs.sh` | Verify the docs are internally consistent | read-only |
 | `scripts/test-drain.sh` | Shell tests for drain and resume | runs against a temporary fleet |
 | `scripts/test-ephemeral.sh` | Shell tests for the ephemeral reaper | runs against a temporary fleet |
 | `scripts/test-cleanup.sh` | Shell tests for disk cleanup | runs against a temporary fleet |
 | `scripts/test-health.sh` | Shell tests for `health.sh` | runs against a temporary fleet |
+| `scripts/test-ps-shim.sh` | Shell tests for `shims/ps` and its installer | a temporary PATH directory |
 | `scripts/test-preflight-tools.sh` | Shell tests for the CLI-tool checks | stub PATH and a temporary database |
 | `scripts/infer-checks.py` | Work out which preflight checks this fleet needs | read-only |
 | `scripts/check-tools.sh` | Check the CLI tools in `scripts/cli-tools.txt` on the runners' PATH | read-only |
@@ -941,6 +943,26 @@ room to spare, that only idle, shut-down, over-size `ci-` devices are erased,
 that a building or slot-holding runner keeps its simulator and browsers, that
 host-wide steps wait for an idle fleet, that a dry run deletes nothing, and
 that two runs never overlap. Exits non-zero if any test fails.
+
+### `scripts/install-ps-shim.sh`
+
+Stops the GitHub runner's orphan scan from pinning a core when a job finishes. At
+"Complete job" the runner checks every process that started during the job for its
+`RUNNER_TRACKING_ID`; macOS has no `/proc`, so it spawns `ps e -p <pid> -o command` once per
+process — hundreds per job on a busy host (ultra 2026-10-22: 81,867 spawns over 400 jobs, a
+p90 of 143 s per job, zero orphans ever killed). The scan cannot be switched off from a
+workflow. `shims/ps` answers exactly that call with exit 1 (the runner's own "could not read"
+path) and passes every other `ps` call to `/bin/ps`; this links it into the runners' first
+PATH directory, which takes effect on the next spawn with no restart. `FLEET_PS_SHIM=off`
+restores the scan for one shell or job.
+
+Source: [`scripts/install-ps-shim.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/install-ps-shim.sh).
+
+```bash
+scripts/install-ps-shim.sh                  # show what would change
+scripts/install-ps-shim.sh --apply          # link it
+scripts/install-ps-shim.sh --remove --apply # unlink it
+```
 
 ### `scripts/runner-path.sh`
 

@@ -145,6 +145,8 @@ jobs:
         run: bash scripts/test-preflight-tools.sh
       - name: runner-path.sh — one job PATH per runner
         run: bash scripts/test-runner-path.sh
+      - name: shims/ps — the runner's orphan scan without a ps per process
+        run: bash scripts/test-ps-shim.sh
 
   # ---------------------------------------------------------------------------
   # Offline release check (no network, checks tracked files for private data)

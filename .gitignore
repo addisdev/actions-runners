@@ -22,6 +22,10 @@
 !README.md
 !*.sh
 
+# shims/ps (why: see the file). The one file, not the folder.
+!shims/
+!shims/ps
+
 # GitHub Actions CI and community files. All paths inside .github/ are listed
 # explicitly — a catch-all !.github/**/* would also un-ignore any secrets or
 # workflow outputs that landed there accidentally.
