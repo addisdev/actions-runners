@@ -70,6 +70,7 @@ Used by `cleanup.sh` and `cleanupctl.sh`. See
 | Variable | Default | What it does |
 |---|---|---|
 | `FLEET_CLEANUP_PRESSURE_GB` | `FLEET_ADMIT_MIN_FREE_DISK_GB` + 20 | Below this much usable disk, `--auto` acts on every tick and takes the pressure steps too. |
+| `FLEET_CLEANUP_RUNNER_CACHE_DAYS` | `7` | Erase an idle runner's warm build caches (`_work/<repo>/DerivedData-*`, `spm-*`, `.build-cache-*`) unused this long; under pressure, all of them. |
 | `FLEET_CLEANUP_SIM_MAX_GB` | `3` | Erase an idle runner's `ci-` simulator past this size. |
 | `FLEET_CLEANUP_SIM_PRESSURE_GB` | `1` | ...and past this under pressure. |
 | `FLEET_CLEANUP_FULL_EVERY_S` | `86400` | `--auto` runs a full pass at least this often. |
@@ -316,6 +317,15 @@ judge the host by the limits the hooks actually enforce. After changing any of t
 | `FLEET_ADMIT_POLL_S` | `5` | How often a held job re-checks. |
 | `FLEET_ADMIT_MUTEX_TRIES` | `50` | Mutex spin attempts per wait-loop tick in `enforce` mode. |
 | `FLEET_ADMIT_SLOT_TTL_S` | `21600` | Slot lease TTL in seconds. |
+| `FLEET_ADMIT_LANES` | `off` | `off` / `observe` / `enforce`: [admission lanes](admission-and-scaling.md#lanes). `observe` keeps the single lane deciding and logs what the lanes would have decided. |
+| `FLEET_ADMIT_TOTAL_MAX_CONCURRENT` | `FLEET_ADMIT_MAX_CONCURRENT` | The total cap the lanes apply. |
+| `FLEET_ADMIT_HEAVY_MAX_CONCURRENT` | `4` | Heavy jobs at once; Simulator jobs count here too. |
+| `FLEET_ADMIT_LIGHT_MAX_CONCURRENT` | `12` | Light jobs at once. `FLEET_ADMIT_SHORT_MAX_CONCURRENT` is accepted as an alias. |
+| `FLEET_ADMIT_HEAVY_PATTERNS` | (none) | Space-separated `repo:job` shell patterns that are always heavy. `job` is `GITHUB_JOB`, the job's YAML id; `repo` may omit the owner. Checked before the light patterns. |
+| `FLEET_ADMIT_LIGHT_PATTERNS` | (none) | The same, always light. |
+| `FLEET_ADMIT_SHORT_JOB_S` | `90` | A job the patterns do not name is light when its recent median run (`/api/job-class`) is under this many seconds, with at least 5 runs; otherwise heavy. |
+| `FLEET_ADMIT_CLASS_CACHE_S` | `300` | How long the hook reuses the daemon's answer for one repo and job. |
+| `FLEET_ADMIT_CLASS_URL` | `/api/job-class` beside `FLEET_ADMIT_STATUS_URL` | Where the hook asks a job's class. Empty, or an empty `FLEET_ADMIT_STATUS_URL`, skips it: unnamed jobs are then heavy. |
 
 Eligible enforced waiters are FIFO. A Simulator waiter blocked by its
 resource-specific limit does not prevent an unrelated waiter from using free

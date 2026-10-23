@@ -80,7 +80,8 @@ both starting at once.
 When a job starts on any runner, `hooks/job-started.sh` runs first. In
 `enforce` mode:
 
-1. It joins a host-wide FIFO waiter queue under an atomic directory mutex.
+1. It joins a host-wide FIFO waiter queue under an atomic directory mutex
+   (one queue per [lane](#lanes) when lanes are enforced).
 2. It reaps waiter files whose hook process has exited and slot files whose
    owning `Runner.Worker` has exited.
 3. The oldest waiter checks live admitted slots and free disk. Later waiters
@@ -113,6 +114,83 @@ idle runners offline (onto a standby twin, or parked when there is none), and
 the jobs wait in GitHub's queue, where the wait is not charged to the job. A
 hold that still ends in a timeout is classed `admission-hold` and shown as not
 your code.
+
+### Lanes
+
+One host-wide limit treats a 5-second grep like a 12-minute Xcode build. On
+ultra (30 cores, October 2026) load1 rose about 8 per concurrent job, 74 % of
+jobs finished in under 90 s, and with one FIFO line the short ones waited
+behind the long ones. `FLEET_ADMIT_LANES` gives each kind of job its own limit
+and its own line:
+
+| Lane | Which jobs | Limit |
+|---|---|---|
+| `simulator` | runners `FLEET_SIMULATOR_RUNNERS` selects (with `FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT` > 0) | `FLEET_ADMIT_SIMULATOR_MAX_CONCURRENT`, strict as before, **and** a heavy slot |
+| `heavy` | `FLEET_ADMIT_HEAVY_PATTERNS`, jobs whose recent median run is `FLEET_ADMIT_SHORT_JOB_S` or more, and anything not known | `FLEET_ADMIT_HEAVY_MAX_CONCURRENT` (4) |
+| `light` | `FLEET_ADMIT_LIGHT_PATTERNS`, and jobs whose recent median run is under `FLEET_ADMIT_SHORT_JOB_S` (90 s) | `FLEET_ADMIT_LIGHT_MAX_CONCURRENT` (12) |
+
+All under `FLEET_ADMIT_TOTAL_MAX_CONCURRENT` (default
+`FLEET_ADMIT_MAX_CONCURRENT`), and the disk floors, as before.
+
+**Classification**, once per job before it waits, first match wins:
+
+1. The Simulator runner rule.
+2. `FLEET_ADMIT_HEAVY_PATTERNS`, then `FLEET_ADMIT_LIGHT_PATTERNS`:
+   space-separated `repo:job` shell patterns, quoted in `fleet.env`. `job` is
+   `GITHUB_JOB`, the YAML id of the job that runs (inside a reusable workflow,
+   its own key: `test`, not `ios / test`); the repo may be written with or
+   without its owner. `"*:e2e acme/app:test site:*"`.
+3. The dashboard's history, `GET /api/job-class` (see the [API](api.md)): the
+   median of the job's last 30 runs in 14 days, from the admission log's own
+   release lines (`ran_s`, the time it held a slot). Light under
+   `FLEET_ADMIT_SHORT_JOB_S` with at least 5 runs, heavy at or over it,
+   `unknown` with fewer. The answer is cached in `.admission/job-class/` for
+   `FLEET_ADMIT_CLASS_CACHE_S` (300 s), so a push that starts twenty jobs asks
+   once per job name.
+4. Otherwise heavy: `unknown`, a daemon that does not answer in 3 s, or no
+   daemon URL. A heavy job let into the light lane is what overloads the host;
+   a light job in the heavy lane only waits a little longer.
+
+A job's duration says nothing about its CPU: a 70-second Gradle build is short
+and heavy. Name such jobs in `FLEET_ADMIT_HEAVY_PATTERNS`.
+
+**Per-lane FIFO.** Each line is FIFO on its own: the oldest light job is never
+behind an older heavy one, and a later job in a line still leaves the mutex to
+the oldest one in it. A waiter file is named
+`<ts>-<pid>-<light|heavy>-<runner>` so the lockless check reads its line from
+the directory listing; a name from before lanes reads as heavy. Simulator jobs
+wait in the heavy line, and one held by the Simulator limit is skipped, as in
+the single line. Mutex, reaping, cancel polling, the disk floors and the
+timeout action are unchanged; the heavy and light limits are relaxed by
+`FLEET_ADMIT_TIMEOUT_ACTION=admit` like the host limit, and the Simulator limit
+stays strict.
+
+**Reasons.** The total cap, the Simulator limit and the disk floors keep their
+words. The lanes add `4 heavy job(s) already running, at the heavy limit of 4`,
+`12 light job(s) already running, at the light limit of 12` and `an older job
+is waiting for the next heavy slot` (or `light slot`), which the lake files with
+the old ones as `concurrency limit` and `queue order`.
+
+**Modes.**
+
+- `off` (default): no lane logic at all; the log line is the one it always was.
+- `observe`: the single lane decides, exactly as with lanes off. Every line also
+  carries `lanes`, `lane`, `lane_source` (`runner`, `pattern`, `history`,
+  `unknown`, `fallback`), `heavy_busy`, `light_busy`, the three limits, and the
+  lanes' own answer: `lane_would_hold` (true/false, null when it could not be
+  worked out that poll), `lane_reason`, and for a wait `lane_wait_s`, how far
+  into the wait the lanes would first have admitted the job. Set
+  `FLEET_ADMIT_TOTAL_MAX_CONCURRENT` to the total you mean to enforce, so the
+  lanes are judged at it while the single lane keeps its own limit.
+- `enforce`: the lanes decide. The log's `limit` is then the total cap.
+
+**Rolling out.** Observe for a day, then read the Capacity tab's lane rows (held
+by the single lane where the lanes would admit, admitted where they would hold,
+summed waits under each) and `cockpit load` (host load1 p50/p90 by busy
+runners): the heavy limit is right when load at that many heavy jobs stays near
+the core count. Then set `FLEET_ADMIT_LANES=enforce`. Going back is
+`FLEET_ADMIT_LANES=off`; nothing restarts, because the hooks read `fleet.env`
+for every job.
 
 ### Installing the hooks
 
@@ -186,6 +264,12 @@ FLEET_ADMIT_MAX_WAIT_S=600
 FLEET_ADMIT_TIMEOUT_ACTION=admit
 FLEET_ADMIT_CANCEL_POLL_S=30
 FLEET_ADMIT_MIN_FREE_DISK_GB=40
+# Lanes (see above)
+FLEET_ADMIT_LANES=observe
+FLEET_ADMIT_TOTAL_MAX_CONCURRENT=16
+FLEET_ADMIT_HEAVY_MAX_CONCURRENT=4
+FLEET_ADMIT_LIGHT_MAX_CONCURRENT=12
+FLEET_ADMIT_SHORT_JOB_S=90
 ```
 
 See [Configuration](configuration.md) for all admission variables.

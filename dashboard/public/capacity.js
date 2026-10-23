@@ -311,20 +311,25 @@ function admissionPanel(s) {
         )
       : null,
 
+    lanesBlock(a.lanes, mins),
+
     waiting.length
       ? h('div', {},
           h('h4', { text: `Waiting now (${waiting.length})` }),
           h('table', { class: 'grid' },
             h('thead', {}, h('tr', {},
               h('th', { scope: 'col', text: 'runner' }), h('th', { scope: 'col', text: 'repo' }),
+              h('th', { scope: 'col', text: 'lane' }),
               h('th', { scope: 'col', text: 'waiting' }), h('th', { scope: 'col', text: 'why' })
             )),
             h('tbody', {}, waiting.map((w) =>
               h('tr', { class: 'is-warn' },
                 h('td', { text: w.runner ?? '–' }),
                 h('td', { text: (w.repo ?? '').split('/').pop() || '–' }),
+                h('td', { class: 'mono', text: w.lane ?? '–' }),
                 h('td', { text: elapsed(w.since) }),
-                h('td', { class: 'muted', text: w.reason ?? '–' })
+                h('td', { class: 'muted', text:
+                  (w.reason ?? '–') + (w.laneWouldHold === false ? ' (the lanes would admit it)' : '') })
               )
             ))
           ))
@@ -336,6 +341,42 @@ function admissionPanel(s) {
           'timeout-minutes and is inside the durations on the Analytics tab. That is why the ' +
           'wait is bounded, and why every decision records how long it waited.' })
       : null
+  );
+}
+
+// Admission lanes (FLEET_ADMIT_LANES): light, heavy and Simulator jobs each
+// have their own limit and their own line. In observe the single lane still
+// decides and these rows say what the lanes would have done instead.
+function lanesBlock(l, mins) {
+  if (!l) return null;
+  const lim = l.limits ?? {};
+  const run = l.running ?? {};
+  const wait = l.waiting ?? {};
+  const day = l.last24h ?? {};
+  const sims = run.simulator ?? 0;
+  const line = (running, limit, waiting) =>
+    `${running}${limit != null ? ` of ${limit}` : ''} running` + (waiting ? `, ${waiting} waiting` : '');
+  const observing = l.mode === 'observe';
+  return h('div', {},
+    h('h4', { text: `Lanes — ${observing ? 'observing (the single lane decides)' : l.mode}` }),
+    h('dl', { class: 'kv' },
+      h('dt', { text: 'heavy' }),
+      h('dd', { text: line((run.heavy ?? 0) + sims, lim.heavy, (wait.heavy ?? 0) + (wait.simulator ?? 0)) +
+        (sims ? ` (${sims} of them Simulator jobs)` : '') }),
+      h('dt', { text: 'light' }),
+      h('dd', { text: line(run.light ?? 0, lim.light, wait.light ?? 0) }),
+      h('dt', { text: 'total cap' }),
+      h('dd', { text: lim.total != null ? `${lim.total} job(s)` : '–' }),
+      observing ? h('dt', { text: 'held, lanes would admit (24h)' }) : null,
+      observing ? h('dd', { text: String(day.heldLanesWouldAdmit ?? 0) }) : null,
+      observing ? h('dt', { text: 'admitted, lanes would hold (24h)' }) : null,
+      observing ? h('dd', { text: String(day.admittedLanesWouldHold ?? 0) }) : null,
+      observing && day.finishedWaits
+        ? h('dt', { text: 'wait, single lane vs lanes (24h)' }) : null,
+      observing && day.finishedWaits
+        ? h('dd', { text: `${mins(day.waitedS ?? 0)} vs ${mins(day.laneWaitS ?? 0)} over ${day.finishedWaits} held job(s)` })
+        : null
+    )
   );
 }
 

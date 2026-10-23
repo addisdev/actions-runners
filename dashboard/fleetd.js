@@ -35,6 +35,8 @@ import { deriveGroups } from './lib/groups.js';
 import { Backfill } from './lib/backfill.js';
 import { RunSettler } from './lib/settle.js';
 import { RunStatus } from './lib/run-status.js';
+import { createJobClass } from './lib/job-class.js';
+import { loadByBusy } from './lib/load-table.js';
 import { analytics, repoDetail } from './lib/analytics.js';
 import { buildActions, ActionError, ACTION_ARGS } from './lib/actions.js';
 import { handleApi, ApiError, API_PREFIX } from './lib/api.js';
@@ -314,6 +316,13 @@ let alertRun = Promise.resolve();
 // append to. This process never makes an admission decision itself — a job's
 // ability to start must not depend on the dashboard being alive.
 const admission = createAdmission({ db, logPath: CONFIG.admissionLog, warn, hostId: CONFIG.replicaId });
+// Admission lanes ask a job's class here (hooks/common.sh admit_classify). The
+// threshold is the hook's own FLEET_ADMIT_SHORT_JOB_S, sent with the request;
+// this host's fleet.env stands in for a hook that does not send it.
+const jobClass = createJobClass({
+  db,
+  shortJobS: () => admissionSettings({ root: CONFIG.root }).shortJobS,
+});
 const sampleShm = createShmSampler({ logPath: CONFIG.shmLog, lowFree: lowFreeFromEnv() });
 // host_samples rows from before host_id existed are this host's own vitals.
 try {
@@ -3249,6 +3258,36 @@ const server = http.createServer(async (req, res) => {
       });
     } catch (err) {
       warn('admission api:', err.message);
+      return json(res, { error: err.message }, 500);
+    }
+  }
+
+  // The lane hooks/job-started.sh should put a job in: { class, p50Ms, n }.
+  // Read-only, from this database's own history; cheap and cached.
+  if (url.pathname === '/api/job-class') {
+    try {
+      return json(res, jobClass.lookup({
+        repo: url.searchParams.get('repo'),
+        job: url.searchParams.get('job'),
+        shortS: url.searchParams.get('short_s'),
+      }));
+    } catch (err) {
+      if (!err.status) warn('job-class api:', err.message);
+      return json(res, { error: err.message }, err.status ?? 500);
+    }
+  }
+
+  // Host load1 p50/p90 by busy runners, for tuning the heavy-lane limit
+  // (`cockpit load`).
+  if (url.pathname === '/api/load-by-busy') {
+    try {
+      return json(res, {
+        ...loadByBusy(db, { days: url.searchParams.get('days') ?? 7, hostId: CONFIG.replicaId }),
+        cores: os.cpus().length,
+        lanes: admission.summary().lanes,
+      });
+    } catch (err) {
+      warn('load-by-busy api:', err.message);
       return json(res, { error: err.message }, 500);
     }
   }

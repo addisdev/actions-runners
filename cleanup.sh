@@ -16,9 +16,12 @@
 #   - never `simctl shutdown all`, never kill CoreSimulatorService. Those close
 #     simulators the user is working in. `delete unavailable` only removes devices
 #     whose runtime is already gone, which nothing can be using.
-#   - never touch a runner's checkouts or build caches in _work; wiping them
-#     makes every job re-clone and recompile from cold. The one exception is
-#     the Playwright tool cache, and only under disk pressure.
+#   - never touch a runner's checkouts in _work, and never a warm build cache
+#     a job used this week: wiping them makes every job re-clone and recompile
+#     from cold. Warm caches (_work/<repo>/DerivedData-*, spm-*,
+#     .build-cache-*) go after FLEET_CLEANUP_RUNNER_CACHE_DAYS without use, or
+#     all of an idle runner's under disk pressure, as do its Playwright
+#     browsers.
 #   - never touch a simulator or Android AVD that is not a runner's own
 #     ci- (or shots-) device.
 set -uo pipefail
@@ -39,6 +42,10 @@ done
 
 DERIVED="$HOME/Library/Developer/Xcode/DerivedData"
 DERIVED_AGE_DAYS=7
+# Per-runner warm build caches the kit keeps beside each checkout. A week
+# without a build reading them means the next one rebuilds anyway.
+RUNNER_CACHE_DAYS="${FLEET_CLEANUP_RUNNER_CACHE_DAYS:-7}"
+case "$RUNNER_CACHE_DAYS" in '' | *[!0-9]*) RUNNER_CACHE_DAYS=7 ;; esac
 DIAG_AGE_DAYS=14
 PW_LOCK_AGE_HOURS=6
 
@@ -395,6 +402,53 @@ for d in "$ROOT"/*/; do
   n=$((n + 1))
 done
 say "    ${n} directories"
+
+# ---------------------------------------------------------------------------
+# Warm build caches in each runner's _work/<repo>/: DerivedData-<scheme>,
+# spm-* (SwiftPM checkouts) and .build-cache-*, which the kit's iOS and
+# SwiftPM jobs keep per runner so a build is incremental (CI plan Phase 1.4).
+# Each one is a few GB and per runner, so across 80 runners they are the disk.
+# One whose newest file (two levels down, where xcodebuild and SwiftPM write on
+# every build) is older than RUNNER_CACHE_DAYS goes; under pressure, all of an
+# idle runner's go. Never a building runner's, never under _work/_*/ (the
+# runner's own _temp, _tool, _actions), and never a directory that is a git
+# checkout (a repo that happens to be named spm-something).
+# ---------------------------------------------------------------------------
+say "==> runner build caches unused for ${RUNNER_CACHE_DAYS}d$([ "$PRESSURE" = 1 ] && echo ' (under pressure: all of them, on idle runners)')"
+n=0
+for d in "$ROOT"/*/; do
+  d="${d%/}"
+  [ -f "$d/.runner" ] && [ -d "$d/_work" ] || continue
+  building "$(runner_name "$d")" && continue
+  for cache in "$d"/_work/*/DerivedData* "$d"/_work/*/spm* "$d"/_work/*/.build-cache*; do
+    [ -d "$cache" ] || continue
+    case "$cache" in "$d"/_work/_*) continue ;; esac
+    [ -e "$cache/.git" ] && continue
+    if [ "$PRESSURE" != 1 ] \
+      && [ -n "$(find "$cache" -maxdepth 2 -mtime -"$RUNNER_CACHE_DAYS" -print -quit 2>/dev/null)" ]; then
+      continue
+    fi
+    say "    $(du -sh "$cache" 2>/dev/null | cut -f1)  ${cache#"$ROOT"/}"
+    run rm -rf "$cache"
+    n=$((n + 1))
+  done
+done
+say "    ${n} directories"
+
+# ---------------------------------------------------------------------------
+# Spotlight stays out of every runner's build tree. register.sh writes the
+# marker for a new runner; this catches one created any other way (copied,
+# restored, registered by hand). Cheap and idempotent: one test per runner.
+# ---------------------------------------------------------------------------
+n=0
+for d in "$ROOT"/*/; do
+  d="${d%/}"
+  [ -f "$d/.runner" ] && [ -d "$d/_work" ] || continue
+  [ -e "$d/_work/.metadata_never_index" ] && continue
+  if [ "$APPLY" = "1" ]; then touch "$d/_work/.metadata_never_index" 2>/dev/null || continue; fi
+  n=$((n + 1))
+done
+[ "$n" -gt 0 ] && say "==> Spotlight exclusion written for ${n} runner work tree(s)$([ "$APPLY" = 1 ] || echo ' [dry-run]')"
 
 # ---------------------------------------------------------------------------
 # Under pressure only: each idle runner's Playwright browsers. They are 0.5-1.1 GB

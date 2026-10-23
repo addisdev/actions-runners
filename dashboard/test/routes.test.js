@@ -338,6 +338,24 @@ test('GET /metrics exposes queue and collector gauges', async () => {
   assert.match(body, /fleet_autoscale_deficit/);
 });
 
+test('GET /api/job-class answers without auth, unknown for a job never seen', async () => {
+  const bad = await fetch(url('/api/job-class?repo=nope&job=x'));
+  assert.equal(bad.status, 400);
+  const r = await fetch(url('/api/job-class?repo=acme%2Fsite&job=words&short_s=90'));
+  assert.equal(r.status, 200);
+  const body = await r.json();
+  assert.deepEqual([body.class, body.n, body.shortJobS], ['unknown', 0, 90]);
+});
+
+test('GET /api/load-by-busy returns rows, the window and the core count', async () => {
+  const r = await fetch(url('/api/load-by-busy?days=3'));
+  assert.equal(r.status, 200);
+  const body = await r.json();
+  assert.equal(body.days, 3);
+  assert.ok(Array.isArray(body.rows));
+  assert.ok(body.cores > 0);
+});
+
 test('GET /api/queue-history validates run ids and returns bounded rows', async () => {
   const bad = await fetch(url('/api/queue-history?runId=not-a-number'));
   assert.equal(bad.status, 400);

@@ -71,6 +71,11 @@ if [ -f "$SLOT" ]; then
     '' | *[!0-9]*) ;;
     *) HELD=$(($(admit_now) - TS)) ;;
   esac
+  # The lane this job ran in, for the release line: the dashboard's job-class
+  # history and the per-lane running counts are read from these.
+  if [ "$ADMIT_LANES" != off ]; then
+    ADMIT_LANE="$(sed -n 's/^lane=//p' "$SLOT" 2>/dev/null | head -1)" || ADMIT_LANE=""
+  fi
 fi
 
 admit_free_slot "$KEY"
@@ -78,6 +83,7 @@ admit_free_slot "$KEY"
 BUSY=0
 if admit_lock; then
   BUSY="$(admit_live_slots)"
+  [ "$ADMIT_LANES" = off ] || admit_lane_counts "$BUSY"
   admit_unlock
 fi
 

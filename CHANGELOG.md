@@ -10,6 +10,34 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Added
 
+- **Admission lanes (`FLEET_ADMIT_LANES`).** One host-wide FIFO made a
+  5-second job wait behind 12-minute Xcode builds: on ultra load rose about 8
+  per concurrent job on 30 cores, and 74 % of jobs finish in under 90 s. Each
+  job is now `light`, `heavy` or `simulator` (which also takes a heavy slot),
+  by the Simulator runner rule, `FLEET_ADMIT_HEAVY_PATTERNS` /
+  `FLEET_ADMIT_LIGHT_PATTERNS` (`repo:job` shell patterns), then the
+  dashboard's history (`GET /api/job-class`: light when the job's recent
+  median run is under `FLEET_ADMIT_SHORT_JOB_S`, cached by the hook), else
+  heavy. Limits `FLEET_ADMIT_HEAVY_MAX_CONCURRENT` (4) and
+  `FLEET_ADMIT_LIGHT_MAX_CONCURRENT` (12; `FLEET_ADMIT_SHORT_MAX_CONCURRENT`,
+  set in fleet.env but read by nothing until now, is its alias) under
+  `FLEET_ADMIT_TOTAL_MAX_CONCURRENT`, with the waiting line kept per lane.
+  `observe` keeps the single lane deciding and logs what the lanes would have
+  done (`lane_would_hold`, `lane_reason`, `lane_wait_s`); `enforce` lets them
+  decide; `off` (default) is the old behaviour, byte for byte in the log.
+  Admission rows carry the lane, the Capacity tab shows per-lane counts and
+  the lanes' 24 h tally. See
+  [Lanes](docs/admission-and-scaling.md#lanes).
+- **`cockpit load` and `GET /api/load-by-busy`**: host load1 p50/p90 by number
+  of busy runners from the per-minute host samples, to re-tune the heavy
+  limit when the job mix changes.
+- **`cleanup.sh` erases warm build caches nobody uses.** The kit is moving iOS
+  builds to per-runner `_work/<repo>/DerivedData-*` and `spm-*` so they are
+  incremental; cleanup now removes an idle runner's (and `.build-cache-*`)
+  after `FLEET_CLEANUP_RUNNER_CACHE_DAYS` (7) without a build, and all of them
+  under disk pressure. It also writes the Spotlight marker
+  `_work/.metadata_never_index` for any runner missing it, and
+  `scripts/ephemeral-runner.sh` writes it as `register.sh` already did.
 - **`shims/ps`: a finishing job no longer pins a core for minutes.** At "Complete job" the GitHub
   runner checks every process that started during the job for its `RUNNER_TRACKING_ID`; macOS has no
   `/proc`, so it spawns `ps e -p <pid> -o command` once per process. On a busy shared host that is

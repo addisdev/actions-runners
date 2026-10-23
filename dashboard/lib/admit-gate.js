@@ -54,6 +54,8 @@ export function admissionSettings({ root, env = process.env, read = readFileSync
     mode: mode === 'observe' || mode === 'enforce' ? mode : 'off',
     minFreeDiskGb: wholeOr(v('FLEET_ADMIT_MIN_FREE_DISK_GB'), 40),
     minPlainFreeGb: wholeOr(v('FLEET_ADMIT_MIN_PLAIN_FREE_GB'), 15),
+    // Lanes: a job with a recent median run under this many seconds is light.
+    shortJobS: wholeOr(v('FLEET_ADMIT_SHORT_JOB_S'), 90) || 90,
   };
 }
 

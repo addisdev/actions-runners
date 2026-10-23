@@ -431,7 +431,13 @@ Recent autoscale decisions.
 
 ### `GET /api/admission?limit=60`
 
-Job admission decisions. `limit` defaults to 60, max 500.
+Job admission decisions. `limit` defaults to 60, max 500. With
+[lanes](admission-and-scaling.md#lanes) on, rows carry `lanes`, `lane`,
+`lane_source`, `heavy_busy`, `light_busy`, `heavy_limit`, `light_limit`,
+`total_limit`, `lane_would_hold`, `lane_wait_s` and `lane_reason`, waiting
+entries carry `lane`, and the summary has a `lanes` block: `mode`, `limits`,
+`running` and `waiting` per lane, and over 24 h `heldLanesWouldAdmit`,
+`admittedLanesWouldHold`, `waitedS` against `laneWaitS` and `byLane`.
 
 ### `GET /api/run-status?repo=owner/name&run=123`
 
@@ -440,6 +446,30 @@ fetched with the daemon's token and cached for 20 s. Held admission hooks poll
 this to notice a run that ended while they waited: runner LaunchAgents set
 `SessionCreate`, so `gh` inside a job cannot read the keychain token. 400 for a
 malformed query, 404 for a repo this fleet does not serve.
+
+### `GET /api/job-class?repo=owner/name&job=<id>&short_s=90`
+
+`{ "repo", "job", "class": "light"|"heavy"|"unknown", "p50Ms", "n", "source", "shortJobS" }`:
+the [admission lane](admission-and-scaling.md#lanes) for a job, which
+`hooks/job-started.sh` asks for every job its patterns do not name. `job` is
+`GITHUB_JOB` (the job's YAML id); a display name such as `ios / test` also
+works. The median is over the job's newest 30 releases in the last 14 days
+from the admission log (`ran_s`, which leaves the hold out), or, with fewer
+than 5 of those, its successful GitHub job rows matched by name or by
+`% / <id>` (whose durations include any hold). `light` when the median is
+under `short_s` seconds (the hook's `FLEET_ADMIT_SHORT_JOB_S`; the host's
+`fleet.env` when omitted); `unknown` with fewer than 5 samples, which the hook
+treats as heavy. `source` is `admission`, `jobs` or `none`. Cached for 60 s.
+400 for a malformed query. No auth, like `/api/run-status`.
+
+### `GET /api/load-by-busy?days=7`
+
+`{ "days", "host", "since", "samples", "cores", "rows": [{ "busy", "n", "p50", "p90" }], "lanes" }`:
+this host's load1 p50 and p90 per number of busy runners over the window
+(1–90 days), from the per-minute `host_samples`. `busy` counts runners GitHub
+shows busy, which includes jobs the admission hook is holding. `lanes` is the
+`lanes` block of `/api/admission` (null while lanes are off). `cockpit load`
+prints it.
 
 ### `GET /api/simulate` (POST)
 

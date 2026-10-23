@@ -127,6 +127,13 @@ What it cleans:
   never candidates)
 - Unavailable simulators (`xcrun simctl delete unavailable`)
 - Runner `_diag` logs older than 14 days
+- Each idle runner's warm build caches beside its checkout
+  (`_work/<repo>/DerivedData-*`, `spm-*`, `.build-cache-*`) with nothing
+  written in `FLEET_CLEANUP_RUNNER_CACHE_DAYS` (7); under disk pressure, all of
+  them. Never a building runner's, never under the runner's own `_work/_*`,
+  never a git checkout.
+- The Spotlight marker `_work/.metadata_never_index` for any runner missing it
+  (`register.sh` writes it for every new runner)
 - Playwright browser cache sizes (reported every run)
 - Stale Playwright `__dirlock` files older than 6 hours (skipped while an
   install is in flight)
