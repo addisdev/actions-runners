@@ -178,6 +178,22 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Fixed
 
+- **`cockpit wait` and `wait_for_checks` no longer go green before a PR's
+  checks have all registered.** On acme/stream-app PR #5 (2026-10-24) a
+  wait that started 8 s after a push returned `1 of 1 green` at once, from the
+  previous head's run: the fleet view learns a new head only from its first
+  run, and the new head's run 40116718009 (nine jobs, six of them behind
+  `needs:`) was still queued. GitHub's own check list had the same gap, since
+  a `needs:`-gated job has no check run until its needs finish. Now GitHub
+  names the head (an open PR's branch ref, which moves before the PR's
+  `head.sha` does), and a green ends the wait only when GitHub has every
+  workflow run for that head (`actions/runs?head_sha=`, newest per workflow)
+  completed, every job of each and every other check passed, and nothing new
+  for 30 s (runs for separate events and `workflow_run` runs register later).
+  Until then the answer is `pending` with GitHub's reason; GitHub not
+  answering is not a yes. A green carries `verified` (runs, jobs, checks
+  covered), and the CLI confirms a green itself with `gh` when an older
+  daemon sends none. The CLI's GitHub fallback uses the same rule.
 - **The Hosts tab no longer lists the coordinator as a second, stale host.**
   `buildHostList` already dropped a heartbeat record under the coordinator's
   own id, but the `/api/hosts` handler and the `/metrics` stale-host count

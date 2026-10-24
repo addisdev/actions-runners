@@ -131,8 +131,11 @@ itself.
 open until the PR's checks finish, for at most `wait` seconds (300 at most).
 It returns one of four states:
 
-- `green`: every check passed. Only `success`, `skipped` and `neutral` count
-  as a pass.
+- `green`: every check passed, and GitHub agrees: every workflow run it has
+  for the head commit is completed, every job of each run passed, and nothing
+  new appeared for 30 seconds. Only `success`, `skipped` and `neutral` count
+  as a pass. `verified` says what GitHub's side covered
+  (`{ head, runs, jobs, checks }`).
 - `red`: a check finished without passing. `cancelled` is red, and `hint`
   says so.
 - `pending`: the wait ran out. Ask again.
@@ -142,8 +145,19 @@ It returns one of four states:
   runner is dead, or a job was orphaned (`orphans` lists them with their
   recovery).
 
-A PR's checks are its head commit's checks. An older commit's result never
-answers for the PR, even after a force-push.
+A PR's checks are its head commit's checks, and GitHub names the head (the
+PR's branch ref while it is open, since the PR's own `head.sha` catches up a
+moment after a push). An older commit's result never answers for the PR, even
+right after a push or a force-push.
+
+A green is never the fleet view's alone. The view rolls up the runs it has
+seen, and right after a push it has not seen them all: runs for `push` and
+`pull_request` register separately, a `workflow_run` run only after the run it
+follows completes, and a job behind `needs:` only when its needs finish. So
+before a green ends the wait the daemon reads `actions/runs?head_sha=` and each
+completed run's jobs, and holds the green (`pending`, with `reason`) until all
+of them are done and GitHub has been quiet for 30 seconds. If GitHub does not
+answer, the wait stays pending rather than trust the view.
 
 The answer comes from the fleet view (`source: "fleet"`) unless the view is
 stale, has no runs for the target, or is behind a re-run. In those cases the

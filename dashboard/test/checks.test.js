@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  checkSets, findCheckSet, decide, waitForChecks, parseGitHubChecks, githubState, runIdFromUrl,
+  checkSets, findCheckSet, decide, waitForChecks, parseGitHubChecks, githubState, githubVerdict, githubSet, runIdFromUrl,
 } from '../lib/checks.js';
 
 // The same cases as cockpit's RollupTests.swift, against the same glance
@@ -214,41 +214,225 @@ describe('GitHub\'s checks', () => {
 });
 
 // A clock the loop advances itself, so a five-minute wait takes no real time.
+const T0 = 1_000_000_000;
 function clock() {
-  let t = 1_000_000;
+  let t = T0;
   return { now: () => t, sleep: async (ms) => { t += ms; } };
 }
+
+// One workflow run as GitHub has it (the shape parseGitHubChecks makes): its
+// jobs once it has completed, none while it runs.
+function ghRun(id, workflow, {
+  status = 'completed', conclusion = 'success', jobs = ['build'], created = T0 - 600_000, updated = T0 - 300_000,
+} = {}) {
+  const done = status === 'completed';
+  return {
+    id, workflowId: `wf-${workflow}`, workflow, event: 'pull_request', status, conclusion: done ? conclusion : null,
+    createdAt: created, updatedAt: updated, url: `https://github.com/acme/comet-web/actions/runs/${id}`,
+    jobs: done ? jobs.map((j) => (typeof j === 'string'
+      ? { name: j, status: 'completed', conclusion: 'success', url: null, completedAt: updated }
+      : { url: null, completedAt: updated, ...j })) : null,
+  };
+}
+const ghAnswer = (head, runs, checks = []) => ({ head, runs, checks });
 
 function source(g, extra = {}) {
   return { glance: () => g, orphans: () => [], prChecks: async () => null, run: async () => null, ...extra };
 }
 
-describe('waiting', () => {
-  test('a finished result answers at once, without asking GitHub', async () => {
-    let asked = 0;
-    const out = await waitForChecks(target, source(glance({ recent: [run(1, 'ci')] }), { prChecks: async () => { asked++; return null; } }), { waitS: 60 });
-    assert.equal(out.state, 'green');
-    assert.equal(out.source, 'fleet');
-    assert.equal(asked, 0);
+describe('GitHub\'s verdict', () => {
+  test('every run completed and passed, quiet for the settle window: green', () => {
+    const gc = { ...ghAnswer('abc1234', [ghRun(1, 'ci', { jobs: ['guard', 'changes', 'web-e2e'] })]), fetchedAt: T0 };
+    assert.deepEqual(githubVerdict(gc), { state: 'green', why: null });
+    assert.equal(githubSet(gc, target).progress, '3 of 3 green');
   });
 
-  test('wait=0 on a fresh, pending view answers pending without asking GitHub', async () => {
+  // stream-app PR #5, 2026-10-24: guard and changes had passed; the six
+  // jobs behind `needs: changes` did not exist yet, so every check GitHub
+  // listed was green while run 40116718009 was still in progress.
+  test('a run still in progress is pending, however green its first jobs are', () => {
+    const gc = parseGitHubChecks('d42a20fa8be5e24c477004b82a8c2194eacd6493', {
+      check_runs: ['guard', 'changes'].map((name, i) => ({
+        name, status: 'completed', conclusion: 'success', completed_at: '2026-10-24T17:34:46Z',
+        html_url: `https://github.com/acme/stream-app/actions/runs/40116718009/job/12093940475${i}`,
+      })),
+    }, { statuses: [] }, {
+      runs: [{ id: 40116718009, workflow_id: 7, name: 'ci', event: 'pull_request', status: 'in_progress', conclusion: null,
+        created_at: '2026-10-24T17:34:12Z', updated_at: '2026-10-24T17:34:46Z', html_url: 'https://github.com/acme/stream-app/actions/runs/40116718009' }],
+      jobs: new Map(),
+      fetchedAt: Date.parse('2026-10-24T17:36:00Z'),
+    });
+    // The check-only rule this replaces read the same answer as green.
+    assert.equal(githubState({ head: gc.head, checks: [{ name: 'guard', status: 'completed', conclusion: 'success' }, { name: 'changes', status: 'completed', conclusion: 'success' }] }), 'green');
+    assert.equal(gc.checks.length, 0, 'the run\'s own check runs are its jobs, not extra checks');
+    assert.deepEqual(githubVerdict(gc), { state: 'pending', why: 'GitHub still has ci in progress' });
+    assert.equal(githubSet(gc, target).progress, '0 of 1 done');
+  });
+
+  test('a green that just finished waits out the settle window', () => {
+    const gc = ghAnswer('abc1234', [ghRun(1, 'ci', { updated: T0 - 5_000 })]);
+    const early = githubVerdict({ ...gc, fetchedAt: T0 });
+    assert.equal(early.state, 'pending');
+    assert.match(early.why, /settling: .* changed 5 s ago, and a green waits 30 s/);
+    assert.equal(githubVerdict({ ...gc, fetchedAt: T0 + 25_000 }).state, 'green');
+    assert.equal(githubVerdict({ ...gc, fetchedAt: T0 + 25_000 }, { settleMs: 60_000 }).state, 'pending');
+  });
+
+  test('a completed run whose jobs are unread, or a job still running, is pending', () => {
+    assert.equal(githubVerdict({ ...ghAnswer('abc', [{ ...ghRun(1, 'ci'), jobs: null }]), fetchedAt: T0 }).state, 'pending');
+    const stuck = ghRun(1, 'ci', { jobs: ['build', { name: 'deploy', status: 'in_progress', conclusion: null }] });
+    assert.deepEqual(githubVerdict({ ...ghAnswer('abc', [stuck]), fetchedAt: T0 }), { state: 'pending', why: 'GitHub still has deploy running' });
+  });
+
+  test('a failed or cancelled job is red; skipped and neutral pass', () => {
+    const at = (jobs) => githubVerdict({ ...ghAnswer('abc', [ghRun(1, 'ci', { jobs })]), fetchedAt: T0 }).state;
+    assert.equal(at(['build', { name: 'e2e', status: 'completed', conclusion: 'failure' }]), 'red');
+    assert.equal(at([{ name: 'e2e', status: 'completed', conclusion: 'cancelled' }]), 'red');
+    assert.equal(at([{ name: 'e2e', status: 'completed', conclusion: 'skipped' }, { name: 'n', status: 'completed', conclusion: 'neutral' }]), 'green');
+    assert.equal(githubVerdict({ ...ghAnswer('abc', [ghRun(1, 'ci', { conclusion: 'startup_failure', jobs: [] })]), fetchedAt: T0 }).state, 'red');
+  });
+
+  test('the newest run of a workflow wins over the one it replaced on the same commit', () => {
+    const replaced = ghRun(1, 'ci', { conclusion: 'cancelled', jobs: [{ name: 'build', status: 'completed', conclusion: 'cancelled' }] });
+    assert.equal(githubVerdict({ ...ghAnswer('abc', [replaced, ghRun(2, 'ci')]), fetchedAt: T0 }).state, 'green');
+    assert.equal(githubVerdict({ ...ghAnswer('abc', [replaced, ghRun(2, 'ci', { status: 'queued' })]), fetchedAt: T0 }).state, 'pending');
+  });
+
+  test('another app\'s check, a status, and a check of a run GitHub did not list still count', () => {
+    const gc = parseGitHubChecks('abc', {
+      check_runs: [
+        { name: 'build', status: 'completed', conclusion: 'success', html_url: 'https://github.com/a/b/actions/runs/9/job/1' },
+        { name: 'other-run', status: 'in_progress', html_url: 'https://github.com/a/b/actions/runs/10/job/2' },
+        { name: 'codecov', status: 'completed', conclusion: 'success', details_url: 'https://codecov.io/x', completed_at: '2026-10-24T17:00:00Z' },
+      ],
+    }, { statuses: [{ context: 'ci/legacy', state: 'success', updated_at: '2026-10-24T17:00:00Z' }] }, {
+      runs: [{ id: 9, workflow_id: 1, name: 'ci', status: 'completed', conclusion: 'success', created_at: '2026-10-24T16:50:00Z', updated_at: '2026-10-24T17:00:00Z' }],
+      jobs: new Map([[9, [{ name: 'build', status: 'completed', conclusion: 'success', completed_at: '2026-10-24T17:00:00Z' }]]]),
+      fetchedAt: Date.parse('2026-10-24T18:00:00Z'),
+    });
+    assert.deepEqual(gc.checks.map((c) => c.name), ['other-run', 'codecov', 'ci/legacy']);
+    assert.equal(githubVerdict(gc).state, 'pending');
+  });
+
+  test('nothing on GitHub yet, or no answer, is pending', () => {
+    assert.equal(githubVerdict({ head: 'abc', runs: [], checks: [], fetchedAt: T0 }).state, 'pending');
+    assert.equal(githubVerdict(null).state, 'pending');
+  });
+});
+
+describe('waiting', () => {
+  test('a finished fleet green ends the wait once GitHub agrees, and says what GitHub covered', async () => {
+    let asked = 0;
+    const out = await waitForChecks(target, source(glance({ recent: [run(1, 'ci')] }), {
+      prChecks: async () => { asked++; return ghAnswer('abc1234def', [ghRun(1, 'ci', { jobs: ['a', 'b'] })]); },
+    }), { waitS: 60 });
+    assert.equal(out.state, 'green');
+    assert.equal(out.source, 'fleet');
+    assert.equal(asked, 1);
+    assert.deepEqual(out.verified, { head: 'abc1234def', runs: 1, jobs: 2, checks: 0 });
+  });
+
+  test('a fleet green GitHub cannot confirm is not a green', async () => {
+    const c = clock();
+    const out = await waitForChecks(target, source(glance({ recent: [run(1, 'ci')] })), { waitS: 60, now: c.now, sleep: c.sleep });
+    assert.equal(out.state, 'pending');
+    assert.match(out.reason, /^the fleet reads 1 of 1 green, but GitHub did not answer/);
+  });
+
+  // stream-app PR #5, 2026-10-24, replayed: the wait began 8 s after the
+  // push. The fleet still knew only the old head (8c2d77c, green) and had not
+  // seen run 40116718009 on the new one (d42a20f, queued), and returned the old
+  // head's "1 of 1 green" at once. Now GitHub names the head, and the green
+  // comes after the new run's nine jobs pass and GitHub stays quiet 30 s.
+  test('right after a push, the old head\'s green does not end the wait (stream-app PR #5)', async () => {
+    const c = clock();
+    const repo = 'acme/stream-app';
+    const pr5 = { repo, pr: 5 };
+    const oldHead = run(40112490807, 'ci', { repo, pr: 5, sha: '8c2d77c', head: '8c2d77c18879', updated: T0 - 120_000 });
+    const jobs = ['guard', 'changes', 'typescript', 'firetv-core', 'roku-offdevice', 'tvos-core', 'sql', 'web-e2e', 'ci-success'];
+    const finishedAt = T0 + 160_000;
+    const newHead = 'd42a20fa8be5e24c477004b82a8c2194eacd6493';
+    let asks = 0;
+    const out = await waitForChecks(pr5, {
+      glance: () => glance({
+        // The fleet catches up with the new run 40 s in.
+        runs: c.now() < T0 + 40_000 ? []
+          : c.now() < finishedAt ? [run(40116718009, 'ci', { repo, pr: 5, sha: 'd42a20f', head: 'd42a20fa8be5', status: 'in_progress' })] : [],
+        recent: [oldHead, ...(c.now() >= finishedAt ? [run(40116718009, 'ci', { repo, pr: 5, sha: 'd42a20f', head: 'd42a20fa8be5', updated: finishedAt })] : [])],
+      }),
+      orphans: () => [],
+      run: async () => null,
+      prChecks: async () => {
+        asks++;
+        const status = c.now() < T0 + 30_000 ? 'queued' : c.now() < finishedAt ? 'in_progress' : 'completed';
+        return ghAnswer(newHead, [ghRun(40116718009, 'ci', { status, jobs, created: T0 - 8_000, updated: status === 'completed' ? finishedAt : T0 })]);
+      },
+    }, { waitS: 300, now: c.now, sleep: c.sleep });
+    assert.equal(out.state, 'green');
+    assert.ok(out.waitedMs >= 190_000, `green after ${out.waitedMs} ms: before the run finished and settled`);
+    assert.equal(out.checks.sha, 'd42a20f');
+    assert.deepEqual(out.verified, { head: newHead, runs: 1, jobs: 9, checks: 0 });
+    assert.ok(asks < 40, `asked GitHub ${asks} times`);
+  });
+
+  test('wait=0 right after a push reads pending, not the old head\'s green', async () => {
+    const repo = 'acme/stream-app';
+    const oldHead = run(40112490807, 'ci', { repo, pr: 5, sha: '8c2d77c', head: '8c2d77c18879' });
+    const out = await waitForChecks({ repo, pr: 5 }, source(glance({ recent: [oldHead] }), {
+      prChecks: async () => ghAnswer('d42a20fa8be5e24c477004b82a8c2194eacd6493', [ghRun(40116718009, 'ci', { status: 'queued' })]),
+    }), { waitS: 0 });
+    assert.equal(out.state, 'pending');
+    assert.equal(out.source, 'github');
+    assert.equal(out.checks.progress, '0 of 1 done');
+  });
+
+  // A workflow_run workflow is created only after the run it follows
+  // completes: the first run's green is not the commit's.
+  test('a second run registering after the first finished keeps the wait open', async () => {
+    const c = clock();
+    const first = ghRun(11, 'ci', { updated: T0 - 2_000 });
+    const out = await waitForChecks(target, source(glance({ recent: [run(11, 'ci')] }), {
+      prChecks: async () => {
+        const t = c.now();
+        if (t < T0 + 15_000) return ghAnswer('abc1234def', [first]);
+        const status = t < T0 + 100_000 ? 'in_progress' : 'completed';
+        return ghAnswer('abc1234def', [first, ghRun(12, 'deploy-preview', { status, created: T0 + 12_000, updated: status === 'completed' ? T0 + 100_000 : T0 + 12_000 })]);
+      },
+    }), { waitS: 300, now: c.now, sleep: c.sleep });
+    assert.equal(out.state, 'green');
+    assert.ok(out.waitedMs >= 130_000, `green after ${out.waitedMs} ms`);
+    assert.equal(out.verified.runs, 2);
+  });
+
+  test('a run the fleet has not seen that failed on GitHub turns its green red', async () => {
+    const out = await waitForChecks(target, source(glance({ recent: [run(11, 'ci')] }), {
+      prChecks: async () => ghAnswer('abc1234def', [ghRun(11, 'ci'), ghRun(12, 'lint', { conclusion: 'cancelled', jobs: [{ name: 'lint', status: 'completed', conclusion: 'cancelled' }] })]),
+    }), { waitS: 60 });
+    assert.equal(out.state, 'red');
+    assert.equal(out.source, 'github');
+    assert.deepEqual(out.checks.failed.map((r) => r.workflow), ['lint']);
+    assert.match(out.hint, /cancelled is not a pass/);
+  });
+
+  test('wait=0 on a fresh, pending view answers pending from the fleet', async () => {
     let asked = 0;
     const g = glance({ runs: [run(1, 'ci', { status: 'in_progress', elapsed: 1, expected: 10 })] });
     const out = await waitForChecks(target, source(g, { prChecks: async () => { asked++; return null; } }), { waitS: 0 });
     assert.equal(out.state, 'pending');
+    assert.equal(out.source, 'fleet');
     assert.equal(out.checks.progress, '0 of 1 done');
-    assert.equal(asked, 0);
+    assert.equal(asked, 1, 'once, for the head');
   });
 
   test('a stale view asks GitHub, and GitHub\'s green ends the wait', async () => {
     const g = { ...glance({ runs: [run(1, 'ci', { status: 'in_progress' })] }), stale: true };
     const out = await waitForChecks(target, source(g, {
-      prChecks: async () => ({ head: 'abc1234def', checks: [{ name: 'ci', status: 'completed', conclusion: 'success', url: null }] }),
+      prChecks: async () => ghAnswer('abc1234def', [ghRun(1, 'ci', { jobs: ['ci'] })]),
     }), { waitS: 0 });
     assert.equal(out.state, 'green');
     assert.equal(out.source, 'github');
     assert.equal(out.fleetSaid, '0 of 1 done');
+    assert.equal(out.verified.jobs, 1);
   });
 
   test('GitHub\'s pending never overrides the fleet; the wait times out pending', async () => {
@@ -256,11 +440,11 @@ describe('waiting', () => {
     let asked = 0;
     const g = { ...glance({ runs: [run(1, 'ci', { status: 'in_progress' })] }), stale: true };
     const out = await waitForChecks(target, source(g, {
-      prChecks: async () => { asked++; return { head: 'abc', checks: [{ name: 'ci', status: 'in_progress', conclusion: null }] }; },
+      prChecks: async () => { asked++; return ghAnswer('abc', [ghRun(1, 'ci', { status: 'in_progress' })]); },
     }), { waitS: 90, now: c.now, sleep: c.sleep, tickMs: 1000 });
     assert.equal(out.state, 'pending');
     assert.equal(out.source, 'github');
-    assert.ok(asked >= 3 && asked <= 4, `asked ${asked} times in 90 s`);
+    assert.ok(asked >= 3 && asked <= 5, `asked ${asked} times in 90 s`);
   });
 
   test('a red is asked of GitHub first, and a re-run in progress keeps it pending', async () => {
@@ -280,6 +464,15 @@ describe('waiting', () => {
     const out = await waitForChecks(target, source(glance({ recent: [row] }), { run: async () => row }), { waitS: 5 });
     assert.equal(out.state, 'red');
     assert.match(out.hint, /cancelled is not a pass/);
+  });
+
+  test('a red of the commit GitHub names as the head, not of the one before it', async () => {
+    const c = clock();
+    const before = run(1, 'ci', { conclusion: 'failure', sha: 'aaaaaaa', head: 'aaaaaaaaaaaa' });
+    const out = await waitForChecks(target, source(glance({ recent: [before] }), {
+      prChecks: async () => ghAnswer('bbbbbbbbbbbbbbbb', [ghRun(2, 'ci', { status: 'queued' })]),
+    }), { waitS: 5, now: c.now, sleep: c.sleep });
+    assert.equal(out.state, 'pending');
   });
 
   test('an orphan among the target\'s runs ends the wait as pointless, with its recovery', async () => {

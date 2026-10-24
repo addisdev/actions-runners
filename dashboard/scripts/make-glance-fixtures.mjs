@@ -62,11 +62,28 @@ const orphan = classifyJob({ ...recorded, run_id: pendingRun.id }, {
   repo, runner: { name: recorded.runner_name, state: 'draining' }, now: Date.parse(recorded.steps.at(-1).started_at) + 600_000,
 });
 const drain = { id: 'runner.drain', label: 'Drain runner', danger: 'medium', confirm: 'Stops the runner after its current job.', scope: 'act', args: ACTION_ARGS['runner.drain'] };
+// GitHub's answer for a commit, made from the view's own rows: each run with
+// one job, as long ago as the view says it finished.
+const githubFor = (view) => async (target) => {
+  const rows = [...view.runs, ...view.recent].filter((r) => r.repo === target.repo && r.sha === target.sha);
+  if (!rows.length) return null;
+  return {
+    head: `${target.sha}${'0'.repeat(40 - target.sha.length)}`,
+    fetchedAt: s.now,
+    checks: [],
+    runs: rows.map((r) => ({
+      id: r.id, workflowId: r.workflow, workflow: r.workflow, event: r.event, status: r.status, conclusion: r.conclusion ?? null,
+      createdAt: r.startedAt, updatedAt: r.updatedAt, url: r.url,
+      jobs: r.status !== 'completed' ? null
+        : [{ name: r.workflow, status: 'completed', conclusion: r.conclusion, url: r.url, completedAt: r.updatedAt }],
+    })),
+  };
+};
 const ctx = (view, orphans = []) => ({
   glance: () => view,
   orphans: () => orphans,
   waitForChecks: (target, opts) => waitForChecks(target, {
-    glance: () => view, orphans: () => orphans, prChecks: async () => null, run: async () => null,
+    glance: () => view, orphans: () => orphans, prChecks: githubFor(view), run: async () => null,
   }, { ...opts, now: () => s.now }),
   readOnly: () => false,
   actionInfo: (id) => (id === drain.id ? drain : null),

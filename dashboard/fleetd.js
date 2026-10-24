@@ -44,7 +44,7 @@ import { handleMcp } from './lib/mcp.js';
 import { createOAuth, parsePublicUrl } from './lib/oauth.js';
 import { createPublicHandler } from './lib/public.js';
 import { findOrphans, trimJob } from './lib/orphans.js';
-import { waitForChecks, parseGitHubChecks } from './lib/checks.js';
+import { waitForChecks, parseGitHubChecks, latestRuns } from './lib/checks.js';
 import { loadOrCreateToken, authorize, bearerToken, tokenMatches } from './lib/auth.js';
 import {
   initAllowedHosts, refreshNetworkIdentity, reachableUrls, ensureHostAllowed, pairingUrl,
@@ -472,26 +472,68 @@ function currentGlance(now = Date.now()) {
 // the steps, and keeping them here costs no extra GitHub call.
 let activeRunJobs = [];
 
-// GitHub's own checks for a wait's target, asked when the fleet view is stale
-// or has nothing for it. Shared for 20 s, so ten agents waiting on one PR
-// cost GitHub what one does.
+// GitHub's own answer for a wait's target (lib/checks.js `gc`): the head
+// commit, every workflow run for it with the jobs of each completed run, and
+// the other checks and statuses. Every wait asks before it ends green, and a
+// stale or empty fleet view asks more often. Shared for 10 s, so ten agents
+// waiting on one PR cost GitHub what one does; the answer keeps its own
+// fetchedAt, so a shared copy never looks quieter than it was.
 const githubChecksCache = new Map();
+const refPath = (ref) => ref.split('/').map(encodeURIComponent).join('/');
+
+// The head as of now. A PR's head.sha catches up with a push a moment after
+// the branch moves, so an open PR's branch ref is asked as well, and wins.
+async function githubHeadFor(target) {
+  const { repo } = target;
+  if (target.sha) {
+    if (/^[0-9a-f]{40}$/i.test(target.sha)) return target.sha;
+    return (await gh.get(`repos/${repo}/commits/${encodeURIComponent(target.sha)}`)).data?.sha ?? null;
+  }
+  if (target.branch) {
+    return (await gh.get(`repos/${repo}/git/ref/heads/${refPath(target.branch)}`)).data?.object?.sha ?? null;
+  }
+  if (target.pr == null) return null;
+  const pr = (await gh.get(`repos/${repo}/pulls/${target.pr}`)).data;
+  let head = pr?.head?.sha ?? null;
+  const from = pr?.head?.repo?.full_name;
+  if (pr?.state === 'open' && from && pr.head.ref) {
+    const moved = await gh.get(`repos/${from}/git/ref/heads/${refPath(pr.head.ref)}`).catch(() => null);
+    head = moved?.data?.object?.sha ?? head;
+  }
+  return head;
+}
+
 async function githubChecksFor(target) {
   const key = `${target.repo}|${target.pr ?? ''}|${target.sha ?? ''}|${target.branch ?? ''}`;
   const hit = githubChecksCache.get(key);
-  if (hit && Date.now() - hit.at < 20_000) return hit.value;
-  let head = target.sha ?? null;
-  if (target.pr != null) head = (await gh.get(`repos/${target.repo}/pulls/${target.pr}`)).data?.head?.sha ?? null;
-  const ref = head ?? target.branch;
-  if (!ref) return null;
-  const enc = encodeURIComponent(ref);
-  const [runs, status] = await Promise.all([
-    gh.get(`repos/${target.repo}/commits/${enc}/check-runs?per_page=100`),
-    gh.get(`repos/${target.repo}/commits/${enc}/status`),
+  if (hit && Date.now() - hit.at < 10_000) return hit.value;
+  const fetchedAt = Date.now();
+  const head = await githubHeadFor(target);
+  if (!head) return null;
+  const { repo } = target;
+  const [checkRuns, status, runs] = await Promise.all([
+    gh.get(`repos/${repo}/commits/${head}/check-runs?per_page=100`),
+    gh.get(`repos/${repo}/commits/${head}/status`),
+    gh.get(`repos/${repo}/actions/runs?head_sha=${head}&per_page=100`),
   ]);
-  const value = parseGitHubChecks(head ?? ref, runs.data, status.data);
+  const workflowRuns = runs.data?.workflow_runs ?? [];
+  // Jobs only for runs that completed (a running run is pending whatever its
+  // jobs say), and only for the newest run of each workflow.
+  const jobs = new Map();
+  const done = latestRuns(workflowRuns.map((r) => ({ id: r.id, workflowId: r.workflow_id, workflow: r.name, status: r.status })))
+    .filter((r) => r.status === 'completed');
+  await Promise.all(done.map(async (r) => {
+    const all = [];
+    for (let page = 1; page <= 5; page++) {
+      const { data } = await gh.get(`repos/${repo}/actions/runs/${r.id}/jobs?filter=latest&per_page=100&page=${page}`);
+      all.push(...(data?.jobs ?? []));
+      if (all.length >= (data?.total_count ?? 0) || !(data?.jobs ?? []).length) break;
+    }
+    jobs.set(r.id, all);
+  }));
+  const value = parseGitHubChecks(head, checkRuns.data, status.data, { runs: workflowRuns, jobs, fetchedAt });
   if (githubChecksCache.size > 200) githubChecksCache.clear();
-  githubChecksCache.set(key, { at: Date.now(), value });
+  githubChecksCache.set(key, { at: fetchedAt, value });
   return value;
 }
 

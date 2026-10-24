@@ -22,6 +22,8 @@ public struct CheckSet: Identifiable, Sendable, Equatable {
     /// moved to another commit after they ran and has since come back, so a
     /// new run is due (site-web PR #79, 2026-10-03).
     public var superseded: [RunRow] = []
+    /// GitHub's reason a finished-looking set is still pending ("settling: …").
+    public var why: String? = nil
 
     public var label: String {
         let repoShort = repo.split(separator: "/").last.map(String.init) ?? repo

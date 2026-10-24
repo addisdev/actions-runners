@@ -43,5 +43,11 @@
  },
  "reason": null,
  "hint": null,
- "fleetAgeMs": 0
+ "fleetAgeMs": 0,
+ "verified": {
+  "head": "ec99782000000000000000000000000000000000",
+  "runs": 1,
+  "jobs": 1,
+  "checks": 0
+ }
 }
