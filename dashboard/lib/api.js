@@ -148,7 +148,7 @@ export const ROUTES = [
       'The checks of a PR (its head commit only, never an older commit\'s result), a commit or a branch, '
       + 'rolled up as green, red, pending or pointless. With wait=N the request is held open up to N seconds '
       + '(at most 300) until the checks finish; pending means the wait ran out, so ask again. pointless means '
-      + 'waiting cannot end well: the host is down, the disk floor is holding jobs, GitHub is refusing jobs, '
+      + 'waiting cannot end well: the host is down, the disk floor is holding jobs, GitHub is refusing this repo\'s jobs, '
       + 'a queued check will never start, or a job was orphaned; reason says which, and orphans carry their '
       + 'recovery. Cancelled is red, not green. Green means GitHub itself has every workflow run for the head '
       + 'completed with all of its jobs passed, and nothing new for 30 s (verified says what it covered): runs '

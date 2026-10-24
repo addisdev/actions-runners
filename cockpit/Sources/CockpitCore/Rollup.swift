@@ -205,12 +205,25 @@ public enum Waiter {
         if infra.contains(verdict.id) {
             return .pointless("\(verdict.title): \(verdict.sentence ?? "")")
         }
-        if let blocked = verdict.open.first(where: { $0.id == "account-blocked" && $0.blocking == true }) {
-            return .pointless("\(blocked.title): jobs are refused before they reach a runner")
-        }
         let repoMatch: (String) -> Bool = { $0 == t.repo || $0.hasSuffix("/" + t.repo) }
+        // An account block stops a wait only on a repo GitHub is refusing. The
+        // fleet's self-hosted runners and public repos go on through it
+        // (2026-10-24: hosted petcam-* jobs refused, while the kits' self-hosted
+        // PR runs were only queued on a busy host and the wait gave up on them).
+        let short = t.repo.split(separator: "/").last.map { String($0).lowercased() } ?? t.repo.lowercased()
+        let blocked = verdict.open.first(where: { $0.id == "account-blocked" && $0.blocking == true })
+        if let blocked, blocked.refusedRepos.contains(where: {
+            ($0.split(separator: "/").last.map { String($0).lowercased() } ?? $0.lowercased()) == short
+        }) {
+            return .pointless("\(blocked.title): \(short)'s jobs are refused before they reach a runner")
+        }
         if let stuck = (set?.queued ?? g.queue.filter { repoMatch($0.repo) })
             .first(where: { $0.neverStarts }) {
+            // This repo's own run queued for a GitHub-hosted runner while the
+            // account is refused: that is the block, about to reach it too.
+            if let blocked, stuck.cause == "github-hosted" {
+                return .pointless("\(blocked.title): \(stuck.workflow ?? "a check") is queued for a GitHub-hosted runner, which the account is refusing")
+            }
             return .pointless("\(stuck.workflow ?? "a check") is queued with cause \(stuck.cause ?? "?") — it will not start on its own. \(stuck.recommended ?? "")")
         }
         if let dead = g.runners.first(where: { repoMatch($0.repo ?? "") && ($0.state == .dead || $0.state == .offline) }),

@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  checkSets, findCheckSet, decide, waitForChecks, parseGitHubChecks, githubState, githubVerdict, githubSet, runIdFromUrl,
+  checkSets, findCheckSet, decide, refusedRepos, waitForChecks, parseGitHubChecks, githubState, githubVerdict, githubSet, runIdFromUrl,
 } from '../lib/checks.js';
 
 // The same cases as cockpit's RollupTests.swift, against the same glance
@@ -122,10 +122,47 @@ describe('wait decision', () => {
     assert.equal(decide(glance({ runs: [run(4, 'e2e', { status: 'queued' })], queue: [hosted] }), target).state, 'pending');
   });
 
-  test('a storage quota is not a block, a billing block is', () => {
+  test('a storage quota is not a block, a billing block on this repo is', () => {
     const runs = [run(1, 'ci', { status: 'in_progress', elapsed: 1, expected: 10 })];
     assert.equal(decide(glance({ runs }, 'live'), target).state, 'pending');
-    assert.equal(decide(glance({ runs }, 'accountBlocked'), target).state, 'pointless');
+    const ion = { repo: 'acme/ion', pr: 96 };
+    const d = decide(glance({ runs: [run(1, 'ci', { status: 'queued', repo: 'acme/ion' })] }, 'accountBlocked'), ion);
+    assert.equal(d.state, 'pointless');
+    assert.match(d.reason, /^GitHub is refusing jobs on 2 repos: ion's jobs are refused/);
+    assert.equal(decide(glance({ runs: [] }, 'accountBlocked'), { repo: 'ion', pr: 96 }).state, 'pointless', 'a short name matches');
+  });
+
+  // taylab-launch-kit #279 and taylab-agent-kit #21, 2026-10-24: hosted
+  // petcam-* and enjoyable-languages-site jobs were refused, and both kit
+  // waits exited 2 while their self-hosted runs were only queued on ultra.
+  test('a billing block on other repos does not stop a self-hosted wait', () => {
+    const g = glance({
+      runs: [run(1, 'ci', { status: 'queued' })],
+      queue: [{ ...queued(1, 'host-saturation'), etaBasis: 'every runner for this repo is busy' }],
+    }, 'accountBlocked');
+    const d = decide(g, target);
+    assert.equal(d.state, 'pending');
+    assert.equal(d.reason, null);
+  });
+
+  test('a billing block stops a wait whose own run is queued for a hosted runner', () => {
+    const hosted = { ...queued(1, 'github-hosted'), etaBasis: 'github-hosted: will not start on its own' };
+    const d = decide(glance({ runs: [run(1, 'e2e', { status: 'queued' })], queue: [hosted] }, 'accountBlocked'), target);
+    assert.equal(d.state, 'pointless');
+    assert.match(d.reason, /e2e is queued for a GitHub-hosted runner, which the account is refusing/);
+    const pub = { ...hosted, etaBasis: 'waiting for a GitHub-hosted runner (public repo)' };
+    assert.equal(decide(glance({ runs: [run(1, 'e2e', { status: 'queued' })], queue: [pub] }, 'accountBlocked'), target).state,
+      'pending', 'a public repo\'s hosted runs are not refused');
+  });
+
+  test('an older daemon names the refused repos only in the evidence', () => {
+    const blocked = { id: 'account-blocked', blocking: true, title: 'GitHub is refusing jobs on 3 repos',
+      evidence: ['87 jobs refused', 'Repos: enjoyable-languages-site, petcam-android, petcam-nvr'] };
+    assert.deepEqual(refusedRepos(blocked), ['enjoyable-languages-site', 'petcam-android', 'petcam-nvr']);
+    const g = glance({ runs: [run(1, 'ci', { status: 'queued' })] });
+    g.verdict = { ...g.verdict, open: [blocked] };
+    assert.equal(decide(g, target).state, 'pending');
+    assert.equal(decide(g, { repo: 'addisdev/petcam-nvr', pr: 96 }).state, 'pointless');
   });
 
   test('a dead runner with nothing else serving the repo is pointless', () => {

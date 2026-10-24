@@ -173,14 +173,16 @@ export function loadFailureFacts(db, now = Date.now(), opts = {}) {
       GROUP BY failure_class, repo`)
       .all(new Date(now - o.accountWindowMs).toISOString());
     const repos = new Set();
+    const blockedRepos = new Set();
     for (const r of rows) {
-      if (r.cls === 'account-blocked') facts.account.blocked += r.n;
+      if (r.cls === 'account-blocked') { facts.account.blocked += r.n; blockedRepos.add(r.repo); }
       else facts.account.quota += r.n;
       repos.add(r.repo);
       const at = Date.parse(r.last) || null;
       if (at && (!facts.account.lastAt || at > facts.account.lastAt)) facts.account.lastAt = at;
     }
     facts.account.repos = [...repos].sort();
+    facts.account.blockedRepos = [...blockedRepos].sort();
   } catch { /* pre-migration db: no facts is the honest answer */ }
   return facts;
 }
@@ -508,12 +510,20 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
     const parts = [];
     if (account.blocked) parts.push(`${plural(account.blocked, 'job')} refused (billing or spending limit)`);
     if (account.quota) parts.push(`${plural(account.quota, 'job')} hit a storage quota`);
+    const refused = account.blocked > 0 ? (account.blockedRepos ?? account.repos ?? []) : [];
     push('account-blocked', {
       // True when GitHub refuses to START jobs; a full storage quota lets
       // them run. `cockpit wait` stops waiting only for the first.
       blocking: account.blocked > 0,
+      // The repos whose jobs GitHub refused. A block is per repo in practice:
+      // the account's included minutes run out for private repos on
+      // GitHub-hosted runners, while public repos and self-hosted runners go
+      // on (2026-10-24: petcam-* refused, the kit's self-hosted PRs merely
+      // queued). `cockpit wait` stops only for these repos, or for a run of
+      // its own queued on GitHub-hosted runners.
+      repos: refused,
       title: account.blocked
-        ? `GitHub is refusing jobs on ${plural(account.repos.length || 1, 'repo')}`
+        ? `GitHub is refusing jobs on ${plural(refused.length || 1, 'repo')}`
         : 'Artifact storage quota is full',
       sentence: account.blocked
         ? 'Nothing on this machine is wrong. The account is refusing work: payment or spending limit.'

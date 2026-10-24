@@ -27,6 +27,10 @@
     "tone": "warning",
     "title": "GitHub is refusing jobs on 2 repos",
     "blocking": true,
+    "repos": [
+     "acme/ion",
+     "acme/watchtower"
+    ],
     "sentence": "Nothing on this machine is wrong. The account is refusing work: payment or spending limit.",
     "evidence": [
      "87 jobs refused (billing or spending limit) in the last 6.0 h",

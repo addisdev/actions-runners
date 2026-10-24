@@ -157,11 +157,57 @@ struct WaiterTests {
         var g = live
         g.runs = [run(1, "ci", status: "in_progress", elapsed: 1, expected: 10)]
         if case .pointless = Waiter.decide(g, verdict: live.verdict, target: target) { Issue.record("quota should not stop a wait") }
-        let blocked = try Fixtures.glance("accountBlocked")
+        let blocked = try Fixtures.glance("accountBlocked") // refuses acme/ion and acme/watchtower
         var g2 = blocked
-        g2.runs = g.runs
-        guard case .pointless = Waiter.decide(g2, verdict: blocked.verdict, target: target) else {
-            Issue.record("billing block should stop a wait"); return
+        g2.runs = [run(1, "ci", status: "queued", repo: "acme/ion")]
+        guard case .pointless(let why) = Waiter.decide(g2, verdict: blocked.verdict, target: WaitTarget(repo: "ion", pr: 96)) else {
+            Issue.record("a billing block on this repo should stop a wait"); return
+        }
+        #expect(why.hasPrefix("GitHub is refusing jobs on 2 repos: ion's jobs are refused"))
+    }
+
+    // taylab-launch-kit #279 and taylab-agent-kit #21, 2026-10-24: hosted
+    // petcam-* and enjoyable-languages-site jobs were refused, and both kit
+    // waits exited 2 while their self-hosted runs were only queued on ultra.
+    @Test func aBillingBlockOnOtherReposDoesNotStopASelfHostedWait() throws {
+        var g = try Fixtures.glance("accountBlocked")
+        var q = queued(1, cause: "host-saturation")
+        q.etaBasis = "every runner for this repo is busy"
+        g.runs = [run(1, "ci", status: "queued")]
+        g.queue = [q]
+        guard case .waiting = Waiter.decide(g, verdict: g.verdict, target: target) else {
+            Issue.record("another repo's billing block must not stop this wait"); return
+        }
+    }
+
+    @Test func aBillingBlockStopsAWaitQueuedForAHostedRunner() throws {
+        var g = try Fixtures.glance("accountBlocked")
+        var q = queued(1, cause: "github-hosted")
+        q.etaBasis = "github-hosted: will not start on its own"
+        g.runs = [run(1, "e2e", status: "queued")]
+        g.queue = [q]
+        guard case .pointless(let why) = Waiter.decide(g, verdict: g.verdict, target: target) else {
+            Issue.record("a hosted run under a billing block will not start"); return
+        }
+        #expect(why.contains("e2e is queued for a GitHub-hosted runner, which the account is refusing"))
+        g.queue[0].etaBasis = "waiting for a GitHub-hosted runner (public repo)"
+        guard case .waiting = Waiter.decide(g, verdict: g.verdict, target: target) else {
+            Issue.record("a public repo's hosted runs are not refused"); return
+        }
+    }
+
+    @Test func anOlderDaemonNamesRefusedReposInTheEvidence() throws {
+        var f = Finding(id: "account-blocked", tone: .warning, title: "GitHub is refusing jobs on 3 repos", sentence: nil,
+                        evidence: ["87 jobs refused", "Repos: enjoyable-languages-site, petcam-android, petcam-nvr"], next: nil)
+        f.blocking = true
+        #expect(f.refusedRepos == ["enjoyable-languages-site", "petcam-android", "petcam-nvr"])
+        var g = try glance(runs: [run(1, "ci", status: "queued")])
+        g.verdict.open = [f]
+        guard case .waiting = Waiter.decide(g, verdict: g.verdict, target: target) else {
+            Issue.record("expected waiting"); return
+        }
+        guard case .pointless = Waiter.decide(g, verdict: g.verdict, target: WaitTarget(repo: "addisdev/petcam-nvr", pr: 96)) else {
+            Issue.record("expected pointless for a refused repo"); return
         }
     }
 

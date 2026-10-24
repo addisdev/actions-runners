@@ -93,6 +93,14 @@ describe('what does not count', () => {
     assert.equal(computeVerdict(s.snapshot, s.facts, { now: s.now }).verdict.id, 'clear');
   });
 
+  test('an account block names the refused repos, not the quota ones', () => {
+    const s = SCENARIOS.accountBlocked();
+    s.facts.account = { ...s.facts.account, quota: 2, repos: ['acme/ion', 'acme/vault', 'acme/watchtower'], blockedRepos: ['acme/ion', 'acme/watchtower'] };
+    const f = computeVerdict(s.snapshot, s.facts, { now: s.now }).verdict.open.find((o) => o.id === 'account-blocked');
+    assert.deepEqual(f.repos, ['acme/ion', 'acme/watchtower']);
+    assert.equal(f.title, 'GitHub is refusing jobs on 2 repos');
+  });
+
   test('an account block older than the window has left the glance', () => {
     const s = SCENARIOS.accountBlocked();
     s.facts.account.lastAt = s.now - 7 * 60 * 60 * 1000;
@@ -342,6 +350,7 @@ describe('loadFailureFacts', () => {
       assert.equal(f.account.blocked, 1);
       assert.equal(f.account.quota, 1);
       assert.deepEqual(f.account.repos, ['acme/b', 'acme/c']);
+      assert.deepEqual(f.account.blockedRepos, ['acme/b'], 'a storage quota is not a refusal');
       assert.equal(f.account.lastAt, Date.parse(iso(29)));
       assert.deepEqual(f.recentFailures.map((x) => x.cls).sort(), ['account-blocked', 'account-quota', 'runner-lost']);
     } finally {
