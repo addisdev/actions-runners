@@ -209,3 +209,121 @@ struct CheckWaitTests {
         #expect(a.exitCode == 2)
     }
 }
+
+/// GitHub's answer for a PR as `gh` gives it, and the green rule over it:
+/// stream-app PR #5 (2026-10-24), where every check GitHub listed had passed
+/// while run 40116718009 was still creating the six jobs behind `needs:`.
+@Suite("GitHub's checks")
+struct GitHubChecksTests {
+    static let view = Data("""
+    {"headRefOid":"d42a20fa8be5e24c477004b82a8c2194eacd6493","headRefName":"fix/ci-gate",
+     "headRepository":{"name":"stream-app"},"headRepositoryOwner":{"login":"acme"},"state":"OPEN",
+     "statusCheckRollup":[
+      {"__typename":"CheckRun","name":"guard","workflowName":"ci","status":"COMPLETED","conclusion":"SUCCESS",
+       "completedAt":"2026-10-24T17:34:39Z","detailsUrl":"https://github.com/acme/stream-app/actions/runs/40116718009/job/120939404752"},
+      {"__typename":"CheckRun","name":"changes","workflowName":"ci","status":"COMPLETED","conclusion":"SUCCESS",
+       "completedAt":"2026-10-24T17:34:46Z","detailsUrl":"https://github.com/acme/stream-app/actions/runs/40116718009/job/120939404951"}]}
+    """.utf8)
+
+    static func runs(_ status: String, conclusion: String? = nil, updated: String = "2026-10-24T17:34:46Z") -> Data {
+        Data("""
+        {"total_count":1,"workflow_runs":[{"id":40116718009,"workflow_id":7,"name":"ci","status":"\(status)",
+         "conclusion":\(conclusion.map { "\"\($0)\"" } ?? "null"),"created_at":"2026-10-24T17:34:12Z","updated_at":"\(updated)",
+         "html_url":"https://github.com/acme/stream-app/actions/runs/40116718009"}]}
+        """.utf8)
+    }
+
+    static func at(_ iso: String) -> Double { ISO8601DateFormatter().date(from: iso)!.timeIntervalSince1970 * 1000 }
+
+    @Test func aGreenRollupWhileTheRunIsInProgressIsPending() throws {
+        var c = try GitHubChecks.parse(prView: Self.view)
+        #expect(c.state == .green, "the rollup alone, as before")
+        #expect(c.headRepo == "acme/stream-app" && c.headRef == "fix/ci-gate" && c.open)
+        c.runs = try GitHubChecks.parse(runs: Self.runs("in_progress"))
+        c.fetchedAt = Self.at("2026-10-24T17:34:50Z")
+        #expect(c.state == .pending)
+        #expect(c.pendingWhy == "GitHub still has ci in progress")
+        #expect(c.checkSet(repo: "acme/stream-app", pr: 5).progress == "2 of 2 done")
+    }
+
+    @Test func aFinishedRunIsGreenOnlyOnceGitHubHasBeenQuiet() throws {
+        var c = try GitHubChecks.parse(prView: Self.view)
+        c.runs = try GitHubChecks.parse(runs: Self.runs("completed", conclusion: "success", updated: "2026-10-24T17:36:54Z"))
+        c.fetchedAt = Self.at("2026-10-24T17:37:00Z")
+        #expect(c.state == .pending)
+        #expect(c.pendingWhy?.hasPrefix("settling: ") == true)
+        c.fetchedAt = Self.at("2026-10-24T17:37:30Z")
+        #expect(c.state == .green)
+    }
+
+    @Test func aRunWithNoJobInTheRollupIsARowOfItsOwn() throws {
+        var c = try GitHubChecks.parse(prView: Self.view)
+        c.checks = []
+        c.runs = try GitHubChecks.parse(runs: Self.runs("queued"))
+        let set = c.checkSet(repo: "acme/stream-app", pr: 5)
+        #expect(set.state == .pending)
+        #expect(set.progress == "0 of 1 done")
+    }
+
+    @Test func aFailedRunIsRed() throws {
+        var c = try GitHubChecks.parse(prView: Self.view)
+        c.runs = try GitHubChecks.parse(runs: Self.runs("completed", conclusion: "cancelled", updated: "2026-10-24T17:36:54Z"))
+        c.fetchedAt = Self.at("2026-10-24T17:36:55Z")
+        #expect(c.state == .red)
+    }
+}
+
+@Suite("cockpit wait confirms an older daemon's green")
+struct ConfirmGreenTests {
+    private func unverifiedGreen() throws -> (V1Checks, Data) {
+        var (a, raw) = try answer("checks-green")
+        a.verified = nil
+        return (a, raw)
+    }
+
+    @Test func aGreenWithVerifiedIsBelievedWithoutAsking() async throws {
+        let clock = Clock()
+        var w = wait(Script([.success(try answer("checks-green"))]), clock)
+        let asks = Script([.failure(URLError(.unknown))])
+        w.github = { _ = try? asks.next(0); return nil }
+        guard case .answer(let a, _) = await w.run() else { Issue.record("no answer"); return }
+        #expect(a.state == "green")
+        #expect(asks.asked.isEmpty)
+        #expect(CheckWait.text(a, label: "comet-web @ ec99782") == "✔ comet-web @ ec99782: 1 of 1 green (GitHub: 1 run, 1 job)")
+    }
+
+    @Test func anUnverifiedGreenWaitsForGitHub() async throws {
+        let clock = Clock()
+        var w = wait(Script([.success(try unverifiedGreen())]), clock)
+        var pending = CheckSet(id: "github", repo: "acme/comet-web", prNumber: 7, branch: nil, sha: nil, title: nil,
+                               runs: [], total: 9, done: 2, failed: [], queued: [], etaGreenMs: nil, state: .pending)
+        pending.why = "GitHub still has ci in progress"
+        var green = pending
+        green.state = .green
+        green.done = 9
+        let asks = Script([.failure(URLError(.unknown))])
+        let (stillPending, nowGreen) = (pending, green)
+        w.github = { _ = try? asks.next(0); return asks.asked.count >= 3 ? nowGreen : stillPending }
+        guard case .answer(let a, _) = await w.run() else { Issue.record("no answer"); return }
+        #expect(a.state == "green")
+        #expect(asks.asked.count == 3)
+        #expect(clock.now - 1_000_000 >= 30_000, "asked every 15 s")
+    }
+
+    @Test func anUnverifiedGreenThatGitHubCallsRedIsRed() async throws {
+        let clock = Clock()
+        var w = wait(Script([.success(try unverifiedGreen())]), clock)
+        let red = CheckSet(id: "github", repo: "acme/comet-web", prNumber: 7, branch: nil, sha: nil, title: nil,
+                           runs: [], total: 2, done: 2, failed: [], queued: [], etaGreenMs: nil, state: .red)
+        w.github = { red }
+        guard case .github(let s) = await w.run() else { Issue.record("not GitHub's red"); return }
+        #expect(s.state == .red)
+    }
+
+    @Test func anUnverifiedGreenGitHubCannotConfirmTimesOut() async throws {
+        let clock = Clock()
+        var w = wait(Script([.success(try unverifiedGreen())]), clock, deadlineS: 60)
+        w.github = { nil }
+        guard case .timeout = await w.run() else { Issue.record("did not time out"); return }
+    }
+}

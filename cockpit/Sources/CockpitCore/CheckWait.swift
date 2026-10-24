@@ -21,7 +21,9 @@ public struct CheckWait: Sendable {
     /// Wall-clock deadline, epoch ms.
     public var deadline: Double
     public var ask: Ask
-    /// A PR's checks from GitHub, for while the dashboard is unreachable.
+    /// A PR's checks from GitHub, for while the dashboard is unreachable, and
+    /// to confirm a green from a daemon too old to confirm it itself (its
+    /// answer has no `verified`).
     public var github: (@Sendable () async -> CheckSet?)?
     /// Recovers orphaned runs; returns why it could not, or nil.
     public var recover: (@Sendable ([V1Orphan]) async -> String?)?
@@ -30,6 +32,8 @@ public struct CheckWait: Sendable {
     public var now: @Sendable () -> Double = { Format.nowMs() }
     public var sleep: @Sendable (Double) async -> Void = { s in try? await Task.sleep(nanoseconds: UInt64(s * 1e9)) }
     public var githubEveryS: Double = 60
+    /// How often an unconfirmed green is asked of GitHub again.
+    public var confirmEveryS: Double = 15
     public var retryS: Double = 10
     /// After a recovery, a red made only of the recovered runs, cancelled, is
     /// the force-cancel landing before the re-run starts, not a result.
@@ -44,6 +48,7 @@ public struct CheckWait: Sendable {
         var last: (V1Checks, Data)?
         var said: String?
         var askedGitHub = -Double.infinity
+        var confirmedAt = -Double.infinity
         var recovered: [Int: Double] = [:]
         var reachable = false
         var dropped = false
@@ -71,9 +76,27 @@ public struct CheckWait: Sendable {
             reachable = true
             dropped = false
             last = (a, raw)
-            if let s = a.checks, case let p = s.progress + (s.etaGreenMs.map { ", done in \(Presenter.range($0))" } ?? ""), p != said {
+            if let s = a.checks, case let p = s.progress + (s.etaGreenMs.map { ", done in \(Presenter.range($0))" } ?? "")
+                + (a.state == "pending" ? a.reason.map { " — \($0)" } ?? "" : ""), p != said {
                 progress(p)
                 said = p
+            }
+            // A green from a daemon that does not confirm greens on GitHub
+            // (stream-app PR #5, 2026-10-24: its "1 of 1 green" was the
+            // previous head's, 8 s after a push). Not believed until GitHub
+            // agrees; GitHub not answering is not a yes.
+            if a.state == "green", a.verified == nil, let github {
+                if now() - confirmedAt >= confirmEveryS * 1000 {
+                    confirmedAt = now()
+                    let s = await github()
+                    if let s, s.state == .green { return .answer(a, raw) }
+                    if let s, s.state == .red { return .github(s) }
+                    let p = "the dashboard read \(a.checks?.progress ?? "green"), but GitHub "
+                        + (s.map { "has \($0.progress)\($0.why.map { " — \($0)" } ?? "")" } ?? "did not answer")
+                    if p != said { progress(p); said = p }
+                }
+                await sleep(min(retryS, max(0.01, (deadline - now()) / 1000)))
+                continue
             }
 
             if a.state == "pointless", let recover, let orphans = a.orphans, !orphans.isEmpty,
@@ -114,7 +137,10 @@ public struct CheckWait: Sendable {
         let progress = a.checks?.progress
         switch a.state {
         case "green":
-            out.append("✔ \(label): \(progress ?? "green")\(note)")
+            let covered = a.verified.map { v in
+                " (GitHub: \(v.runs) run\(v.runs == 1 ? "" : "s"), \(v.jobs) job\(v.jobs == 1 ? "" : "s"))"
+            } ?? ""
+            out.append("✔ \(label): \(progress ?? "green")\(covered)\(note)")
         case "red":
             out.append("✖ \(label): \(progress ?? "red")\(note)")
             for f in a.checks?.failed ?? [] {

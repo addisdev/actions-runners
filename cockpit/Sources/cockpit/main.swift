@@ -405,7 +405,7 @@ case "wait":
         fail("  recovery failed: \(why)", code: 2)
     case .github(let s):
         let mark = s.state == .green ? "✔" : "✖"
-        print("\(mark) \(target.label): \(s.progress) (from GitHub; the dashboard did not answer)")
+        print("\(mark) \(target.label): \(s.progress) (from GitHub)")
         for f in s.failed { print("  \(f.workflow ?? "?")\(f.cancelled ? " (cancelled)" : "")\(f.url.map { " — \($0)" } ?? "")") }
         exit(s.state == .green ? 0 : 1)
     case .timeout(let a, let raw, let reached):

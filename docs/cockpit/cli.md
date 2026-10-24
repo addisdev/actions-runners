@@ -190,7 +190,7 @@ $ cockpit wait comet-web --pr 96
 
 | Exit | Printed | Meaning |
 |---|---|---|
-| `0` | `✔` | Every check passed |
+| `0` | `✔` | Every check passed, and GitHub confirms every run and job for the head finished (see [a green is confirmed on GitHub](#a-green-is-confirmed-on-github)) |
 | `1` | `✖` and each failed check, with its URL | At least one failed or was cancelled. A cancellation is often an admission hold that ran past `timeout-minutes`, and the output says so |
 | `2` | `⏹ not waiting — <reason>` | Waiting cannot end well: the host is down, the disk floor is holding jobs, GitHub is refusing jobs for billing, one of the checks is queued with a cause that never clears, or a job was orphaned by a draining runner (the reason carries the recovery commands). Stop and report the reason |
 | `3` | `…timed out` or `? dashboard unreachable` | The timeout passed, or (for `--sha` and `--branch`) the dashboard could not be reached; try `cockpit sentinel` |
@@ -201,11 +201,12 @@ past the deadline whatever else is happening. A dashboard that stops answering
 does not end the wait. The tunnel is reopened and the request retried every 10
 seconds, and with `--pr` cockpit asks GitHub itself meanwhile, once a minute,
 with your own `gh` login
-(`gh pr view --json headRefOid,statusCheckRollup`). GitHub's finished answer
-ends the wait and says so:
+(`gh pr view --json headRefOid,statusCheckRollup`, the branch ref, and
+`actions/runs?head_sha=`). GitHub's finished answer, by the same rule as
+[a confirmed green](#a-green-is-confirmed-on-github), ends the wait and says so:
 
 ```console
-✔ comet-web PR #96: 1 of 1 green (from GitHub; the dashboard did not answer)
+✔ comet-web PR #96: 1 of 1 green (from GitHub)
 ```
 
 A `--sha` or `--branch` wait needs the dashboard, and exits `3` when it cannot
@@ -218,6 +219,37 @@ result. A red from a commit you have since pushed over, or force-pushed off,
 does not end the wait. Until the head has a run, the wait keeps waiting. After a
 force-push back to an earlier commit, that commit's old result waits for the new
 run ("waiting for kit-ci to run again on this commit").
+
+### A green is confirmed on GitHub
+
+The fleet's view rolls up the runs it has seen, and right after a push it has
+not seen them all. On acme/stream-app PR #5 (2026-10-24) a wait that
+started 8 seconds after a push printed `1 of 1 green` at once: the view still
+held the previous head's run, and the new head's run, with nine jobs, was
+queued. Every agent merges on exit `0`, so that could merge untested code.
+
+Now GitHub names the head (an open PR's branch ref), and a green ends the wait
+only when GitHub has, for that head:
+
+- every workflow run (`actions/runs?head_sha=`) completed, the newest of each
+  workflow counting;
+- every job of those runs, and every other check and status, completed with
+  `success`, `skipped` or `neutral`;
+- nothing new for 30 seconds: runs for `push` and `pull_request` register
+  separately, a `workflow_run` run appears only after the run it follows, and
+  a job behind `needs:` only once its needs finish.
+
+Until then the wait prints GitHub's count and reason:
+
+```console
+… stream-app PR #5: 2 of 3 done
+… stream-app PR #5: 9 of 9 done — settling: GitHub's newest run or job for d42a20f changed 4 s ago, and a green waits 30 s for any run still to register
+✔ stream-app PR #5: 1 of 1 green (GitHub: 1 run, 9 jobs)
+```
+
+GitHub not answering is not a yes: the wait stays pending. With a dashboard
+older than this rule (no `verified` in its answer), the CLI confirms the green
+itself with your `gh` login.
 
 ### A red is checked against the run's latest attempt
 
@@ -245,7 +277,8 @@ GitHub's **finished** answer ends the wait, with how far behind the fleet was:
 ```
 
 That note is a daemon problem worth reporting, not part of the PR's result.
-GitHub still *pending* never overrides the fleet's own green or red.
+GitHub still *pending* never overrides the fleet's own red, and holds its
+green until GitHub finishes.
 
 ### A job orphaned by a draining runner
 

@@ -68,6 +68,18 @@ public struct V1Checks: Decodable, Sendable, Equatable {
     public var fleetSaid: String?
     public var checks: V1CheckSet?
     public var orphans: [V1Orphan]?
+    /// On a green: what GitHub's side of the check covered. A daemon that
+    /// confirms every green on GitHub always sends it, so a green without it
+    /// came from an older daemon and is confirmed by the client
+    /// (stream-app PR #5, 2026-10-24).
+    public var verified: Verified?
+
+    public struct Verified: Codable, Sendable, Equatable {
+        public var head: String?
+        public var runs: Int
+        public var jobs: Int
+        public var checks: Int?
+    }
 
     public var finished: Bool { state != "pending" }
 

@@ -150,7 +150,10 @@ export const ROUTES = [
       + '(at most 300) until the checks finish; pending means the wait ran out, so ask again. pointless means '
       + 'waiting cannot end well: the host is down, the disk floor is holding jobs, GitHub is refusing jobs, '
       + 'a queued check will never start, or a job was orphaned; reason says which, and orphans carry their '
-      + 'recovery. Cancelled is red, not green. Use this instead of polling gh pr checks. A client that gives '
+      + 'recovery. Cancelled is red, not green. Green means GitHub itself has every workflow run for the head '
+      + 'completed with all of its jobs passed, and nothing new for 30 s (verified says what it covered): runs '
+      + 'and needs-gated jobs register after a push, so a green first wave is not the end. '
+      + 'Use this instead of polling gh pr checks. A client that gives '
       + 'up on slow calls should use a shorter wait and ask again.',
     params: [
       ...repoPath,

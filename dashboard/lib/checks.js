@@ -143,11 +143,18 @@ export function checkSets(g) {
 // is null (still waiting), never an older commit's result: on site-web PR #79
 // a wait read "red" from a commit the branch had been force-pushed off.
 // Without a known head, the commit with the newest run stands in for it.
-export function findCheckSet(g, { repo, pr = null, sha = null, branch = null }) {
+//
+// `head` is the head as GitHub names it now (waitForChecks asks). It beats
+// the glance's own idea of the head, which is learned from runs and so is the
+// PREVIOUS head until the fast loop sees the new commit's first run:
+// stream-app PR #5 (2026-10-24) read the old commit's "1 of 1 green" 8 s
+// after a push, while run 40116718009 on the new head was still queued.
+export function findCheckSet(g, { repo, pr = null, sha = null, branch = null, head = null }) {
   const sets = checkSets(g).filter((s) => sameRepo(s.repo, repo)
     && (pr == null || s.prNumber === pr)
     && (sha == null || sameCommit(sha, s.sha))
     && (branch == null || s.branch === branch));
+  if (head) return sets.find((s) => sameCommit(head, s.sha)) ?? null;
   if (pr == null) return sets[0] ?? null;
   const withHead = [...(g.runs ?? []), ...(g.recent ?? [])]
     .filter((r) => sameRepo(r.repo, repo) && r.prNumber === pr && r.prHead)
@@ -210,24 +217,100 @@ export function overlay(g, rows) {
   return { ...g, runs, recent };
 }
 
+
 // ------------------------------------------------------------ GitHub's view
 
-// GitHub's own checks for a ref, from the REST check-runs and combined-status
-// endpoints: { head, checks: [{ name, status, conclusion, url }] }. Finished
-// only when GitHub lists at least one check and every one is complete: an
-// empty list is a head whose workflows have not been created yet, not a pass.
-export function githubState(gc) {
-  if (!gc?.checks?.length || gc.checks.some((c) => c.status !== 'completed')) return 'pending';
-  return gc.checks.every(passed) ? 'green' : 'red';
+// GitHub's own answer about a head, as fleetd's githubChecksFor builds it with
+// parseGitHubChecks:
+//   { head, fetchedAt, runs, checks }
+//   runs     every workflow run GitHub has for the head commit
+//            (actions/runs?head_sha=), each { id, workflowId, workflow, event,
+//            status, conclusion, createdAt, updatedAt, url, jobs }. jobs are
+//            the latest attempt's { name, status, conclusion, url,
+//            completedAt }, or null while unread (fleetd reads them once the
+//            run has completed).
+//   checks   commit statuses, check runs from other apps, and any Actions
+//            check run whose run is missing from `runs`.
+// An answer without `runs` (an older source) is judged by its checks alone.
+
+// How long GitHub must have been quiet about a head, as of the moment it was
+// asked, before its green is believed. Runs register seconds after a push
+// (pull_request and push are separate events), a workflow_run-triggered run
+// only after the run it follows completes, and a job behind `needs:` only once
+// its needs finish. A finished first wave is not the end.
+export const SETTLE_MS = 30_000;
+
+// The newest run of each workflow, as in the fleet's rollup: a re-trigger or
+// a concurrency replacement on the same commit wins over the run it replaced.
+export function latestRuns(runs) {
+  const byWorkflow = new Map();
+  for (const r of runs ?? []) {
+    const key = r.workflowId ?? r.workflow ?? r.id;
+    if (!byWorkflow.has(key) || byWorkflow.get(key).id < r.id) byWorkflow.set(key, r);
+  }
+  return [...byWorkflow.values()].sort((a, b) => a.id - b.id);
 }
 
-export function parseGitHubChecks(head, checkRuns, combined) {
-  const runs = (checkRuns?.check_runs ?? []).map((c) => ({
-    name: c.name,
-    status: c.status === 'completed' ? 'completed' : (c.status ?? 'queued'),
-    conclusion: c.status === 'completed' ? (c.conclusion ?? '') : null,
-    url: c.html_url ?? c.details_url ?? null,
-  }));
+// When anything about the head last changed on GitHub, epoch ms (0 if unknown).
+function lastChange(gc) {
+  const times = [
+    ...(gc.runs ?? []).flatMap((r) => [r.createdAt, r.updatedAt, ...(r.jobs ?? []).map((j) => j.completedAt)]),
+    ...(gc.checks ?? []).map((c) => c.completedAt),
+  ].filter(Number.isFinite);
+  return times.length ? Math.max(...times) : 0;
+}
+
+const names = (rs) => rs.map((r) => r.workflow ?? r.name ?? String(r.id)).join(', ');
+
+// { state: green | red | pending, why }. Green needs every workflow run for
+// the head completed, every one of their jobs completed, every other check
+// completed, all of them passed, and nothing new for settleMs.
+export function githubVerdict(gc, { settleMs = SETTLE_MS } = {}) {
+  if (!gc) return { state: 'pending', why: 'GitHub did not answer' };
+  const head = gc.head ? String(gc.head).slice(0, 7) : 'the head';
+  const runs = latestRuns(gc.runs);
+  const checks = gc.checks ?? [];
+  if (!runs.length && !checks.length) return { state: 'pending', why: `GitHub has no runs or checks for ${head} yet` };
+  const running = runs.filter(isActive);
+  if (running.length) return { state: 'pending', why: `GitHub still has ${names(running)} ${String(running[0].status).replace('_', ' ')}` };
+  const unread = runs.filter((r) => gc.runs && !Array.isArray(r.jobs));
+  if (unread.length) return { state: 'pending', why: `the jobs of ${names(unread)} are not read yet` };
+  const jobs = runs.flatMap((r) => r.jobs ?? []);
+  const open = [...jobs, ...checks].filter(isActive);
+  if (open.length) return { state: 'pending', why: `GitHub still has ${names(open)} running` };
+  if (runs.some(failed) || jobs.some(failed) || checks.some(failed)) return { state: 'red', why: null };
+  const quietMs = (gc.fetchedAt ?? Date.now()) - lastChange(gc);
+  if (quietMs < settleMs) {
+    return {
+      state: 'pending',
+      why: `settling: GitHub's newest run or job for ${head} changed ${Math.max(0, Math.round(quietMs / 1000))} s ago, and a green waits ${Math.round(settleMs / 1000)} s for any run still to register`,
+    };
+  }
+  return { state: 'green', why: null };
+}
+
+export const githubState = (gc, opts) => githubVerdict(gc, opts).state;
+
+const ms = (iso) => {
+  const t = Date.parse(iso ?? '');
+  return Number.isFinite(t) ? t : null;
+};
+
+// GitHub's REST answers for one head as `gc`. `actions` holds the workflow
+// runs (actions/runs?head_sha=) and, by run id, the jobs of each run read so
+// far. Without it, this is the older check-runs-and-statuses answer.
+export function parseGitHubChecks(head, checkRuns, combined, actions = null) {
+  const runIds = new Set((actions?.runs ?? []).map((r) => r.id));
+  const fromCheckRuns = (checkRuns?.check_runs ?? [])
+    // An Actions check run is a job of one of `runs`, already counted there.
+    .filter((c) => !actions || !runIds.has(runIdFromUrl(c.html_url ?? c.details_url)))
+    .map((c) => ({
+      name: c.name,
+      status: c.status === 'completed' ? 'completed' : (c.status ?? 'queued'),
+      conclusion: c.status === 'completed' ? (c.conclusion ?? '') : null,
+      url: c.html_url ?? c.details_url ?? null,
+      completedAt: ms(c.completed_at),
+    }));
   const statuses = (combined?.statuses ?? []).map((s) => {
     const st = String(s.state ?? 'pending').toLowerCase();
     const finished = st !== 'pending' && st !== 'expected';
@@ -236,14 +319,58 @@ export function parseGitHubChecks(head, checkRuns, combined) {
       status: finished ? 'completed' : 'in_progress',
       conclusion: !finished ? null : st === 'success' ? 'success' : 'failure',
       url: s.target_url ?? null,
+      completedAt: finished ? ms(s.updated_at) : null,
     };
   });
-  return { head, checks: [...runs, ...statuses] };
+  const gc = { head, checks: [...fromCheckRuns, ...statuses] };
+  if (!actions) return gc;
+  gc.fetchedAt = actions.fetchedAt ?? null;
+  gc.runs = (actions.runs ?? []).map((r) => {
+    const jobs = actions.jobs?.get(r.id);
+    return {
+      id: r.id,
+      workflowId: r.workflow_id ?? null,
+      workflow: r.name ?? null,
+      event: r.event ?? null,
+      status: r.status === 'completed' ? 'completed' : (r.status ?? 'queued'),
+      conclusion: r.status === 'completed' ? (r.conclusion ?? '') : null,
+      runAttempt: r.run_attempt ?? null,
+      createdAt: ms(r.created_at),
+      updatedAt: ms(r.updated_at),
+      url: r.html_url ?? null,
+      jobs: !jobs ? null : jobs.map((j) => ({
+        name: j.name,
+        status: j.status === 'completed' ? 'completed' : (j.status ?? 'queued'),
+        conclusion: j.status === 'completed' ? (j.conclusion ?? '') : null,
+        url: j.html_url ?? null,
+        completedAt: ms(j.completed_at),
+      })),
+    };
+  });
+  return gc;
 }
 
-// GitHub's answer as a check set, so it reads exactly like the fleet's.
-export function githubSet(gc, target) {
-  const runs = gc.checks.map((c, i) => ({
+// What a green from GitHub's side of the check carries: how much it covered.
+export function confirmation(gc) {
+  if (!gc?.runs) return null;
+  const runs = latestRuns(gc.runs);
+  return {
+    head: gc.head ?? null,
+    runs: runs.length,
+    jobs: runs.reduce((n, r) => n + (r.jobs?.length ?? 0), 0),
+    checks: gc.checks?.length ?? 0,
+  };
+}
+
+// GitHub's answer as a check set, so it reads exactly like the fleet's: one
+// row per job of each run (a run whose jobs are unread is one row), then the
+// other checks.
+export function githubSet(gc, target, verdict = githubVerdict(gc)) {
+  const items = [
+    ...latestRuns(gc.runs).flatMap((r) => (r.jobs?.length ? r.jobs : [{ name: r.workflow, status: r.status, conclusion: r.conclusion, url: r.url }])),
+    ...(gc.checks ?? []),
+  ];
+  const runs = items.map((c, i) => ({
     id: -(i + 1), repo: target.repo, workflow: c.name, status: c.status, conclusion: c.conclusion,
     sha: gc.head ? gc.head.slice(0, 12) : null, prNumber: target.pr ?? null, url: c.url,
   }));
@@ -260,7 +387,7 @@ export function githubSet(gc, target) {
     failed: runs.filter(failed),
     queued: [],
     etaGreenMs: null,
-    state: githubState(gc),
+    state: verdict.state,
     superseded: [],
   };
   return { ...set, progress: progress(set) };
@@ -286,15 +413,24 @@ const realSleep = (ms, signal) => new Promise((resolve) => {
 // source: what the daemon reads each time round —
 //   glance()             the fleet view (/api/glance)
 //   orphans(glance)      orphaned jobs, lib/orphans.js
-//   prChecks(target)     GitHub's checks for the target (null when GitHub did not answer)
+//   prChecks(target)     GitHub's answer for the target's head, `gc` above
+//                        (null when GitHub did not answer)
 //   run(repo, id)        one run's latest attempt as a glance row (null likewise)
 //
 // The rules, each from a wait that once went wrong:
+//   - GitHub names the head. The fleet view learns a new head only from its
+//     first run, so right after a push it still holds the previous head's
+//     result (stream-app PR #5, 2026-10-24: "1 of 1 green" from the old
+//     commit 8 s after the push, while the new head's run was queued).
+//   - The fleet's green is a rollup of the runs it has seen. It ends the wait
+//     only once GitHub agrees (githubVerdict: every run and job for the head
+//     completed and passed, and quiet for SETTLE_MS); until then the wait
+//     stays pending with GitHub's reason. GitHub not answering is not a yes.
 //   - A stale fleet view (the fast loop stopped finishing ticks, shop-ios PR
 //     #445, 2026-10-07) or one with no runs for the target is not believed:
 //     GitHub is asked every crossStaleMs; otherwise every crossFreshMs,
 //     because a view can freeze while ticks still finish. GitHub's finished
-//     answer ends the wait; its "pending" never overrides the fleet's result.
+//     answer ends the wait; its "pending" never overrides the fleet's red.
 //   - Before a red ends the wait, each failed run is asked of GitHub: a
 //     re-run keeps the run id and the view can lag it by a tick (jot-ios PR
 //     #181, 2026-10-11). A run running again is pending.
@@ -303,6 +439,7 @@ const realSleep = (ms, signal) => new Promise((resolve) => {
 //   - A pointless verdict from a stale view is not a reason to stop.
 export async function waitForChecks(target, source, {
   waitS = 0, signal = null, now = Date.now, sleep = realSleep, tickMs = 2000, crossFreshMs = 120_000, crossStaleMs = 30_000,
+  confirmMs = 10_000, settleMs = SETTLE_MS,
 } = {}) {
   const start = now();
   const deadline = start + Math.min(Math.max(0, waitS), MAX_WAIT_S) * 1000;
@@ -310,34 +447,71 @@ export async function waitForChecks(target, source, {
   let nextCross = start + crossFreshMs;
   let askedAt = null;
   let lastGitHub = null;
+  let verdict = null;
+  let unread = false; // a verdict not yet weighed against the fleet's pending
 
   const finish = (state, extra) => ({ state, waitedMs: now() - start, ...extra });
+  const askGitHub = async () => {
+    askedAt = now();
+    const gc = await source.prChecks(target).catch(() => null);
+    if (!gc) return null;
+    lastGitHub = { ...gc, fetchedAt: gc.fetchedAt ?? askedAt };
+    verdict = githubVerdict(lastGitHub, { settleMs });
+    unread = true;
+    return verdict;
+  };
+  const githubAnswer = (v, g, d) => {
+    const set = githubSet(lastGitHub, target, v);
+    return finish(v.state, {
+      source: 'github', checks: set, reason: null,
+      hint: v.state === 'red' && set.failed.some(cancelled) ? CANCELLED_HINT : null,
+      fleetAgeMs: g.ageMs ?? null, fleetSaid: d.set?.progress ?? null,
+      verified: v.state === 'green' ? confirmation(lastGitHub) : null,
+    });
+  };
+
+  // The head first: a fleet answer about the previous head is no answer.
+  await askGitHub();
 
   for (;;) {
     const g = source.glance();
-    const view = overlay(g, [...fresh.values()]);
-    let d = decide(view, target);
+    const t = lastGitHub?.head ? { ...target, head: lastGitHub.head } : target;
+    let d = decide(overlay(g, [...fresh.values()]), t);
+    let held = null;
 
     if (d.state === 'red') {
       for (const r of d.set.failed.filter((x) => x.id > 0)) {
         const f = await source.run(target.repo, r.id).catch(() => null);
         if (f) fresh.set(f.id, f);
       }
-      d = decide(overlay(g, [...fresh.values()]), target);
+      d = decide(overlay(g, [...fresh.values()]), t);
     }
-    if (d.state === 'green' || d.state === 'red') {
-      const reran = d.state === 'green' && fresh.size > 0;
-      return finish(d.state, {
-        source: reran ? 'github' : 'fleet', checks: d.set, reason: null,
-        hint: d.state === 'red' && d.set.failed.some(cancelled) ? CANCELLED_HINT : null,
+    if (d.state === 'red') {
+      return finish('red', {
+        source: 'fleet', checks: d.set, reason: null,
+        hint: d.set.failed.some(cancelled) ? CANCELLED_HINT : null,
         fleetAgeMs: g.ageMs ?? null,
       });
+    }
+    if (d.state === 'green') {
+      if (askedAt === null || now() - askedAt >= confirmMs) await askGitHub();
+      // The head moved while we looked: judge the new one.
+      if (lastGitHub?.head && !sameCommit(lastGitHub.head, t.head)) continue;
+      if (verdict?.state === 'green') {
+        return finish('green', {
+          source: fresh.size > 0 ? 'github' : 'fleet', checks: d.set, reason: null, hint: null,
+          fleetAgeMs: g.ageMs ?? null, verified: confirmation(lastGitHub),
+        });
+      }
+      if (verdict?.state === 'red') return githubAnswer(verdict, g, d);
+      held = lastGitHub ? verdict.why : 'GitHub did not answer, and a green is not believed without it';
     }
     if (d.state === 'pointless' && !g.stale) {
       return finish('pointless', { source: 'fleet', checks: d.set, reason: d.reason, hint: null, fleetAgeMs: g.ageMs ?? null });
     }
 
     const runIds = new Set((d.set?.runs ?? []).filter(isActive).map((r) => r.id));
+    for (const r of lastGitHub?.runs ?? []) if (isActive(r)) runIds.add(r.id);
     for (const c of lastGitHub?.checks ?? []) {
       const id = c.status !== 'completed' ? runIdFromUrl(c.url) : null;
       if (id) runIds.add(id);
@@ -350,30 +524,26 @@ export async function waitForChecks(target, source, {
       });
     }
 
+    // A held green asks GitHub above, every confirmMs; this is for the rest.
     const eager = g.stale || !d.set || [...fresh.values()].some(isActive);
     if (eager) nextCross = Math.min(nextCross, askedAt === null ? now() : askedAt + crossStaleMs);
-    if (now() >= nextCross) {
-      askedAt = now();
-      const gc = await source.prChecks(target).catch(() => null);
-      if (gc) {
-        lastGitHub = gc;
-        const state = githubState(gc);
-        if (state !== 'pending') {
-          return finish(state, {
-            source: 'github', checks: githubSet(gc, target), reason: null, hint: null, fleetAgeMs: g.ageMs ?? null,
-            fleetSaid: d.set?.progress ?? null,
-          });
-        }
+    if (!held) {
+      if (now() >= nextCross) {
+        await askGitHub();
+        nextCross = now() + (eager ? crossStaleMs : crossFreshMs);
       }
-      nextCross = now() + (eager ? crossStaleMs : crossFreshMs);
+      // GitHub's finished answer ends a wait the fleet has not finished.
+      if (unread && verdict && verdict.state !== 'pending') return githubAnswer(verdict, g, d);
     }
+    unread = false;
 
     if (now() >= deadline || signal?.aborted) {
-      const useGitHub = (g.stale || !d.set) && lastGitHub;
+      const useGitHub = lastGitHub && (g.stale || !d.set || held);
       return finish('pending', {
         source: useGitHub ? 'github' : 'fleet',
-        checks: useGitHub ? githubSet(lastGitHub, target) : d.set,
-        reason: d.state === 'pointless' ? `${d.reason} (from a stale fleet view)` : null,
+        checks: useGitHub ? githubSet(lastGitHub, target, verdict) : d.set,
+        reason: held ? `the fleet reads ${d.set.progress}, but ${held}`
+          : d.state === 'pointless' ? `${d.reason} (from a stale fleet view)` : null,
         hint: null,
         fleetAgeMs: g.ageMs ?? null,
       });
