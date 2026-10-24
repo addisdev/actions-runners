@@ -178,6 +178,18 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Fixed
 
+- **An account block stops `cockpit wait` only on a repo GitHub is refusing.**
+  2026-10-24: GitHub refused hosted jobs on three private repos (petcam-android,
+  petcam-nvr, enjoyable-languages-site; the account's included minutes were
+  spent), and `cockpit wait taylab-launch-kit --pr 279` and
+  `cockpit wait taylab-agent-kit --pr 21` exited 2 at once, though their
+  self-hosted runs were only queued on a busy ultra. The `account-blocked`
+  finding now carries `repos` (the repos with refused jobs; a storage quota
+  repo is not one), and the wait is pointless only when the target is one of
+  them, or when one of the target's own checks is queued for a GitHub-hosted
+  runner (a public repo's hosted queue still waits). Both deciders changed: the
+  daemon's (`lib/checks.js`) and the CLI/MCP's (`Waiter.decide`); with an older
+  daemon the CLI reads the repos from the finding's `Repos:` evidence line.
 - **`cockpit wait` and `wait_for_checks` no longer go green before a PR's
   checks have all registered.** On acme/stream-app PR #5 (2026-10-24) a
   wait that started 8 s after a push returned `1 of 1 green` at once, from the

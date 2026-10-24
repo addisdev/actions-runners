@@ -50,8 +50,9 @@ host itself, or through an SSH forward of port 7878, a client can talk to
 the checks finish or `wait` runs out, judges a PR by its head commit, checks a
 red against the run's latest attempt, and asks GitHub when its own view is
 behind. `pointless` means the same as `cockpit wait`'s exit `2`. The host is
-down, the disk floor is holding jobs, GitHub is refusing jobs, a check is
-queued with a cause that never clears, or a job was
+down, the disk floor is holding jobs, GitHub is refusing this repo's jobs
+(or the account is blocked and one of its checks waits for a GitHub-hosted
+runner), a check is queued with a cause that never clears, or a job was
 [orphaned by a draining runner](cli.md#a-job-orphaned-by-a-draining-runner).
 The session should stop and report it, not keep waiting.
 

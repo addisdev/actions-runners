@@ -192,7 +192,7 @@ $ cockpit wait comet-web --pr 96
 |---|---|---|
 | `0` | `✔` | Every check passed, and GitHub confirms every run and job for the head finished (see [a green is confirmed on GitHub](#a-green-is-confirmed-on-github)) |
 | `1` | `✖` and each failed check, with its URL | At least one failed or was cancelled. A cancellation is often an admission hold that ran past `timeout-minutes`, and the output says so |
-| `2` | `⏹ not waiting — <reason>` | Waiting cannot end well: the host is down, the disk floor is holding jobs, GitHub is refusing jobs for billing, one of the checks is queued with a cause that never clears, or a job was orphaned by a draining runner (the reason carries the recovery commands). Stop and report the reason |
+| `2` | `⏹ not waiting — <reason>` | Waiting cannot end well: the host is down, the disk floor is holding jobs, GitHub is refusing this repo's jobs for billing (a block on other repos does not stop the wait), one of the checks is queued with a cause that never clears, or a job was orphaned by a draining runner (the reason carries the recovery commands). Stop and report the reason |
 | `3` | `…timed out` or `? dashboard unreachable` | The timeout passed, or (for `--sha` and `--branch`) the dashboard could not be reached; try `cockpit sentinel` |
 
 The deadline is the command line's own: each request asks the daemon to hold

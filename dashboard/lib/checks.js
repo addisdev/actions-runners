@@ -174,6 +174,17 @@ function neverStarts(q) {
   return NEVER_STARTS.has(q.cause ?? '');
 }
 
+// The repos an account block refused jobs on. A daemon older than the
+// `repos` field named them only in the evidence, by short name.
+export function refusedRepos(blocked) {
+  if (Array.isArray(blocked?.repos)) return blocked.repos;
+  const line = (blocked?.evidence ?? []).find((e) => typeof e === 'string' && e.startsWith('Repos: '));
+  return line ? line.slice('Repos: '.length).split(',').map((r) => r.trim()).filter(Boolean) : [];
+}
+
+const shortName = (r) => String(r ?? '').toLowerCase().split('/').pop();
+const repoIn = (repos, repo) => repos.some((r) => sameRepo(r, repo) || shortName(r) === shortName(repo));
+
 // What a wait should do with the fleet as it is now: { state, reason, set }.
 // A finished result beats a verdict about the fleet, so green and red are
 // decided before anything that makes waiting pointless.
@@ -182,11 +193,26 @@ export function decide(g, target) {
   if (set?.state === 'green' || set?.state === 'red') return { state: set.state, reason: null, set };
   const v = g.verdict ?? {};
   if (INFRA.has(v.id)) return { state: 'pointless', reason: `${v.title}: ${v.sentence ?? ''}`.trim(), set };
+  // An account block stops a wait only on a repo GitHub is refusing. The
+  // fleet's self-hosted runners and public repos go on running through it
+  // (2026-10-24: hosted petcam-* jobs refused, while the kits' self-hosted PR
+  // runs were only queued on a busy host and `cockpit wait` gave up on them).
   const blocked = (v.open ?? []).find((o) => o.id === 'account-blocked' && o.blocking === true);
-  if (blocked) return { state: 'pointless', reason: `${blocked.title}: jobs are refused before they reach a runner`, set };
+  if (blocked && repoIn(refusedRepos(blocked), target.repo)) {
+    return { state: 'pointless', reason: `${blocked.title}: ${shortName(target.repo)}'s jobs are refused before they reach a runner`, set };
+  }
   const queue = set ? set.queued : (g.queue ?? []).filter((q) => sameRepo(q.repo, target.repo));
   const stuck = queue.find(neverStarts);
   if (stuck) {
+    // A private repo's own run queued for GitHub-hosted runners while the
+    // account is refused: that is the block, about to reach this repo too.
+    if (blocked && stuck.cause === 'github-hosted') {
+      return {
+        state: 'pointless',
+        reason: `${blocked.title}: ${stuck.workflow ?? 'a check'} is queued for a GitHub-hosted runner, which the account is refusing`,
+        set,
+      };
+    }
     return {
       state: 'pointless',
       reason: `${stuck.workflow ?? 'a check'} is queued with cause ${stuck.cause ?? '?'} — it will not start on its own. ${stuck.recommended ?? ''}`.trim(),

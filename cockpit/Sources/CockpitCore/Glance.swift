@@ -84,6 +84,18 @@ public struct Finding: Codable, Sendable, Equatable, Identifiable {
     public var next: NextMove?
     /// account-blocked only: GitHub refuses to start jobs (not merely a full quota).
     public var blocking: Bool?
+    /// account-blocked only: the repos whose jobs GitHub refused (full names).
+    /// Nil from a daemon older than the field: see `refusedRepos`.
+    public var repos: [String]?
+
+    /// The repos an account block refused jobs on. An older daemon named them
+    /// only in its evidence, by short name ("Repos: a, b").
+    public var refusedRepos: [String] {
+        if let repos { return repos }
+        guard let line = evidence?.first(where: { $0.hasPrefix("Repos: ") }) else { return [] }
+        return line.dropFirst("Repos: ".count).split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
 
     public init(id: String, tone: Tone, title: String, sentence: String?, evidence: [String]?, next: NextMove?) {
         self.id = id; self.tone = tone; self.title = title

@@ -27,6 +27,7 @@
     "tone": "warning",
     "title": "Artifact storage quota is full",
     "blocking": false,
+    "repos": [],
     "sentence": "Nothing on this machine is wrong. Jobs ran but could not publish their artifacts or caches.",
     "evidence": [
      "3 jobs hit a storage quota in the last 6.0 h",
