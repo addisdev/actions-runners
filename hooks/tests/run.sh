@@ -106,6 +106,19 @@ events() {
   printf '%s' "${n:-0}"
 }
 
+# A numeric field of the first $1 event, or empty when there is none.
+event_num() {
+  grep "\"event\":\"$1\"" "$LOG" 2>/dev/null | head -1 \
+    | sed -n "s/.*\"$2\":\([0-9][0-9]*\).*/\1/p"
+}
+
+# "Promptly" for a waiter whose blocker has gone, against the 30 s wait bound
+# those cases use. A wall-clock window around the whole hook failed on a
+# GitHub-hosted macOS runner (run 38419823450: >3 s) because it also timed bash
+# startup and a loaded host's scheduling. The failure these checks exist for is
+# a waiter sitting out the bound, so a third of it still tells the two apart.
+PROMPT_S=10
+
 ok() {
   if [ "$2" = "$3" ]; then
     echo "  PASS  $1 ($2)"
@@ -478,14 +491,21 @@ end_jobs
 echo "== a waiter is admitted as soon as a live slot owner dies =="
 setup enforce 1 30 1
 LIVE=$(fake_slot alpha)
-( sleep 2; kill "$LIVE" 2>/dev/null ) &
+# Timed from the owner's death to the hook's own admitted line, not around the
+# hook: how long bash takes to start on a busy runner is not what this tests.
+# The time is taken before the kill, so admitted-before-death reads negative.
+( sleep 2; date +%s > "$ROOT/owner-died"; kill "$LIVE" 2>/dev/null ) &
 RELEASER=$!
-BEFORE=$(date +%s)
 start beta
-AFTER=$(date +%s)
 wait "$RELEASER" 2>/dev/null
+ok "beta admitted" "$(events admitted)" "1"
 ok "beta admitted, not timed out" "$(events timeout)" "0"
-ok "beta got in promptly" "$([ $((AFTER - BEFORE)) -le 3 ] && echo prompt || echo slow)" "prompt"
+ADMITTED_AT="$(event_num admitted ts)"
+DIED_AT="$(cat "$ROOT/owner-died" 2>/dev/null)"
+LAG=$(( ${ADMITTED_AT:-0} - ${DIED_AT:-0} ))
+ok "beta held until the owner died" "$([ "$LAG" -ge 0 ] && echo after || echo before)" "after"
+ok "beta got in promptly after it died" \
+  "$([ "$LAG" -le "$PROMPT_S" ] && echo prompt || echo "slow (${LAG}s)")" "prompt"
 
 echo "== cancellation works via curl when gh is absent =="
 setup enforce 1 30 1
@@ -709,12 +729,12 @@ GONE=$!
 kill "$GONE" 2>/dev/null
 wait "$GONE" 2>/dev/null
 fake_waiter ghost "$GONE"
-BEFORE=$(date +%s)
 start alive
-AFTER=$(date +%s)
 ok "job behind a dead head admitted" "$(events admitted)" "1"
+# The hook's own count of time spent in the wait loop, so startup is excluded.
+WAITED_S="$(event_num admitted waited_s)"
 ok "job behind a dead head got in promptly" \
-  "$([ $((AFTER - BEFORE)) -le 5 ] && echo prompt || echo slow)" "prompt"
+  "$([ "${WAITED_S:-999}" -le "$PROMPT_S" ] && echo prompt || echo "slow (${WAITED_S:-none}s)")" "prompt"
 
 echo "== a job behind a live head does not take the mutex every poll =="
 setup enforce 1 30 1
