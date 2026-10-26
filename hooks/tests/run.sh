@@ -967,9 +967,13 @@ ok "...where the lanes would not have" "$(field "$(row l-1 held)" lane_would_hol
 # than null, is the lanes' answer at the first look. Its value is not checked:
 # WAITED starts before the hook resolves its owner and worker log, so a loaded
 # runner can cross a second boundary first and record 1 (run 40331626282).
+# (The case stays out of $(...): macOS's bash 3.2 cannot parse one in there.)
 L1_LANE_WAIT="$(field "$(row l-1 held)" lane_wait_s)"
-ok "...from its first look" \
-  "$(case "$L1_LANE_WAIT" in '' | *[!0-9]*) echo "not recorded ($L1_LANE_WAIT)" ;; *) echo first ;; esac)" "first"
+case "$L1_LANE_WAIT" in
+  '' | *[!0-9]*) L1_FIRST_LOOK="not recorded ($L1_LANE_WAIT)" ;;
+  *) L1_FIRST_LOOK=first ;;
+esac
+ok "...from its first look" "$L1_FIRST_LOOK" "first"
 ok "the row says which policy decided" "$(field "$(row l-1 held)" lanes)" "observe"
 ok "the single lane's limit is the one reported" "$(field "$(row l-1 held)" limit)" "1"
 start_bg h-2
