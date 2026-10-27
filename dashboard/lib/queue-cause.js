@@ -7,7 +7,7 @@
 // WHY A CLASSIFIER OVER A BOOLEAN FLAG
 //
 // The existing `stuck-queue` drift rule forks on a single question: is there an
-// idle runner or not? That answers two of seven causes. The others are invisible
+// idle runner or not? That answers two of ten causes. The others are invisible
 // — a label mismatch looks like a capacity problem when you can see only that
 // "all runners are busy", and host saturation looks like a capacity problem when
 // the headroom gate is refusing additions. Misreading the cause leads to the
@@ -125,9 +125,9 @@ export function classifyQueueCause({ run, runners, capacity, api = {}, collector
   // ---- no runners at all -------------------------------------------------
   if (repoRunners.length === 0) {
     evidence.push('No runner is registered for this repo');
-    // Action-eligible, unlike every other non-capacity cause here. The field
-    // means "adding a runner would help", and for the six causes marked false it
-    // genuinely would not — a second runner shares a label mismatch, and another
+    // Action-eligible, like role-unserved and repo-capacity and unlike the
+    // rest. The field means "adding a runner would help", and for the seven
+    // causes marked false it genuinely would not — a second runner shares a label mismatch, and another
     // runner on a saturated host makes the saturation worse. A repo with no
     // runner is the opposite case: one runner is the entire remedy, and
     // RECOMMENDED has said so all along.
