@@ -186,9 +186,10 @@ The other question the fleet has to answer is why a job is sitting in a queue.
 That used to be one check — *is a runner idle* — which separated the wrong pair,
 because "every runner is busy" and "the host is saturated" both look like *no
 runner is idle*, and only the first is fixed by adding a runner. It is now
-[eight classified causes](https://addisdev.github.io/actions-runners/concepts/#why-a-job-is-queued),
-each carrying the evidence it used, and exactly one of them offers to add a
-runner.
+[ten classified causes](https://addisdev.github.io/actions-runners/concepts/#why-a-job-is-queued),
+each carrying the evidence it used, and only three of them — no runner for the
+repo, none for the job's role, or every runner busy with headroom to spare — are
+fixed by adding one.
 
 ## The numbers exclude what would make them wrong
 
