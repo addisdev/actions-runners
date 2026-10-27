@@ -962,7 +962,18 @@ start_bg l-1
 wait_for "1" "events held" 10
 ok "the single lane held the light job" "$(field "$(row l-1 held)" reason)" "1 job(s) already running, at the limit of 1"
 ok "...where the lanes would not have" "$(field "$(row l-1 held)" lane_would_hold)" "false"
-ok "...from the start of the wait" "$(field "$(row l-1 held)" lane_wait_s)" "0"
+# lane_wait_s is WAITED when the lanes first said yes, and the held row is
+# written once, at the end of the hook's first pass. So a number there, rather
+# than null, is the lanes' answer at the first look. Its value is not checked:
+# WAITED starts before the hook resolves its owner and worker log, so a loaded
+# runner can cross a second boundary first and record 1 (run 40331626282).
+# (The case stays out of $(...): macOS's bash 3.2 cannot parse one in there.)
+L1_LANE_WAIT="$(field "$(row l-1 held)" lane_wait_s)"
+case "$L1_LANE_WAIT" in
+  '' | *[!0-9]*) L1_FIRST_LOOK="not recorded ($L1_LANE_WAIT)" ;;
+  *) L1_FIRST_LOOK=first ;;
+esac
+ok "...from its first look" "$L1_FIRST_LOOK" "first"
 ok "the row says which policy decided" "$(field "$(row l-1 held)" lanes)" "observe"
 ok "the single lane's limit is the one reported" "$(field "$(row l-1 held)" limit)" "1"
 start_bg h-2
@@ -975,7 +986,12 @@ ok "the single lane admitted its oldest waiter" \
   "$(grep '"event":"admitted"' "$LOG" | tail -1 | sed -n 's/.*"runner":"\([^"]*\)".*/\1/p')" "l-1"
 ok "it waited under the single lane" \
   "$([ "$(field "$(row l-1 admitted)" waited_s)" -ge 1 ] && echo waited || echo instant)" "waited"
-ok "the lanes would have let it in at once" "$(field "$(row l-1 admitted)" lane_wait_s)" "0"
+# Still the first look's answer, not one taken when the single lane let it in:
+# that would read as the full wait, which is at least a poll past the first.
+L1_ADMITTED="$(row l-1 admitted)"
+ok "the lanes would have let it in at once" "$(field "$L1_ADMITTED" lane_wait_s)" "$L1_LANE_WAIT"
+ok "...before the single lane did" \
+  "$([ "$(field "$L1_ADMITTED" lane_wait_s)" -lt "$(field "$L1_ADMITTED" waited_s)" ] && echo before || echo "not before")" "before"
 end_jobs
 
 echo "== lanes observe with admission observe: would-hold carries the lane view =="
