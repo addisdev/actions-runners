@@ -23,7 +23,9 @@
 #     all of an idle runner's under disk pressure, as do its Playwright
 #     browsers.
 #   - never touch a simulator or Android AVD that is not a runner's own
-#     ci- (or shots-) device.
+#     ci- (or shots-) device, with one exception: a simulator booted longer
+#     than FLEET_CLEANUP_SIM_STRAY_S that no host process names, while
+#     Simulator.app is closed, is shut down (never erased or deleted).
 #   - never throw away a runner's quick-boot snapshot AVD (the kit's
 #     emulator_snapshot) while its runner exists and used it in the last
 #     FLEET_CLEANUP_AVD_KEEP_DAYS, except to stay under
@@ -51,6 +53,14 @@ DERIVED_AGE_DAYS=7
 RUNNER_CACHE_DAYS="${FLEET_CLEANUP_RUNNER_CACHE_DAYS:-7}"
 case "$RUNNER_CACHE_DAYS" in '' | *[!0-9]*) RUNNER_CACHE_DAYS=7 ;; esac
 DIAG_AGE_DAYS=14
+# Crash reports from Apple's own simulator daemons. iOS 27.0's trap by the
+# hundred in headless CI devices (ultra, 2026-10-30: 1,332 reports, ~150 a
+# day) and bury anything that matters.
+SIM_CRASH_KEEP_DAYS="${FLEET_CLEANUP_SIM_CRASH_KEEP_DAYS:-3}"
+case "$SIM_CRASH_KEEP_DAYS" in '' | *[!0-9]*) SIM_CRASH_KEEP_DAYS=3 ;; esac
+# A booted simulator nobody is using, past this, is shut down on any tick.
+SIM_STRAY_S="${FLEET_CLEANUP_SIM_STRAY_S:-21600}"
+case "$SIM_STRAY_S" in '' | *[!0-9]*) SIM_STRAY_S=21600 ;; esac
 PW_LOCK_AGE_HOURS=6
 
 # Below this much free disk the cleanup also takes what costs the next job time
@@ -167,6 +177,59 @@ reap_orphan_emulators() {
   done <<< "$procs"
 }
 reap_orphan_emulators
+
+# ---------------------------------------------------------------------------
+# Stray simulators, on every tick (one ps when none is old enough). A session
+# or a tool that boots a simulator and walks away leaves it running for hours:
+# on ultra (2026-10-30) a plain "iPhone 17" ran Jerv for 5 h with nothing
+# attached, holding RAM and crashing Apple's daemons all along. One is shut
+# down (never erased or deleted) when its launchd_sim is older than
+# FLEET_CLEANUP_SIM_STRAY_S, no host process outside the device names its id
+# (xcodebuild -destination id=…, simctl, a test driver), and Simulator.app is
+# closed: an open Simulator.app may be a person looking at it. A CI job's own
+# device is shut down by the job, and no job runs anywhere near 6 h.
+# ---------------------------------------------------------------------------
+reap_stray_simulators() {
+  local procs old udid secs
+  procs="$("${FLEET_PS:-/bin/ps}" -axo pid=,ppid=,etime=,command= 2>/dev/null)"
+  old="$(printf '%s\n' "$procs" | awk -v min="$SIM_STRAY_S" '
+    function secs(t,   d, a, p, n, i, s) {
+      d = 0
+      if (index(t, "-")) { split(t, a, "-"); d = a[1]; t = a[2] }
+      n = split(t, p, ":"); s = 0
+      for (i = 1; i <= n; i++) s = s * 60 + p[i]
+      return d * 86400 + s
+    }
+    /launchd_sim / && match($0, /\/CoreSimulator\/Devices\/[A-Za-z0-9-]+\/data\/var\/run\/launchd_bootstrap\.plist/) {
+      u = substr($0, RSTART + 23, RLENGTH - 23 - 37)
+      s = secs($3)
+      if (s >= min) print u, s
+    }')"
+  [ -n "$old" ] || return 0
+  say "==> stray simulators (booted over ${SIM_STRAY_S}s, nothing attached)"
+  if printf '%s\n' "$procs" | grep -q 'Simulator\.app/Contents/MacOS/Simulator'; then
+    say "    (skipped: Simulator.app is open)"
+    return 0
+  fi
+  while read -r udid secs; do
+    [ -n "$udid" ] || continue
+    if printf '%s\n' "$procs" | grep -F -- "$udid" \
+      | grep -v -F -e "/Devices/$udid/" -e 'launchd_sim ' | grep -q .; then
+      say "    $udid (up ${secs}s): in use, kept"
+      continue
+    fi
+    if [ "$APPLY" = "1" ]; then
+      if xcrun simctl shutdown "$udid" >/dev/null 2>&1; then
+        say "    $udid (up ${secs}s): shut down"
+      else
+        say "    $udid (up ${secs}s): shutdown failed"
+      fi
+    else
+      say "    [dry-run] xcrun simctl shutdown $udid (up ${secs}s)"
+    fi
+  done <<< "$old"
+}
+reap_stray_simulators
 
 # --auto runs every 15 minutes, so its no-op has to cost two cheap reads and
 # nothing else: the host it guards is usually saturated when the disk is short.
@@ -451,6 +514,40 @@ while IFS= read -r f; do
   run rm -f "$f"
   n=$((n + 1))
 done < <(find "$ROOT"/*/_diag -type f -mtime +${DIAG_AGE_DAYS} 2>/dev/null)
+say "    ${n} files"
+
+# ---------------------------------------------------------------------------
+# Crash reports from Apple's own simulator daemons, after
+# FLEET_CLEANUP_SIM_CRASH_KEEP_DAYS. A report counts as one when its
+# coalition is a CoreSimulator device and the process is Apple's: a com.apple.
+# bundle id, or none and not an installed app. The app under test, its
+# extensions and its test runner (in Containers/Bundle/Application, or a
+# bundle id of their own) are kept, and so is every report from the host.
+# ---------------------------------------------------------------------------
+say "==> simulator daemon crash reports older than ${SIM_CRASH_KEEP_DAYS}d"
+n=0
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  run rm -f "$f"
+  n=$((n + 1))
+done < <(find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -name '*.ips' -type f \
+  -mtime +"${SIM_CRASH_KEEP_DAYS}" 2>/dev/null | python3 -c '
+import json, sys
+for path in sys.stdin.read().splitlines():
+    try:
+        head, body = open(path, errors="replace").read().split("\n", 1)
+        h, b = json.loads(head), json.loads(body)
+    except (OSError, ValueError):
+        continue
+    if "CoreSimulator.SimDevice." not in b.get("coalitionName", ""):
+        continue
+    bundle = h.get("bundleID") or ""
+    if "/Containers/Bundle/Application/" in b.get("procPath", ""):
+        continue
+    if bundle and not bundle.startswith("com.apple."):
+        continue
+    print(path)
+')
 say "    ${n} files"
 
 # ---------------------------------------------------------------------------

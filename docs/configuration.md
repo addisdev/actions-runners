@@ -78,6 +78,8 @@ Used by `cleanup.sh` and `cleanupctl.sh`. See
 | `FLEET_CLEANUP_AVD_KEEP_GB` | `30` | The snapshot AVDs in all. Over it, even on a quiet `--auto` tick, idle runners' snapshots (`snapshots/` inside the AVD) go, least recently used first; the AVD stays. Below the admission floor every idle snapshot goes, before any other step. |
 | `FLEET_CLEANUP_AVD_PREFIXES` | `ci shots` | AVD name prefixes that mark a runner's own emulator. Nothing else is touched. |
 | `FLEET_CLEANUP_EMU_ORPHAN_MIN_S` | `300` | Stop a CI emulator whose parent is launchd and whose runner runs no job once it is this old (on every tick). |
+| `FLEET_CLEANUP_SIM_STRAY_S` | `21600` | Shut down (never erase or delete) a booted simulator this old that no host process outside the device names, while Simulator.app is closed (on every tick). |
+| `FLEET_CLEANUP_SIM_CRASH_KEEP_DAYS` | `3` | Delete crash reports from Apple's own simulator daemons older than this (daily full pass). App crashes and host reports are kept. |
 | `FLEET_EMULATOR_CLEANUP` | `1` | The job-completed hook stops an emulator the job left running on its runner's AVD (`adb emu kill`, then SIGTERM, SIGKILL last). `0` turns it off. |
 | `FLEET_CLEANUP_INTERVAL` | `900` | Seconds between `--auto` ticks. Reinstall after changing: `./cleanupctl.sh install`. |
 | `FLEET_CLEANUP_LOG` | `~/Library/Logs/runner-cleanup.log` | Where the cleanup LaunchAgent writes stdout/stderr. |
