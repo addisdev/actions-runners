@@ -261,6 +261,8 @@ Source: [`cleanup.sh`](https://github.com/addisdev/actions-runners/blob/main/cle
 | `FLEET_CLEANUP_AVD_KEEP_DAYS` | 14 | Keep a runner's snapshot AVD until this long without a boot |
 | `FLEET_CLEANUP_AVD_KEEP_GB` | 30 | Snapshot AVDs in all; over it, least recently used snapshots go |
 | `FLEET_CLEANUP_EMU_ORPHAN_MIN_S` | 300 | Age at which an unowned CI emulator is stopped |
+| `FLEET_CLEANUP_SIM_STRAY_S` | 21600 | Age at which an unused booted simulator is shut down |
+| `FLEET_CLEANUP_SIM_CRASH_KEEP_DAYS` | 3 | Age at which Apple simulator daemon crash reports are deleted |
 
 Host-wide steps, only while no job is building: DerivedData directories older
 than 7 days, simulators whose runtime is no longer installed, and stale

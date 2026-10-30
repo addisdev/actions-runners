@@ -453,6 +453,80 @@ ok "and, since it could have been saving, dropped its snapshot" "$(gone "$A/ci-R
 ok "but kept the AVD" "$(gone "$A/ci-RL-ios-a34-google_apis-pixel_6.avd")" "kept"
 pkill -f -- "$T/" 2>/dev/null
 
+echo "== stray simulators are shut down, never one in use =="
+setup 44
+echo 120 > "$T/free"
+date +%s > "$T/.cleanup-last-full"
+D="$T/home/Library/Developer/CoreSimulator/Devices"
+mkdir -p "$T/sim"
+# Stand-ins named as the real processes are, each carrying the path or id a
+# real one does in its command line.
+for exe in launchd_sim xcodebuild Jerv; do
+  printf '#!/usr/bin/env bash\nwhile :; do sleep 1; done\n' > "$T/sim/$exe"
+  chmod +x "$T/sim/$exe"
+done
+bg() { ( "$@" >/dev/null 2>&1 & ); }
+for u in U-STRAY U-USED U-APP; do
+  bg "$T/sim/launchd_sim" "$D/$u/data/var/run/launchd_bootstrap.plist"
+done
+bg "$T/sim/xcodebuild" test -destination "id=U-USED"
+bg "$T/sim/Jerv" "$D/U-APP/data/Containers/Bundle/Application/A/Jerv.app"
+sleep 1
+FLEET_CLEANUP_SIM_STRAY_S=3600 clean --apply --auto > "$T/out"
+ok "a young simulator is not a stray" "$(calls 'simctl shutdown')" "0"
+FLEET_CLEANUP_SIM_STRAY_S=0 clean --auto > "$T/out"
+ok "a dry run shuts nothing down" "$(calls 'simctl shutdown')" "0"
+ok "a dry run says what it would shut down" "$(grep -c '\[dry-run\] xcrun simctl shutdown U-STRAY' "$T/out")" "1"
+mkdir -p "$T/Simulator.app/Contents/MacOS"
+printf '#!/usr/bin/env bash\nwhile :; do sleep 1; done\n' > "$T/Simulator.app/Contents/MacOS/Simulator"
+chmod +x "$T/Simulator.app/Contents/MacOS/Simulator"
+bg "$T/Simulator.app/Contents/MacOS/Simulator"
+sleep 1
+FLEET_CLEANUP_SIM_STRAY_S=0 clean --apply --auto > "$T/out"
+ok "with Simulator.app open, nothing is shut down" "$(calls 'simctl shutdown')" "0"
+ok "and it says why" "$(grep -c 'Simulator.app is open' "$T/out")" "1"
+pkill -f -- "$T/Simulator.app" 2>/dev/null
+sleep 1
+FLEET_CLEANUP_SIM_STRAY_S=0 clean --apply --auto > "$T/out"
+ok "shut down the simulator nothing uses" "$(calls 'simctl shutdown U-STRAY')" "1"
+ok "an app inside a device does not keep it" "$(calls 'simctl shutdown U-APP')" "1"
+ok "kept the one xcodebuild is testing on" "$(calls 'U-USED')" "0"
+ok "and said so" "$(grep -c 'U-USED .*in use, kept' "$T/out")" "1"
+ok "never erased or deleted one" "$(grep -cE 'simctl (erase|delete) U-(STRAY|APP)' "$T/calls")" "0"
+pkill -f -- "$T/" 2>/dev/null
+
+echo "== Apple's simulator daemon crash reports go after 3 days, nothing else =="
+setup 45
+echo 120 > "$T/free"
+echo 1 > "$T/.cleanup-last-full"
+R="$T/home/Library/Logs/DiagnosticReports"
+mkdir -p "$R"
+# report FILE COALITION BUNDLE PROCPATH AGE(old|new)
+report() {
+  printf '{"app_name":"x","bundleID":"%s","bug_type":"309"}\n{"coalitionName":"%s","procPath":"%s"}\n' \
+    "$3" "$2" "$4" > "$R/$1"
+  [ "$5" = old ] && touch -t 202610010000 "$R/$1"
+}
+SIMC="com.apple.CoreSimulator.SimDevice.U-WEB"
+report daemon-old.ips "$SIMC" "" "/Volumes/VOLUME/*/intelligencetasksd" old
+report poster-old.ips "$SIMC" "com.apple.PosterBoard" "/Volumes/VOLUME/*/PosterBoard.app/PosterBoard" old
+report daemon-new.ips "$SIMC" "" "/Volumes/VOLUME/*/intelligencetasksd" new
+report app-old.ips "$SIMC" "" "/x/Devices/U-WEB/data/Containers/Bundle/Application/A/Jerv.app/Jerv" old
+report ours-old.ips "$SIMC" "com.taylab.jerv" "/Volumes/VOLUME/*/Jerv" old
+report host-old.ips "com.apple.Terminal" "com.apple.Terminal" "/System/Applications/Utilities/Terminal.app" old
+echo "not json" > "$R/garbage.ips"; touch -t 202610010000 "$R/garbage.ips"
+clean --auto > "$T/out"
+ok "a dry run deletes no report" "$(gone "$R/daemon-old.ips")" "kept"
+clean --apply --auto > "$T/out"
+ok "deleted an old simulator daemon report" "$(gone "$R/daemon-old.ips")" "removed"
+ok "deleted an old report from a com.apple simulator app" "$(gone "$R/poster-old.ips")" "removed"
+ok "kept a recent one" "$(gone "$R/daemon-new.ips")" "kept"
+ok "kept an installed app's crash" "$(gone "$R/app-old.ips")" "kept"
+ok "kept a crash with a bundle id of our own" "$(gone "$R/ours-old.ips")" "kept"
+ok "kept a host report" "$(gone "$R/host-old.ips")" "kept"
+ok "kept what it cannot read" "$(gone "$R/garbage.ips")" "kept"
+ok "counted them" "$(grep -A1 'simulator daemon crash reports' "$T/out" | grep -c '2 files')" "1"
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

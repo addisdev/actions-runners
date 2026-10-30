@@ -10,6 +10,19 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Added
 
+- **`cleanup.sh` shuts down stray simulators.** A session or tool that boots a
+  simulator and walks away left it running for hours (ultra, 2026-10-30: a
+  plain "iPhone 17" ran Jerv for 5 h with nothing attached). On every tick, a
+  simulator whose `launchd_sim` is older than `FLEET_CLEANUP_SIM_STRAY_S`
+  (21600) is shut down when no host process outside the device names its id
+  and Simulator.app is closed. Shut down only, never erased or deleted.
+- **`cleanup.sh` prunes Apple's simulator daemon crash reports.** iOS 27.0's
+  daemons crash ~150 times a day in CI devices (1,332 reports on ultra). The
+  daily full pass deletes `.ips` reports older than
+  `FLEET_CLEANUP_SIM_CRASH_KEEP_DAYS` (3) whose coalition is a CoreSimulator
+  device and whose process is Apple's; an installed app's crash, a bundle id of
+  our own, and every host report are kept.
+
 - **`cleanup.sh` keeps runners' quick-boot snapshot AVDs.** The launch kit's
   android-ci `emulator_snapshot` boots each runner's emulator from a snapshot
   saved in its own AVD, `ci-<runner>-a<api>-<target>-<profile>` (~6 GB). The
