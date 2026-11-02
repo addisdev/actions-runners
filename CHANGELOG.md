@@ -191,6 +191,14 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Fixed
 
+- **The dashboard takes its share of the API allowance into account.** The
+  allowance belongs to the login, and every agent and session on it stalls when
+  it runs out. The fast loop now stretches to 60 s when the share of the allowance
+  left falls below half the share of the window left, and to 120 s below a quarter.
+  `/api/state` reports what the daemon spent by endpoint family this hour and last
+  (`collector.apiUsage`). A held job's run lookup is now a conditional request, so
+  an unchanged answer costs nothing.
+
 - **An account block stops `cockpit wait` only on a repo GitHub is refusing.**
   2026-10-24: GitHub refused hosted jobs on three private repos (petcam-android,
   petcam-nvr, enjoyable-languages-site; the account's included minutes were

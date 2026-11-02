@@ -455,7 +455,8 @@ export class Alerts {
           `API rate limit low: ${apiRemaining}/${apiLimit} remaining`,
           'Under 10% of the hourly budget for 10+ minutes. The fast loop polls every repo every ' +
             `${Math.round((snapshot.collector?.fastMs ?? 15000) / 1000)}s; fewer repos or a longer ` +
-            'cadence (FLEET_FAST_MS) would reduce consumption.');
+            'cadence (FLEET_FAST_MS) would reduce consumption. collector.apiUsage in /api/state ' +
+            'says what this daemon spent; the rest of the login\'s spending is elsewhere.');
       }
     }
 
