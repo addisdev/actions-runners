@@ -56,6 +56,9 @@ Used by `healthctl.sh` and `scripts/health-repair-launchd.sh`. See
 | `FLEET_HEALTH_INTERVAL` | `60` | Seconds between `health.sh --repair` sweeps. Reinstall after changing: `./healthctl.sh install`. |
 | `FLEET_HEALTH_LOG` | `logs/fleet-health-repair.log` under `FLEET_ROOT` | Where the repair LaunchAgent writes stdout/stderr. |
 | `FLEET_HEALTH_LOCK` | `.health-repair.lock.d` under `FLEET_ROOT` | Lock directory preventing overlapping sweeps. |
+| `FLEET_HEALTH_STATE_URL` | `http://127.0.0.1:$FLEET_PORT/api/state` | Where a sweep reads GitHub's view of the runners, at no GitHub cost. Empty means always ask GitHub. |
+| `FLEET_HEALTH_STATE_MAX_AGE_S` | `180` | A dashboard whose last tick is older than this is not trusted, and the sweep asks GitHub. |
+| `FLEET_HEALTH_GH_CACHE` | `600s` | How long `gh` may reuse a repo's runner list when the dashboard cannot answer. |
 
 The LaunchAgent label is `<FLEET_LABEL_PREFIX>.fleet-health` (default
 `com.runner-fleet.fleet-health`). Set `FLEET_LABEL_PREFIX` before
