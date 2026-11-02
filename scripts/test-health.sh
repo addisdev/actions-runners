@@ -16,6 +16,10 @@
 # Not being able to ask is not a fault in the runner; a runner GitHub no longer
 # lists is.
 #
+# On 2026-11-02 the same job was found spending 2,500 of the account's 5,000 calls
+# an hour, one per runner per sweep. The cases at the end pin what replaced that:
+# the dashboard's answer costs no call, and only GitHub itself can convict a runner.
+#
 # Nothing here touches the live fleet: FLEET_ROOT points at the temp directory.
 set -uo pipefail
 
@@ -62,6 +66,7 @@ cat > "$BIN/gh" <<PY
 #!/usr/bin/env python3
 import os, re, sys
 stub = "$STUB"
+open(os.path.join(stub, "gh-calls"), "a").write(" ".join(sys.argv[1:5]) + "\n")
 if os.path.exists(os.path.join(stub, "down")):
     sys.stderr.write("HTTP 502\n"); sys.exit(1)
 path = sys.argv[2]
@@ -73,6 +78,12 @@ for line in (open(f).read().splitlines() if os.path.exists(f) else []):
     if name == want:
         print(state)
 PY
+# curl <url>: the dashboard's /api/state, from stub/state.json, or refused.
+cat > "$BIN/curl" <<SH
+#!/usr/bin/env bash
+[ -f "$STUB/state.json" ] || exit 7
+cat "$STUB/state.json"
+SH
 chmod +x "$BIN"/*
 
 make_runner() { # make_runner <dir> <owner/repo> <agent name>
@@ -84,7 +95,17 @@ echo "$1" >> "$(dirname "$0")/svc.log"
 SVC
   chmod +x "$FLEET/$1/svc.sh"
 }
-run_health() { PATH="$BIN:$PATH" FLEET_ROOT="$FLEET" bash "$ROOT/health.sh" "$@" > "$TMP/out" 2>&1; echo $?; }
+run_health() { PATH="$BIN:$PATH" FLEET_ROOT="$FLEET" FLEET_HEALTH_STATE_URL="${STATE_URL:-}" bash "$ROOT/health.sh" "$@" > "$TMP/out" 2>&1; echo $?; }
+gh_calls() { if [ -f "$STUB/gh-calls" ]; then wc -l < "$STUB/gh-calls" | tr -d ' '; else echo 0; fi; }
+# dashboard_says <age seconds> <name:state[:unknown|:unregistered]>...
+dashboard_says() {
+  local age="$1" rows="" row name state flag; shift
+  for row in "$@"; do
+    IFS=: read -r name state flag <<< "$row"
+    rows="$rows{\"name\":\"$name\",\"ghStatus\":\"${state%busy}\",\"ghBusy\":$([ "$state" = busy ] && echo true || echo false),\"ghUnknown\":$([ "$flag" = unknown ] && echo true || echo false),\"registered\":$([ "$flag" = unregistered ] && echo false || echo true)},"
+  done
+  printf '{"collector":{"lastFast":%s000},"runners":[%s]}' "$(( $(date +%s) - age ))" "${rows%,}" > "$STUB/state.json"
+}
 
 make_runner app-ios me/app-ios host-app-ios
 make_runner app-web me/app-web host-app-web
@@ -125,6 +146,82 @@ touch "$STUB/down" "$STUB/dead-actions.runner.me-app-ios.host-app-ios"
 check "exits 1: launchd is still judged" "$(run_health)" "1"
 check "reports it DEAD" "$(grep -c 'host-app-ios *DEAD' "$TMP/out")" "1"
 rm -f "$STUB/down" "$STUB/dead-actions.runner.me-app-ios.host-app-ios"
+
+echo
+echo "health.sh — without the dashboard, a repo's runners share one cached call"
+rm -f "$STUB/gh-calls"
+run_health >/dev/null
+check "asks through gh's cache" "$(grep -c -- '--cache 600s' "$STUB/gh-calls")" "2"
+check "reports what the sweep cost" "$(grep -c 'Asked GitHub directly 2 time' "$TMP/out")" "1"
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo
+  echo "jq not on this host — dashboard cases skipped (health.sh falls back to gh, as above)"
+else
+  STATE_URL=http://dashboard.test/api/state
+
+  echo
+  echo "health.sh — the dashboard answers"
+  dashboard_says 5 host-app-ios:online host-app-web:busy
+  rm -f "$STUB/gh-calls"
+  check "exits 0" "$(run_health)" "0"
+  check "spends no GitHub call" "$(gh_calls)" "0"
+  check "shows the dashboard's state" "$(grep -c 'host-app-web.*busy' "$TMP/out")" "1"
+
+  echo
+  echo "health.sh — the dashboard is waiting out a rate limit"
+  dashboard_says 5 host-app-ios:online:unknown host-app-web:online:unknown
+  rm -f "$STUB/gh-calls"
+  check "exits 0" "$(run_health)" "0"
+  check "spends no GitHub call" "$(gh_calls)" "0"
+  check "says GitHub did not answer" "$(grep -c 'GitHub did not answer for 2 runner' "$TMP/out")" "1"
+
+  echo
+  echo "health.sh — the dashboard says offline and GitHub no longer does"
+  dashboard_says 5 host-app-ios:offline host-app-web:online
+  rm -f "$STUB/gh-calls"
+  check "exits 0: only GitHub convicts" "$(run_health --repair)" "0"
+  check "asks once, about that runner" "$(gh_calls)" "1"
+  check "restarts nothing" "$(cat "$FLEET"/*/svc.log 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+  echo
+  echo "health.sh — the dashboard and GitHub both say offline"
+  printf 'host-app-ios offline\n' > "$STUB/runners-me-app-ios"
+  check "exits 1" "$(run_health)" "1"
+  check "--repair restarts it" "$(run_health --repair >/dev/null; tr '\n' ',' < "$FLEET/app-ios/svc.log")" "stop,start,"
+  rm -f "$FLEET/app-ios/svc.log"
+  printf 'host-app-ios online\n' > "$STUB/runners-me-app-ios"
+
+  echo
+  echo "health.sh — the dashboard says unregistered and GitHub agrees"
+  dashboard_says 5 host-app-ios:online host-app-web:offline:unregistered
+  printf 'someone-else online\n' > "$STUB/runners-me-app-web"
+  check "exits 1" "$(run_health)" "1"
+  check "names it not-registered" "$(grep -c 'host-app-web.*not-registered' "$TMP/out")" "1"
+  printf 'host-app-web online\n' > "$STUB/runners-me-app-web"
+
+  echo
+  echo "health.sh — the dashboard does not know a runner yet"
+  dashboard_says 5 host-app-ios:online
+  rm -f "$STUB/gh-calls"
+  check "exits 0" "$(run_health)" "0"
+  check "asks GitHub for that one" "$(gh_calls)" "1"
+
+  echo
+  echo "health.sh — the dashboard stopped collecting"
+  dashboard_says 600 host-app-ios:online host-app-web:online
+  rm -f "$STUB/gh-calls"
+  check "exits 0" "$(run_health)" "0"
+  check "does not trust it: asks GitHub" "$(gh_calls)" "2"
+
+  echo
+  echo "health.sh — the dashboard is not running"
+  rm -f "$STUB/state.json" "$STUB/gh-calls"
+  check "exits 0" "$(run_health)" "0"
+  check "asks GitHub" "$(gh_calls)" "2"
+
+  unset STATE_URL
+fi
 
 echo
 echo "$PASS passed, $FAIL failed"
