@@ -125,6 +125,42 @@ export function rateLimitBackoffUntil({ now, retryAfterS, remaining, resetAt, st
   return now + Math.min(SECONDARY_BACKOFF_MS * 2 ** strikes, SECONDARY_BACKOFF_MAX_MS);
 }
 
+/**
+ * How long the fast loop should wait, given what is left of the hourly allowance.
+ *
+ * The allowance belongs to the login, not to this daemon: every agent, session
+ * and script on it shares the 5,000. When the account ran out 15 minutes before
+ * each reset (2026-11-02), this loop spent most of those 15 minutes failing and
+ * everything else on the login stalled with it. So it gives way once the
+ * remaining share of the allowance falls well behind the remaining share of the
+ * window. 0 means no opinion: use the normal cadence.
+ */
+export function budgetCadenceMs({ remaining, limit, resetAt, now = Date.now() } = {}) {
+  if (remaining == null || !limit || !resetAt || resetAt <= now) return 0;
+  const windowLeft = Math.min(1, (resetAt - now) / 3_600_000);
+  const pace = (remaining / limit) / windowLeft;
+  if (pace < 0.25) return 120_000;
+  if (pace < 0.5) return 60_000;
+  return 0;
+}
+
+/** The endpoint family a request belongs to, for counting what a window spent. */
+export function endpointClass(path) {
+  const p = String(path).replace(/^https:\/\/api\.github\.com/, '').replace(/^\//, '');
+  if (/\/actions\/runners/.test(p)) return 'runners';
+  if (/\/actions\/runs\/\d+\/jobs/.test(p)) return 'run-jobs';
+  if (/\/actions\/runs\/\d+/.test(p)) return 'run';
+  if (/\/actions\/runs\?.*status=/.test(p)) return 'runs-active';
+  if (/\/actions\/runs/.test(p)) return 'runs';
+  if (/\/actions\/jobs\//.test(p)) return 'job';
+  if (/\/check-runs\/\d+\/annotations/.test(p)) return 'annotations';
+  if (/\/(check-runs|status)(\?|$)|\/pulls\/|\/git\/ref\/|\/commits\//.test(p)) return 'checks';
+  if (/\/actions\/workflows|\/contents\//.test(p)) return 'workflows';
+  if (/^user\/repos/.test(p)) return 'roster';
+  if (/billing/.test(p)) return 'billing';
+  return 'other';
+}
+
 export class GitHub {
   constructor({ log }) {
     this.token = null;
@@ -139,6 +175,19 @@ export class GitHub {
     // is written by whichever request happened to finish last. Errors are thrown
     // and the caller aggregates them per tick.
     this.transientRetries = 0;
+    // By hour of the clock, so "what did this daemon spend" needs no log. A 304
+    // costs nothing, which is why it is counted apart from what does.
+    this.usage = { hour: null, previous: null };
+  }
+
+  count(path, status) {
+    const hour = new Date().toISOString().slice(0, 13);
+    if (this.usage.hour?.at !== hour) {
+      this.usage = { hour: { at: hour, spent: 0, free: 0, byClass: {} }, previous: this.usage.hour };
+    }
+    const u = this.usage.hour;
+    const row = (u.byClass[endpointClass(path)] ??= { spent: 0, free: 0 });
+    if (status === 304) { u.free++; row.free++; } else { u.spent++; row.spent++; }
   }
 
   async resolveToken() {
@@ -212,6 +261,7 @@ export class GitHub {
         continue;
       }
 
+      this.count(path, res.status);
       const remaining = res.headers.get('x-ratelimit-remaining');
       if (remaining !== null) {
         this.rate = {
@@ -298,6 +348,7 @@ export class GitHub {
       body: body ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(20000),
     });
+    this.count(path, res.status);
     const text = await res.text().catch(() => '');
     if (!res.ok) {
       const err = new Error(`${res.status} ${text.slice(0, 300)}`);
@@ -355,9 +406,11 @@ export class GitHub {
     return data?.jobs ?? [];
   }
 
-  // One run by id, for a run the fast loop lost sight of (lib/settle.js).
+  // One run by id, for a run the fast loop lost sight of (lib/settle.js) and for
+  // held jobs asking whether their run ended (lib/run-status.js). The hooks ask
+  // for as long as a job is held, so an unchanged answer has to be a free 304.
   async run(repo, runId) {
-    const { data } = await this.get(`repos/${repo}/actions/runs/${runId}`, { etag: false });
+    const { data } = await this.get(`repos/${repo}/actions/runs/${runId}`);
     return data;
   }
 

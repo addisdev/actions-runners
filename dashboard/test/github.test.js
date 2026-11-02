@@ -8,6 +8,8 @@ import {
   newerRun,
   activeRunQueryPaths,
   rateLimitBackoffUntil,
+  budgetCadenceMs,
+  endpointClass,
   GitHub,
 } from '../lib/github.js';
 
@@ -93,6 +95,83 @@ describe('activeRunQueryPaths', () => {
     for (const { status } of activeRunQueryPaths('owner/repo')) {
       assert.ok(ACTIVE_RUN_STATUSES.has(status));
     }
+  });
+});
+
+describe('budgetCadenceMs', () => {
+  const now = 1_000_000_000_000;
+  const at = (remaining, minutesLeft) =>
+    budgetCadenceMs({ remaining, limit: 5000, resetAt: now + minutesLeft * 60_000, now });
+
+  test('has no opinion while the allowance keeps pace with the window', () => {
+    assert.equal(at(5000, 60), 0);
+    assert.equal(at(1610, 30), 0); // 2026-11-02, half an hour in: 64% of the pace
+  });
+
+  test('gives way when the allowance falls behind', () => {
+    assert.equal(at(1000, 30), 60_000);
+    assert.equal(at(284, 19), 120_000); // 2026-11-02, three minutes before it ran out
+    assert.equal(at(0, 15), 120_000);
+  });
+
+  test('says nothing without a reading, or once the window is over', () => {
+    assert.equal(budgetCadenceMs({}), 0);
+    assert.equal(budgetCadenceMs(), 0);
+    assert.equal(budgetCadenceMs({ remaining: null, limit: null, resetAt: null, now }), 0);
+    assert.equal(budgetCadenceMs({ remaining: 0, limit: 5000, resetAt: now - 1, now }), 0);
+  });
+
+  test('a clock ahead of the window does not relax it', () => {
+    assert.equal(budgetCadenceMs({ remaining: 2000, limit: 5000, resetAt: now + 2 * 3_600_000, now }), 60_000);
+  });
+});
+
+describe('endpointClass', () => {
+  const cases = [
+    ['repos/o/r/actions/runners?per_page=100', 'runners'],
+    ['repos/o/r/actions/runs?per_page=12', 'runs'],
+    ['repos/o/r/actions/runs?per_page=100&page=1&status=queued', 'runs-active'],
+    ['repos/o/r/actions/runs?head_sha=abc&per_page=100', 'runs'],
+    ['repos/o/r/actions/runs/123/jobs', 'run-jobs'],
+    ['repos/o/r/actions/runs/123/jobs?filter=latest&per_page=100&page=1', 'run-jobs'],
+    ['repos/o/r/actions/runs/123', 'run'],
+    ['repos/o/r/actions/jobs/9', 'job'],
+    ['repos/o/r/check-runs/9/annotations', 'annotations'],
+    ['repos/o/r/commits/abc/check-runs?per_page=100', 'checks'],
+    ['repos/o/r/pulls/5', 'checks'],
+    ['repos/o/r/actions/workflows?per_page=100', 'workflows'],
+    ['repos/o/r/contents/.github/workflows/ci.yml?ref=main', 'workflows'],
+    ['user/repos?affiliation=owner&sort=pushed&per_page=100&page=1', 'roster'],
+    ['https://api.github.com/repos/o/r/actions/runners', 'runners'],
+    ['users/o/settings/billing/actions', 'billing'],
+    ['repos/o/r/issues/1', 'other'],
+  ];
+  for (const [path, cls] of cases) {
+    test(`${path} is ${cls}`, () => assert.equal(endpointClass(path), cls));
+  }
+});
+
+describe('GitHub usage counts', () => {
+  test('a 304 is counted apart from what the allowance paid for', () => {
+    const gh = new GitHub({});
+    gh.count('repos/o/r/actions/runners', 200);
+    gh.count('repos/o/r/actions/runners', 304);
+    gh.count('repos/o/r/actions/runners', 304);
+    gh.count('repos/o/r/actions/runs/1', 200);
+    assert.equal(gh.usage.hour.spent, 2);
+    assert.equal(gh.usage.hour.free, 2);
+    assert.deepEqual(gh.usage.hour.byClass.runners, { spent: 1, free: 2 });
+    assert.deepEqual(gh.usage.hour.byClass.run, { spent: 1, free: 0 });
+  });
+
+  test('a new hour starts a new count and keeps the last one', () => {
+    const gh = new GitHub({});
+    gh.count('repos/o/r/actions/runners', 200);
+    gh.usage.hour.at = '2000-01-01T00';
+    gh.count('repos/o/r/actions/runners', 200);
+    assert.equal(gh.usage.previous.at, '2000-01-01T00');
+    assert.equal(gh.usage.previous.spent, 1);
+    assert.equal(gh.usage.hour.spent, 1);
   });
 });
 
