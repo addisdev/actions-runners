@@ -16,7 +16,7 @@ import { execFile } from 'node:child_process';
 
 import { openDb, setMeta, getMeta, UPSERT_JOB, UPSERT_REPO } from './lib/db.js';
 import { reposToPrune, repoIsGone } from './lib/workflow-cache.js';
-import { GitHub, isActiveRunStatus, newerRun } from './lib/github.js';
+import { GitHub, isActiveRunStatus, newerRun, budgetCadenceMs } from './lib/github.js';
 import {
   discoverRunnerDirs,
   launchdJobs,
@@ -2293,6 +2293,7 @@ async function fastTick(progress = null) {
       // list is already computed above for the message.
       failedRepos: failedRepos.length,
       transientRetries: gh.transientRetries,
+      apiUsage: gh.usage,
       fastMs: currentCadence(active, runners),
       tokenSource: gh.tokenSource ?? null,
       backfill: { ...backfill.progress },
@@ -2596,7 +2597,7 @@ function holdLocalDrains(runners, now) {
 // building" with no API call at all.
 function currentCadence(active, runners) {
   const busy = active.length > 0 || runners.some((r) => r.workingLocally || r.ghBusy);
-  return busy ? CONFIG.fastMs : CONFIG.idleMs;
+  return Math.max(busy ? CONFIG.fastMs : CONFIG.idleMs, budgetCadenceMs(gh.rate));
 }
 
 // Records what an autoscaler WOULD do for each queued repo — purely for
