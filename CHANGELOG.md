@@ -10,6 +10,14 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Added
 
+- **Admission holds heavy jobs while the host thrashes.** Lanes counted jobs
+  and the floors counted disk, so on ultra, 2026-11-02, heavy jobs kept starting
+  through half an hour of 1–7k swap-ins/s and critical pressure, until
+  WindowServer aborted and the logout stopped every runner. `job-started.sh` now
+  holds a job outside the light lane while swap-ins exceed
+  `FLEET_ADMIT_HEAVY_MAX_SWAPINS_PER_S` (500) or kernel pressure is at
+  `FLEET_ADMIT_HEAVY_PRESSURE_LEVEL` (4, critical) or above. 0 turns either
+  off. Light jobs are never held; a failed read holds nothing.
 - **`cleanup.sh` shuts down stray simulators.** A session or tool that boots a
   simulator and walks away left it running for hours (ultra, 2026-10-30: a
   plain "iPhone 17" ran Jerv for 5 h with nothing attached). On every tick, a

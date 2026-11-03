@@ -104,6 +104,30 @@ ADMIT_MIN_DISK_GB="$(admit_int "${FLEET_ADMIT_MIN_FREE_DISK_GB:-}" 40)"
 # shellcheck disable=SC2034  # used by the files that source this
 ADMIT_MIN_PLAIN_DISK_GB="$(admit_int "${FLEET_ADMIT_MIN_PLAIN_FREE_GB:-}" 15)"
 
+# MEMORY. Nothing above looks at memory: lanes count jobs and the floors count
+# disk, so a host that is already thrashing keeps taking heavy jobs as long as
+# a heavy slot is free. On ultra 2026-11-02 22:25-22:57 that ran to critical
+# pressure, 48-62 GB of swap and 1-7k swap-ins/s, and WindowServer aborted on a
+# failed kernel VM copy at 22:58, logging the session out and stopping every
+# runner until someone came to the console. lib/capacity.js already refuses to
+# ADD a runner on these signals; it cannot stop a job on one that exists.
+#
+# So a job that is not in the light lane (heavy, simulator, or any job while
+# lanes are off) waits while either holds, the way it waits on the disk floor:
+#   swap-ins per second, pages read back from swap, above this (0 = off). The
+#   rate, not swap used: used only ever climbs (see lib/local.js). Ordinary
+#   minutes on ultra read 0-100/s with single samples up to ~900; thrashing
+#   read 1,000-7,000/s for half an hour.
+#   the kernel's memory pressure level at or above this (0 = off). 4 is
+#   critical. 2 (warning) is routine on ultra with the model shelf loaded, so
+#   holding there would hold most of the day.
+# Light jobs are never held on memory: they finish in seconds, and the light
+# lane is what keeps the queue moving while heavy work waits.
+# shellcheck disable=SC2034  # used by the files that source this
+ADMIT_HEAVY_MAX_SWAPINS="$(admit_int "${FLEET_ADMIT_HEAVY_MAX_SWAPINS_PER_S:-}" 500)"
+# shellcheck disable=SC2034  # used by the files that source this
+ADMIT_HEAVY_PRESSURE_LEVEL="$(admit_int "${FLEET_ADMIT_HEAVY_PRESSURE_LEVEL:-}" 4)"
+
 # Never zero: a zero poll with a non-zero wait is a busy loop on a machine that
 # is by definition already under load.
 ADMIT_POLL="$(admit_int "${FLEET_ADMIT_POLL_S:-}" 5)"
@@ -860,6 +884,113 @@ except Exception:
 
 admit_run_completed() {
   [ "$(admit_run_status)" = "completed" ]
+}
+
+# ---------------------------------------------------------------------------
+# Memory (see MEMORY above). Like the lane functions, these return 0 unless
+# they are tests, and print nothing when they cannot read the host: a hold on
+# memory must never come from a read that failed.
+# ---------------------------------------------------------------------------
+
+# The kernel's memory pressure level: 1 normal, 2 warning, 4 critical. sysctl
+# lives in /usr/sbin, which a runner's PATH does not always carry.
+admit_pressure_level() {
+  local cmd=sysctl level
+  command -v sysctl >/dev/null 2>&1 || cmd=/usr/sbin/sysctl
+  level="$("$cmd" -n kern.memorystatus_vm_pressure_level 2>/dev/null)" || return 1
+  case "$level" in '' | *[!0-9]*) return 1 ;; esac
+  printf '%s' "$level"
+}
+
+# Pages read back from swap since boot, from vm_stat.
+admit_swapins_total() {
+  local n
+  n="$(vm_stat 2>/dev/null | sed -n 's/^Swapins:[[:space:]]*\([0-9][0-9]*\)\..*/\1/p' | head -1)"
+  [ -n "$n" ] || return 1
+  printf '%s' "$n"
+}
+
+# One sample shared by every hook on the host: the counter, when it was read,
+# and the rate over the window before it. A sample older than
+# ADMIT_SWAP_BASELINE_S is no baseline, because a rate across it would average
+# a burst away.
+ADMIT_SWAP_SAMPLE="$ADMIT_STATE/swap-sample"
+ADMIT_SWAP_BASELINE_S=120
+
+# Prints swap-ins per second (whole), and records the counter as the next
+# window's start. The window is the time since ANY hook last looked, a few
+# seconds while jobs wait. Under 2 s it reuses the last rate rather than divide
+# by one tick of a whole-second clock. Prints nothing with no fair window: no
+# sample, a stale one, a clock that went back, or a counter that did (reboot).
+admit_swapin_rate() {
+  local now count at="" prev="" rate="" dt=-1 tmp
+  count="$(admit_swapins_total)" || return 0
+  now="$(admit_now)"
+  if [ -f "$ADMIT_SWAP_SAMPLE" ]; then
+    at="$(sed -n 's/^at=//p' "$ADMIT_SWAP_SAMPLE" 2>/dev/null | head -1)"
+    prev="$(sed -n 's/^count=//p' "$ADMIT_SWAP_SAMPLE" 2>/dev/null | head -1)"
+    rate="$(sed -n 's/^rate=//p' "$ADMIT_SWAP_SAMPLE" 2>/dev/null | head -1)"
+  fi
+  case "$at" in '' | *[!0-9]*) at="" ;; esac
+  case "$prev" in '' | *[!0-9]*) at="" ;; esac
+  case "$rate" in *[!0-9]*) rate="" ;; esac
+  [ -n "$at" ] && dt=$((now - at))
+  if [ "$dt" -ge 0 ] && [ "$dt" -lt 2 ]; then
+    printf '%s' "$rate"
+    return 0
+  fi
+  rate=""
+  if [ "$dt" -ge 2 ] && [ "$dt" -le "$ADMIT_SWAP_BASELINE_S" ] && [ "$count" -ge "$prev" ]; then
+    rate=$(((count - prev) / dt))
+  fi
+  # Written aside and renamed, so a concurrent reader never sees half a file.
+  mkdir -p "$ADMIT_STATE" 2>/dev/null || true
+  tmp="$ADMIT_SWAP_SAMPLE.$$"
+  if printf 'at=%s\ncount=%s\nrate=%s\n' "$now" "$count" "$rate" > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$ADMIT_SWAP_SAMPLE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  fi
+  printf '%s' "$rate"
+  return 0
+}
+
+# A rate needs two samples. After a quiet spell no hook has taken one, so take
+# it now and wait out a fair window: outside the mutex, rather than sleep while
+# holding it, and before deciding, rather than admit on pressure alone. Costs
+# nothing while other hooks keep the sample fresh.
+admit_swap_prime() {
+  local at now
+  [ "$ADMIT_HEAVY_MAX_SWAPINS" -gt 0 ] || return 0
+  at="$(sed -n 's/^at=//p' "$ADMIT_SWAP_SAMPLE" 2>/dev/null | head -1)"
+  now="$(admit_now)"
+  case "$at" in
+    '' | *[!0-9]*) ;;
+    *)
+      if [ $((now - at)) -ge 0 ] && [ $((now - at)) -lt "$ADMIT_SWAP_BASELINE_S" ]; then
+        return 0
+      fi
+      ;;
+  esac
+  admit_swapin_rate >/dev/null
+  sleep 2
+  return 0
+}
+
+# Why a job outside the light lane would wait on memory right now, or empty.
+# Both signals are read every time, so the shared sample stays fresh.
+admit_memory_blocker() {
+  local level="" rate=""
+  [ "$ADMIT_LANE" = light ] && return 0
+  [ "$ADMIT_HEAVY_MAX_SWAPINS" -gt 0 ] && { rate="$(admit_swapin_rate)" || rate=""; }
+  [ "$ADMIT_HEAVY_PRESSURE_LEVEL" -gt 0 ] && { level="$(admit_pressure_level)" || level=""; }
+  if [ -n "$level" ] && [ "$level" -ge "$ADMIT_HEAVY_PRESSURE_LEVEL" ]; then
+    printf 'memory pressure at kernel level %s, at or above the heavy-job limit of %s' \
+      "$level" "$ADMIT_HEAVY_PRESSURE_LEVEL"
+    return 0
+  fi
+  if [ -n "$rate" ] && [ "$rate" -gt "$ADMIT_HEAVY_MAX_SWAPINS" ]; then
+    printf '%s swap-ins/s, above the heavy-job limit of %s' "$rate" "$ADMIT_HEAVY_MAX_SWAPINS"
+  fi
+  return 0
 }
 
 # A host updated without free-disk.sh keeps df's number rather than failing:

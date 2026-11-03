@@ -252,6 +252,35 @@ as macOS reports it for important use) and keeps a lower hard floor on plain
 free, `FLEET_ADMIT_MIN_PLAIN_FREE_GB` (15 GB), for the time a purge takes. The
 dashboard's disk figures, verdict and forecast use the same measure.
 
+**Heavy jobs wait while the host thrashes.** Lanes count jobs and the floors
+count disk; neither looks at memory, so a thrashing host kept admitting heavy
+jobs while a heavy slot was free. On ultra, 2026-11-02 22:25–22:57, that ran to
+critical pressure, 48–62 GB of swap and 1–7k swap-ins/s, and at 22:58
+WindowServer aborted on a failed kernel VM copy. That logged the session out
+and stopped every runner until someone came to the console. The Capacity
+tab's headroom gate already refused to *add* runners on these signals, but it
+cannot stop a job on a runner that exists. So once a job has a slot, the hook
+also holds any job outside the light lane while swap-ins exceed
+`FLEET_ADMIT_HEAVY_MAX_SWAPINS_PER_S` (500) or the kernel pressure level is at
+or above `FLEET_ADMIT_HEAVY_PRESSURE_LEVEL` (4, critical). The reasons read
+`1234 swap-ins/s, above the heavy-job limit of 500` and `memory pressure at
+kernel level 4, at or above the heavy-job limit of 4`.
+
+- **The rate, not swap used.** Used only ever climbs. The rate comes from one
+  sample in `.admission/swap-sample` that every hook updates, so its window is
+  the time since any hook last looked. After two quiet minutes the first job
+  waits 2 s outside the mutex for a baseline. On ultra, ordinary minutes read
+  0–100/s, with single samples up to about 900.
+- **Warning is not a hold by default.** Warning is routine with the model shelf
+  loaded.
+- **Who it never holds.** Light jobs are never held on memory, so the queue keeps
+  moving.
+- **Fails open.** A read that fails (no `sysctl`, unexpected `vm_stat` output,
+  a counter that went back at a reboot) holds nothing.
+- **Same rules as the disk floor.** The hold follows the timeout action like
+  the disk floor does. It is per job and clears by itself, so unlike the disk
+  floor it does not take the host's runners offline (`lib/admit-gate.js`).
+
 ### Admission configuration
 
 Set in `fleet.env`. These variables cannot live in the dashboard because the
@@ -264,6 +293,8 @@ FLEET_ADMIT_MAX_WAIT_S=600
 FLEET_ADMIT_TIMEOUT_ACTION=admit
 FLEET_ADMIT_CANCEL_POLL_S=30
 FLEET_ADMIT_MIN_FREE_DISK_GB=40
+FLEET_ADMIT_HEAVY_MAX_SWAPINS_PER_S=500
+FLEET_ADMIT_HEAVY_PRESSURE_LEVEL=4
 # Lanes (see above)
 FLEET_ADMIT_LANES=observe
 FLEET_ADMIT_TOTAL_MAX_CONCURRENT=16
