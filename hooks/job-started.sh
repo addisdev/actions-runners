@@ -104,9 +104,11 @@ admit_decide() {
     admit_lane_counts "$busy"
     lane="$(admit_lane_capacity_blocker "$busy" "$simulator_busy")"
   fi
+  # The host's own state, disk then memory, once there is a slot for the job.
   if { [ "$ADMIT_LANES" != enforce ] && [ -z "$legacy" ]; } \
     || { [ "$ADMIT_LANES" != off ] && [ -z "$lane" ]; }; then
     disk="$(admit_disk_blocker)"
+    [ -n "$disk" ] || disk="$(admit_memory_blocker)"
   fi
   [ -n "$legacy" ] || legacy="$disk"
   [ -n "$lane" ] || lane="$disk"
@@ -138,6 +140,7 @@ admit_lane_view_lockless() {
     now="$(admit_now)"
     if [ $((now - ADMIT_DISK_AT)) -ge 30 ]; then
       ADMIT_DISK_REASON="$(admit_disk_blocker)"
+      [ -n "$ADMIT_DISK_REASON" ] || ADMIT_DISK_REASON="$(admit_memory_blocker)"
       ADMIT_DISK_AT="$now"
     fi
     ADMIT_LANE_BLOCKER="$ADMIT_DISK_REASON"
@@ -179,6 +182,8 @@ if [ "$ADMIT_MODE" = "observe" ]; then
 fi
 
 # enforce
+# The memory hold's swap-in rate, ready before the first decision.
+[ "$ADMIT_LANE" = light ] || admit_swap_prime
 WAITED=0
 ADMIT_WAIT_START="$(admit_now)"
 ANNOUNCED=0

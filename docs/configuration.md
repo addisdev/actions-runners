@@ -324,6 +324,8 @@ judge the host by the limits the hooks actually enforce. After changing any of t
 | `FLEET_ADMIT_MIN_FREE_DISK_GB` | `40` | Refuse job (then admit after max wait) below this much usable disk: plain free plus what macOS can purge, as macOS reports it for important use. |
 | `FLEET_ADMIT_MIN_PLAIN_FREE_GB` | `15` | Hard floor on plain `df` free, which a purge takes time to raise. |
 | `FLEET_DISK_PROBE` | (macOS probe) | `df` makes both floors read plain `df`, ignoring purgeable space. Hosts without `osascript` always do. |
+| `FLEET_ADMIT_HEAVY_MAX_SWAPINS_PER_S` | `500` | Hold a job outside the light lane while pages read back from swap exceed this rate. `0` turns it off. The first job after two quiet minutes waits 2 s for a baseline. |
+| `FLEET_ADMIT_HEAVY_PRESSURE_LEVEL` | `4` | Hold a job outside the light lane while the kernel's memory pressure level is at or above this (4 critical, 2 warning). `0` turns it off. |
 | `FLEET_ADMIT_POLL_S` | `5` | How often a held job re-checks. |
 | `FLEET_ADMIT_MUTEX_TRIES` | `50` | Mutex spin attempts per wait-loop tick in `enforce` mode. |
 | `FLEET_ADMIT_SLOT_TTL_S` | `21600` | Slot lease TTL in seconds. |

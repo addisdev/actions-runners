@@ -40,6 +40,9 @@ setup() {
     echo "FLEET_ADMIT_POLL_S=${4:-1}"
     echo "FLEET_ADMIT_MIN_FREE_DISK_GB=${5:-1}"
     echo "FLEET_ADMIT_STATUS_URL="
+    # Off unless a case is about it: on a fresh root every job would first wait
+    # 2 s for a swap-in baseline (admit_swap_prime).
+    echo "FLEET_ADMIT_HEAVY_MAX_SWAPINS_PER_S=0"
   } > "$ROOT/fleet.env"
   echo in_progress > "$RUN_STATUS"
   cat > "$BIN/gh" <<'EOF'
@@ -47,6 +50,21 @@ setup() {
 cat "$FAKE_RUN_STATUS"
 EOF
   chmod +x "$BIN/gh"
+  # A calm host for the memory hold, whatever the test machine is doing: the
+  # real swap-in rate would otherwise decide whether a case holds.
+  memory_stub 1 still
+}
+
+# $1 = the kernel pressure level sysctl reports; $2 = still (the swap-in
+# counter stands) or N (it climbs N pages a second, by the clock).
+memory_stub() {
+  printf '#!/usr/bin/env bash\necho %s\n' "$1" > "$BIN/sysctl"
+  if [ "$2" = still ]; then
+    printf '#!/usr/bin/env bash\necho "Swapins:     1000."\n' > "$BIN/vm_stat"
+  else
+    printf '#!/usr/bin/env bash\necho "Swapins:     $(( $(date +%%s) * %s ))."\n' "$2" > "$BIN/vm_stat"
+  fi
+  chmod +x "$BIN/sysctl" "$BIN/vm_stat"
 }
 
 wait_for() {
@@ -1039,6 +1057,133 @@ ok "...and is ahead of the heavy ones" \
   "$(behind_lane 00000000000000000001-0000000001-heavy-h-1 heavy)" "behind"
 kill "$HEAD_PID" 2>/dev/null
 wait "$HEAD_PID" 2>/dev/null
+
+# ---------------------------------------------------------------------------
+# The memory hold (FLEET_ADMIT_HEAVY_*). ultra 2026-11-02: half an hour of
+# 1-7k swap-ins/s with heavy jobs still being admitted, then WindowServer
+# aborted and the session logged out.
+# ---------------------------------------------------------------------------
+
+echo "== critical memory pressure holds a heavy job and lets a light one by =="
+lanes_setup enforce 8 4 4
+memory_stub 4 still
+start_bg h-1
+wait_for "1" "events held" 15
+ok "heavy job held on memory" "$(field "$(row h-1 held)" reason)" \
+  "memory pressure at kernel level 4, at or above the heavy-job limit of 4"
+start l-1
+ok "light job admitted under the same pressure" "$(field "$(row l-1 admitted)" lane)" "light"
+memory_stub 1 still
+wait_for "2" "events admitted" 15
+ok "heavy job admitted once pressure falls" "$(field "$(row h-1 admitted)" lane)" "heavy"
+end_jobs
+
+echo "== warning pressure is not a hold at the default level =="
+lanes_setup enforce 8 4 4
+memory_stub 2 still
+start h-1
+ok "admitted at warning" "$(events admitted)" "1"
+ok "not held" "$(events held)" "0"
+
+echo "== a high swap-in rate holds a heavy job =="
+lanes_setup enforce 8 4 4
+echo "FLEET_ADMIT_HEAVY_MAX_SWAPINS_PER_S=500" >> "$ROOT/fleet.env"
+memory_stub 1 5000
+start_bg h-1
+wait_for "1" "events held" 15
+# `held` carries the first poll's reason, so this also shows the baseline was
+# taken before the first decision rather than letting it in on pressure alone.
+ok "held on the swap-in rate" "$(field "$(row h-1 held)" reason)" \
+  "5000 swap-ins/s, above the heavy-job limit of 500"
+memory_stub 1 still
+wait_for "1" "events admitted" 15
+ok "admitted once paging stops" "$(field "$(row h-1 admitted)" lane)" "heavy"
+end_jobs
+
+echo "== a calm swap-in rate admits after the 2 s baseline =="
+lanes_setup enforce 8 4 4
+echo "FLEET_ADMIT_HEAVY_MAX_SWAPINS_PER_S=500" >> "$ROOT/fleet.env"
+memory_stub 1 100
+BEFORE=$(date +%s)
+start h-1
+AFTER=$(date +%s)
+ok "admitted under the limit" "$(events admitted)" "1"
+ok "...after one baseline wait" "$([ $((AFTER - BEFORE)) -le 5 ] && echo prompt || echo slow)" "prompt"
+ok "the sample is kept for the next job" "$(grep -c '^rate=100$' "$ROOT/.admission/swap-sample")" "1"
+BEFORE=$(date +%s)
+start h-2
+AFTER=$(date +%s)
+ok "the next job reuses the fresh baseline" "$([ $((AFTER - BEFORE)) -le 1 ] && echo prompt || echo slow)" "prompt"
+
+echo "== light jobs never wait for the baseline or the rate =="
+lanes_setup enforce 8 4 4
+echo "FLEET_ADMIT_HEAVY_MAX_SWAPINS_PER_S=500" >> "$ROOT/fleet.env"
+memory_stub 4 5000
+BEFORE=$(date +%s)
+start l-1
+AFTER=$(date +%s)
+ok "light job admitted" "$(events admitted)" "1"
+ok "...at once" "$([ $((AFTER - BEFORE)) -le 1 ] && echo prompt || echo slow)" "prompt"
+ok "no sample taken" "$([ -f "$ROOT/.admission/swap-sample" ] && echo yes || echo no)" "no"
+
+echo "== lanes off: every job is held on memory =="
+setup enforce 4 30 1
+memory_stub 4 still
+start_bg alpha
+wait_for "1" "events held" 15
+ok "held on memory" "$(grep -c 'memory pressure at kernel level 4' "$LOG")" "1"
+end_jobs
+
+echo "== 0 turns each signal off =="
+lanes_setup enforce 8 4 4
+{
+  echo "FLEET_ADMIT_HEAVY_MAX_SWAPINS_PER_S=0"
+  echo "FLEET_ADMIT_HEAVY_PRESSURE_LEVEL=0"
+} >> "$ROOT/fleet.env"
+memory_stub 4 5000
+start h-1
+ok "admitted with both signals off" "$(events admitted)" "1"
+
+echo "== a host whose memory cannot be read admits =="
+lanes_setup enforce 8 4 4
+echo "FLEET_ADMIT_HEAVY_MAX_SWAPINS_PER_S=500" >> "$ROOT/fleet.env"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$BIN/sysctl"
+printf '#!/usr/bin/env bash\necho "Mach Virtual Memory Statistics"\n' > "$BIN/vm_stat"
+start h-1
+ok "admitted on a failed read, not held" "$(events admitted)" "1"
+ok "nothing held" "$(events held)" "0"
+
+echo "== observe: a heavy job under pressure would hold, and is not delayed =="
+setup observe 4 30 1
+memory_stub 4 still
+start alpha
+ok "would-hold logged" "$(grep -c 'memory pressure at kernel level 4' "$LOG")" "1"
+ok "took its slot" "$(slots)" "1"
+
+echo "== the swap-in rate: windows, staleness, a counter reset =="
+setup enforce 4 30 1
+rate_at() {
+  # $1 = the counter vm_stat reports; prints admit_swapin_rate's answer.
+  printf '#!/usr/bin/env bash\necho "Swapins:     %s."\n' "$1" > "$BIN/vm_stat"
+  FLEET_ROOT="$ROOT" PATH="$BIN:$PATH" bash -c '
+    ROOT="$FLEET_ROOT"; . "'"$HOOKS"'/common.sh"
+    admit_swapin_rate; trap - EXIT'
+}
+S="$ROOT/.admission/swap-sample"
+mkdir -p "$ROOT/.admission"
+ok "no sample: no rate" "$(rate_at 1000)" ""
+printf 'at=%s\ncount=1000\nrate=\n' "$(( $(date +%s) - 10 ))" > "$S"
+# 5000 pages over 10 s, or 11 if the clock ticks between the two lines.
+R="$(rate_at 6000)"
+ok "10 s window" "$([ "${R:-0}" -ge 454 ] && [ "${R:-0}" -le 500 ] && echo "~500" || echo "$R")" "~500"
+printf 'at=%s\ncount=1000\nrate=77\n' "$(date +%s)" > "$S"
+ok "under 2 s reuses the last rate" "$(rate_at 999999)" "77"
+printf 'at=%s\ncount=1000\nrate=77\n' "$(( $(date +%s) - 600 ))" > "$S"
+ok "a stale sample is no baseline" "$(rate_at 999999)" ""
+printf 'at=%s\ncount=5000\nrate=\n' "$(( $(date +%s) - 10 ))" > "$S"
+ok "a counter that went back (reboot) is no rate" "$(rate_at 10)" ""
+printf 'at=garbage\ncount=1000\n' > "$S"
+ok "a damaged sample is no baseline" "$(rate_at 2000)" ""
 
 echo
 echo "passed $PASS, failed $FAIL"
