@@ -268,7 +268,7 @@ public enum Presenter {
         switch cause {
         case "runner-down", "unserved", "label-mismatch": .critical
         case "host-saturation", "role-unserved", "github-hosted", "concurrency-block": .warning
-        case "repo-capacity", "github-delay": .ok
+        case "repo-capacity", "github-delay", "night-cap": .ok
         default: .unknown
         }
     }
@@ -285,6 +285,7 @@ public enum Presenter {
         case "github-hosted": "wants a hosted runner"
         case "concurrency-block": "concurrency group"
         case "telemetry-unavailable": "cannot diagnose"
+        case "night-cap": "held by the night cap"
         case let c?: c
         case nil: "queued"
         }

@@ -54,9 +54,10 @@ const startedAt = (run) => Date.parse(run.startedAt ?? run.createdAt) || null;
  * @param {object[]} p.queue   snapshot.queue entries (id, repo, workflowName, cause, queuedSinceMs)
  * @param {object[]} p.active  snapshot.active runs (status, repo, workflowName, startedAt)
  * @param {{p50, p90}} p.baselines
+ * @param {object} [p.nightCap] - the night cap while it enforces ({ until, endsAt })
  * @returns {Map<number, {etaStartMs: number[]|null, etaDoneMs: number[]|null, basis: string}>}
  */
-export function estimateQueue({ queue = [], active = [], baselines, now = Date.now(), publicRepos = new Set() }) {
+export function estimateQueue({ queue = [], active = [], baselines, now = Date.now(), publicRepos = new Set(), nightCap = null }) {
   const out = new Map();
   const running = active.filter((r) => r.status === 'in_progress');
   const remaining = (run) => {
@@ -95,6 +96,17 @@ export function estimateQueue({ queue = [], active = [], baselines, now = Date.n
     }
     let start;
     let basis;
+    if (q.cause === 'night-cap' && nightCap?.endsAt) {
+      // Started by the next job to finish anywhere on the host at the
+      // earliest, by the end of the window at the latest.
+      const end = Math.max(0, nightCap.endsAt - now);
+      const slot = soonest(running);
+      start = [Math.min(slot ? slot[0] : 0, end), end];
+      basis = `held by the night cap until ${nightCap.until}: the next job to finish on the host, or the end of the window`;
+      const done = own ? [start[0] + own[0], start[1] + own[1]] : null;
+      out.set(q.id, { etaStartMs: start.map(Math.round), etaDoneMs: done?.map(Math.round) ?? null, basis });
+      continue;
+    }
     if (q.cause === 'github-delay') {
       start = [...DISPATCH_MS];
       basis = 'an idle runner is available; GitHub dispatch';

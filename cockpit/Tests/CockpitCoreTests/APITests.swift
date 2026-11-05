@@ -120,6 +120,56 @@ struct V1TextTests {
         failedFirst.orphans?[0].workPassed = false
         #expect(!CheckWait.text(failedFirst, label: "x", recoverCommand: "cockpit wait x --recover").contains("--recover"))
     }
+
+    // The night cap (dashboard/lib/night-cap.js) holds a check on purpose.
+    // Every surface names it, says until when, and says it is not the code.
+    static let nightCap = NightCap(mode: "enforce", active: true, inWindow: true, window: "22:00-06:00",
+                                   timeZone: "America/New_York", host: "ultra", maxBusy: 2, busy: 2,
+                                   until: "06:00", endsAt: nil, startsAt: nil, parked: 9, held: [4], reason: nil)
+
+    @Test func aWaitTheNightCapHoldsSaysSoWhenItTimesOut() throws {
+        let json = """
+        {"state":"pending","source":"fleet","waitedMs":300000,"heldBy":"night-cap","notYourCode":true,
+         "reason":"held by the night cap until 06:00: ultra runs at most 2 CI jobs from 22:00 to 06:00 and 2 are running. It starts when a slot frees or the window ends. Not your code: keep waiting."}
+        """
+        let a = try JSONDecoder().decode(V1Checks.self, from: Data(json.utf8))
+        #expect(a.heldBy == "night-cap")
+        #expect(a.notYourCode == true)
+        #expect(a.exitCode == 3)
+        let text = CheckWait.text(a, label: "comet-web PR #96")
+        #expect(text.hasPrefix("… comet-web PR #96: timed out"))
+        #expect(text.contains("held by the night cap until 06:00"))
+        #expect(text.contains("Not your code"))
+    }
+
+    @Test func whyNamesTheNightCap() throws {
+        var d = try fixture(V1Diagnosis.self, "diagnosis")
+        #expect(!Why.text(d, repo: "comet-web").contains("Night cap"))
+        d.nightCap = Self.nightCap
+        let text = Why.text(d, repo: "comet-web")
+        #expect(text.contains("Night cap: held until 06:00 — at most 2 busy CI runners on ultra from 22:00 to 06:00; 2 busy, 1 run waiting for a slot. Not your code"))
+        d.nightCap?.active = false
+        d.nightCap?.inWindow = false
+        #expect(!Why.text(d, repo: "comet-web").contains("Night cap"))
+    }
+
+    @Test func aNightCappedRunReadsAsHeldNotAsAFault() throws {
+        #expect(Presenter.causeLabel("night-cap") == "held by the night cap")
+        #expect(Presenter.causeTone("night-cap") == .ok)
+        let q = try JSONDecoder().decode(QueueItem.self, from: Data("""
+        {"id":4,"repo":"acme/comet-web","cause":"night-cap","notYourCode":true,
+         "etaBasis":"held by the night cap until 06:00: the next job to finish on the host, or the end of the window"}
+        """.utf8))
+        #expect(q.notYourCode == true)
+        #expect(!q.neverStarts)
+    }
+
+    @Test func statusLineOutsideTheWindow() {
+        var n = Self.nightCap
+        n.active = false
+        n.inWindow = false
+        #expect(n.line == "night cap (enforce): 22:00 to 06:00, at most 2 busy; not in the window")
+    }
 }
 
 @Suite("cockpit wait loop")

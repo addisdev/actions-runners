@@ -22,6 +22,7 @@ public enum Why {
             out.append("? Collector stalled: the dashboard's view is \(d.freshness.ageMs.map { Format.duration(ms: $0) } ?? "of unknown age") old")
         }
         out.append("Fleet: \(d.verdict.tone.mark) \(d.verdict.title)")
+        if let n = d.nightCap, n.active == true { out.append("Night cap: \(n.line.replacingOccurrences(of: "night cap: ", with: ""))") }
         out.append("\n\(short): \(d.runners.count) runner(s)")
         if d.runners.isEmpty { out.append("  none registered — jobs for this repo can only queue (unserved)") }
         for r in d.runners { out.append("  \(r.state.rawValue.padding(toLength: 13, withPad: " ", startingAt: 0)) \(r.name)  \(r.detail ?? "")") }

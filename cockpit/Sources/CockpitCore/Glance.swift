@@ -31,6 +31,8 @@ public struct Glance: Codable, Sendable, Equatable {
     public var admission: Admission?
     /// Standby tiers (docs/design/tiers.md). Absent while the controller is off.
     public var tiers: Tiers?
+    /// The night cap (dashboard/lib/night-cap.js). Absent while it is off.
+    public var nightCap: NightCap?
     public var collector: Collector?
     public var api: RateLimit?
 
@@ -255,6 +257,8 @@ public struct QueueItem: Codable, Sendable, Equatable, Identifiable {
     public var etaStartMs: [Double]?
     public var etaDoneMs: [Double]?
     public var etaBasis: String?
+    /// Held on purpose (the night cap): the host caused the wait, not the code.
+    public var notYourCode: Bool?
 
     /// This run will not start without someone acting. The daemon says so in
     /// `etaBasis` (it knows, for example, that a public repo on GitHub-hosted
@@ -396,6 +400,37 @@ public struct Tiers: Codable, Sendable, Equatable {
         if let r = reason, !r.isEmpty { s += " — \(r)" }
         if let d = drainInMs, overflow == "active" { s += "; drains in \(Int((d / 60_000).rounded(.up)))m if it stays quiet" }
         return s
+    }
+}
+
+/// The night cap: at most `maxBusy` busy CI runners on `host` inside its
+/// window (22:00-06:00 local by default). `active` means it is holding jobs.
+public struct NightCap: Codable, Sendable, Equatable {
+    public var mode: String?
+    public var active: Bool?
+    public var inWindow: Bool?
+    public var window: String?
+    public var timeZone: String?
+    public var host: String?
+    public var maxBusy: Int?
+    public var busy: Int?
+    public var until: String?
+    public var endsAt: Double?
+    public var startsAt: Double?
+    public var parked: Int?
+    public var held: [Int]?
+    public var reason: String?
+
+    /// One line for `cockpit status` and `cockpit why`.
+    public var line: String {
+        let window = (self.window ?? "?").replacingOccurrences(of: "-", with: " to ")
+        if active == true {
+            let held = self.held?.count ?? 0
+            return "night cap: held until \(until ?? "?") — at most \(maxBusy ?? 0) busy CI runners on \(host ?? "the host") from \(window); "
+                + "\(busy ?? 0) busy, \(held) run\(held == 1 ? "" : "s") waiting for a slot. Not your code: they start as slots free."
+        }
+        if inWindow == true, mode == "observe" { return "night cap (observe): would hold \(host ?? "the host") at \(maxBusy ?? 0) busy CI runners now; holds nothing" }
+        return "night cap (\(mode ?? "?")): \(window), at most \(maxBusy ?? 0) busy; not in the window"
     }
 }
 

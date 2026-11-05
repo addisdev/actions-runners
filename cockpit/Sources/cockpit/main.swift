@@ -208,6 +208,7 @@ func printVerdict(_ v: Verdict, route: String, glance: Glance?) {
         print("  also open: " + others.map { "\($0.title) (\($0.tone.rawValue))" }.joined(separator: "; "))
     }
     if let t = glance?.tiers { print("  \(t.line)") }
+    if let n = glance?.nightCap { print("  \(n.line)") }
     if let g = glance {
         print("  \(g.counts.running) running, \(g.counts.queued) queued, \(g.counts.held) held, \(g.counts.runners) runners · via \(route)")
     } else {

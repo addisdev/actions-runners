@@ -22,6 +22,7 @@ import { execFile } from 'node:child_process';
 import { headroom } from './capacity.js';
 import { roleLabel } from './state.js';
 import { hostDrainState } from './local.js';
+import { enforcingNightCap } from './night-cap.js';
 
 const REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 const LABEL_RE = /^[A-Za-z0-9._-]{1,40}$/;
@@ -365,7 +366,7 @@ export function buildActions({
         // to set up a repo because a build is running.
         if (inst > 1) {
           const snap = getSnapshot();
-          const hr = headroom({ host: snap.host ?? {}, runners: snap.runners ?? [], limits: getLimits() });
+          const hr = headroom({ host: snap.host ?? {}, runners: snap.runners ?? [], limits: getLimits(), nightCap: enforcingNightCap(snap.nightCap) });
           if (!hr.ok && !force) {
             throw new ActionError(`no headroom to add a runner: ${hr.reasons.join('; ')}`, 409);
           }
@@ -409,7 +410,7 @@ export function buildActions({
         // The gate. A person may override it; the autoscaler calls this without
         // force and therefore cannot.
         const snap = getSnapshot();
-        const hr = headroom({ host: snap.host ?? {}, runners: snap.runners ?? [], limits });
+        const hr = headroom({ host: snap.host ?? {}, runners: snap.runners ?? [], limits, nightCap: enforcingNightCap(snap.nightCap) });
         if (!hr.ok && !force) {
           throw new ActionError(
             `no headroom to add a runner: ${hr.reasons.join('; ')}. ` +

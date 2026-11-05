@@ -138,7 +138,10 @@ It returns one of four states:
   (`{ head, runs, jobs, checks }`).
 - `red`: a check finished without passing. `cancelled` is red, and `hint`
   says so.
-- `pending`: the wait ran out. Ask again.
+- `pending`: the wait ran out. Ask again. When the
+  [night cap](admission-and-scaling.md#night-cap) holds one of the checks, it
+  carries `heldBy: "night-cap"`, `notYourCode: true` and a `reason` that names
+  the cap and the hour it ends. Keep waiting.
 - `pointless`: waiting can't end well. `reason` says why: the host is down,
   the disk floor is holding jobs, GitHub is refusing the account's jobs, a
   queued check has a cause that never clears on its own, the repo's only
@@ -288,6 +291,16 @@ tier, the `actions` this tick took (enforce) or would take (observe), what was
 `deferred` and why, and the recent `history`. The glance carries a compact
 `tiers` object (mode, overflow, since, reason, triggers, drainInMs, lanes,
 counts, lastAction) whenever the mode is not `off`.
+
+`nightCap` is the night cap's latest decision
+([Night cap](admission-and-scaling.md#night-cap)): `mode`, `active` (inside
+the window and not off), `window`, `timeZone`, `maxBusy`, `busy`, `slots`,
+`until`, `endsAt` or `startsAt`, `parked`, the runs `held` for a slot, the
+runners `slotted` to queued jobs, this tick's `actions`, `deferred`,
+`problems` with its settings, and the recent `history`. The glance carries a
+compact `nightCap` (mode, active only while enforcing, inWindow, window,
+timeZone, host, maxBusy, busy, until, endsAt, startsAt, parked, held, reason)
+whenever the mode is not `off`, and `diagnose_repo` repeats it.
 
 ### `GET /api/stream`
 

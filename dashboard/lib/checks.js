@@ -5,6 +5,8 @@
 // test/checks.test.js holds a case for each. cockpit's Rollup.swift keeps the
 // menu bar's own copy of the rollup rules; RollupTests holds the same cases.
 
+import { heldSentence } from './night-cap.js';
+
 const PASSED = new Set(['success', 'skipped', 'neutral']);
 
 export const isActive = (r) => r.status !== 'completed';
@@ -224,7 +226,22 @@ export function decide(g, target) {
   if (dead && !mine.some((r) => ['idle', 'busy', 'overdue'].includes(r.state))) {
     return { state: 'pointless', reason: `${dead.name} is ${dead.state} and no other runner serves ${target.repo}`, set };
   }
+  const night = nightCapHold(g, set, queue);
+  if (night) return { state: 'pending', reason: night, heldBy: 'night-cap', set };
   return { state: 'pending', reason: null, set };
+}
+
+// Why a pending set is waiting, when the night cap (lib/night-cap.js) holds a
+// run of it: a queued run of its own, or a run with a job waiting for a slot.
+// The words name the cap and the hour it ends, so nobody mistakes the wait for
+// a broken check and "fixes" it.
+export function nightCapHold(g, set, queue = set?.queued ?? []) {
+  const nc = g.nightCap;
+  if (!nc?.active) return null;
+  const held = new Set(nc.held ?? []);
+  const ids = new Set((set?.runs ?? []).filter(isActive).map((r) => r.id));
+  const holds = queue.some((q) => q.cause === 'night-cap' || held.has(q.id)) || [...ids].some((id) => held.has(id));
+  return holds ? heldSentence(nc, nc.host ?? 'the host') : null;
 }
 
 // `rows` laid over the glance's runs, each as the latest of its two copies:
@@ -569,9 +586,11 @@ export async function waitForChecks(target, source, {
         source: useGitHub ? 'github' : 'fleet',
         checks: useGitHub ? githubSet(lastGitHub, target, verdict) : d.set,
         reason: held ? `the fleet reads ${d.set.progress}, but ${held}`
-          : d.state === 'pointless' ? `${d.reason} (from a stale fleet view)` : null,
+          : d.state === 'pointless' ? `${d.reason} (from a stale fleet view)` : d.reason ?? null,
         hint: null,
         fleetAgeMs: g.ageMs ?? null,
+        // Held by the night cap: not the code, and waiting is the remedy.
+        ...(d.heldBy ? { heldBy: d.heldBy, notYourCode: true } : {}),
       });
     }
     await sleep(Math.min(tickMs, Math.max(10, deadline - now())), signal);
