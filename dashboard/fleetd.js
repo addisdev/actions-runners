@@ -62,7 +62,7 @@ import { lintAll, isLintableRepo } from './lib/lint.js';
 import { adviseAll } from './lib/concurrency-advisor.js';
 import { classifyQueuedRuns, classifyQueueCause, queuedJobLabels, lintFindingForRun } from './lib/queue-cause.js';
 import { createSettings, SCHEMA as SETTINGS_SCHEMA, ENV_ONLY } from './lib/settings.js';
-import { headroom } from './lib/capacity.js';
+import { headroom, busyCount } from './lib/capacity.js';
 import { sizeFleet, concurrencyByRepo, queueEffect, sizingKey } from './lib/sizing.js';
 import { planScaleUp, planScaleDown } from './lib/autoscale.js';
 import { compareScenarios } from './lib/simulator.js';
@@ -93,6 +93,7 @@ import { TickGuard, stage } from './lib/tick-guard.js';
 import { decideTiers, tiersConfigFromEnv, primaryRungs, DRAIN_OWNER } from './lib/tiers.js';
 import { admissionSettings, admissionBlocker } from './lib/admit-gate.js';
 import { switchOffImpact, drainsToReassert, reassertArgs, markerStillHeld } from './lib/host-switch.js';
+import { nightCapConfig, nightWindow, decideNightCap, queuedJobs, NIGHT_CAP_OWNER } from './lib/night-cap.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(HERE, 'public');
@@ -450,6 +451,13 @@ let tiersSignature = '';
 let tiersLocalChain = Promise.resolve();
 const tiersHistory = [];
 let lastFacts = null;
+
+// ---- the night cap (lib/night-cap.js) -----------------------------------------
+// Its settings are reread from fleet.env on every tick, so FLEET_NIGHT_CAP_MODE=off
+// there takes effect within a tick, with no restart.
+let nightCapState = null;
+let nightCapSignature = '';
+const nightCapHistory = [];
 
 function diskFloorGb() {
   return CONFIG.admitMinFreeDiskGb ?? settings.limits().minFreeDiskGb ?? null;
@@ -2000,6 +2008,24 @@ async function fastTick(progress = null) {
   holdLocalDrains(runners, started);
   const localDrain = hostDrainState(CONFIG.root);
 
+  // The night cap's window, worked out once per tick. While it is enforcing,
+  // the headroom gate refuses new runners (each would only be parked) and the
+  // queue classifier names the cap as the cause of what it holds.
+  const nightCfg = nightCapConfig({ root: CONFIG.root });
+  const nightWin = nightWindow(started, nightCfg);
+  const nightCtx = nightCfg.mode === 'enforce' && nightWin.active
+    ? {
+      active: true,
+      until: nightWin.until,
+      maxBusy: nightCfg.maxBusy,
+      window: `${nightWin.start}-${nightWin.end}`,
+      busy: busyCount(runners),
+      host: CONFIG.hostName ?? 'this host',
+      hostId: LOCAL_HOST_ID,
+      endsAt: nightWin.endsAt,
+    }
+    : null;
+
   // Fleet-wide runner list: local runners plus runners on agent hosts, enriched
   // with agent heartbeat data (workingLocally, drainState, launchdState).
   // Used for sizing, queue classification, and placement decisions.
@@ -2097,7 +2123,7 @@ async function fastTick(progress = null) {
   host.diskForecast = forecast;
   host.diskFloorEtaMs = forecast?.etaMs ?? null;
 
-  const capacity = headroom({ host, runners, limits: settings.limits() });
+  const capacity = headroom({ host, runners, limits: settings.limits(), nightCap: nightCtx });
 
   // Fleet-wide capacity: if any connected, non-stale, non-drained agent has
   // headroom, the queue classifier should not report HOST_SATURATION for a
@@ -2172,6 +2198,7 @@ async function fastTick(progress = null) {
       collector: { lastError: ghError, repoErrors },
       runLabels,
       lintFinding: lintFindingForRun(run, criticalLintFindings, runLabels),
+      nightCap: nightCtx,
     });
   };
 
@@ -2346,8 +2373,16 @@ async function fastTick(progress = null) {
     },
   };
   try {
+    stage(progress, 'night cap');
+    snapshot.nightCap = runNightCap(snapshot, runners, started, nightCfg, nightWin, localDrain === 'off');
+  } catch (err) {
+    warn('night cap:', err.message);
+  }
+  try {
     const publicRepos = new Set((repoRoster ?? []).filter((r) => r.private === false).map((r) => r.fullName));
-    const etas = estimateQueue({ queue: snapshot.queue, active, baselines: etaBaselines(started), now: started, publicRepos });
+    const etas = estimateQueue({
+      queue: snapshot.queue, active, baselines: etaBaselines(started), now: started, publicRepos, nightCap: nightCtx,
+    });
     for (const q of snapshot.queue) {
       const e = etas.get(q.id);
       if (e) Object.assign(q, { etaStartMs: e.etaStartMs, etaDoneMs: e.etaDoneMs, etaBasis: e.basis });
@@ -2543,18 +2578,83 @@ async function runTiers(snap, localRunners, now) {
   };
 }
 
+// One step of the night cap (lib/night-cap.js, docs/admission-and-scaling.md):
+// this host's runners only, carried out with drain-runner.sh --by=night-cap on
+// the same chain as the tiers controller's drains, so the two never race over
+// one runner. Only markers it wrote are ever resumed.
+function runNightCap(snap, localRunners, now, config, window, hostOff) {
+  const causes = new Map((snap.queue ?? []).map((q) => [q.id, q.cause]));
+  const { state, decision } = decideNightCap({
+    config,
+    window,
+    now,
+    state: nightCapState,
+    hostOff,
+    runners: localRunners.map((r) => ({
+      name: r.name,
+      dirName: r.dirName ?? null,
+      repo: r.repo,
+      labels: r.labels ?? [],
+      ghStatus: r.ghStatus,
+      ghUnknown: Boolean(r.ghUnknown),
+      workingLocally: Boolean(r.workingLocally),
+      ghBusy: Boolean(r.ghBusy),
+      drainState: r.drainState ?? null,
+      drainBy: r.drainBy ?? null,
+      ephemeral: Boolean(r.ephemeral),
+    })),
+    jobs: queuedJobs(snap.active ?? [], now, causes),
+  });
+
+  // A standby replica, or a read-only daemon, decides but never acts.
+  const mayAct = !CONFIG.readOnly && (!CONFIG.databaseUrl || ha.isLeader);
+  const act = decision.applied && mayAct;
+  nightCapState = act ? state : { ...state, pending: nightCapState?.pending ?? {} };
+
+  const signature = `${decision.active}|${decision.actions.map((a) => `${a.action}:${a.name}`).sort().join(',')}`;
+  if (signature !== nightCapSignature) {
+    const what = decision.actions.length
+      ? decision.actions.map((a) => `${a.action} ${a.name}`).join(', ')
+      : 'no runner changes';
+    log(`night cap[${decision.mode}${act || !decision.actions.length ? '' : ', not applied'}]: ${decision.reason}; ${what}`);
+    for (const p of decision.problems) warn(`night cap: ${p}`);
+    nightCapSignature = signature;
+  }
+  if (act && decision.actions.length) {
+    for (const a of decision.actions) {
+      try {
+        stmt.insertEvent.run(now, a.name, a.repo ?? null, 'night-cap', `${a.action}: ${a.reason}`);
+      } catch { /* event log is best-effort */ }
+      nightCapHistory.unshift({ ts: now, ...a });
+      tiersLocalChain = tiersLocalChain.then(() => drainLocal(a, NIGHT_CAP_OWNER, 'night cap')).catch((err) => warn('night cap local:', err.message));
+    }
+    nightCapHistory.length = Math.min(nightCapHistory.length, 40);
+  }
+  return {
+    ...decision,
+    applied: act,
+    host: CONFIG.hostName ?? null,
+    deferred: decision.deferred.slice(0, 20),
+    history: nightCapHistory.slice(0, 20),
+  };
+}
+
 // drain-runner.sh does the work, as it does for the Drain button: it knows to
 // let a busy runner finish its job and refuses a marker somebody else wrote.
-function tiersLocal(a) {
+function drainLocal(a, by, who) {
   const flag = a.action === 'drain' ? '--drain' : '--resume';
   return new Promise((resolve) => {
-    execFile('./scripts/drain-runner.sh', [a.dirName, flag, `--by=${DRAIN_OWNER}`],
+    execFile('./scripts/drain-runner.sh', [a.dirName, flag, `--by=${by}`],
       { cwd: CONFIG.root, timeout: 60_000, maxBuffer: 256 * 1024 },
       (err, stdout, stderr) => {
-        if (err) warn(`tiers: ${a.action} ${a.name} failed:`, String(stderr || err.message).trim().slice(0, 300));
+        if (err) warn(`${who}: ${a.action} ${a.name} failed:`, String(stderr || err.message).trim().slice(0, 300));
         resolve();
       });
   });
+}
+
+function tiersLocal(a) {
+  return drainLocal(a, DRAIN_OWNER, 'tiers');
 }
 
 // A drained runner on this host whose service is running anyway is drained

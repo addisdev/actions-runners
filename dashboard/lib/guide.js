@@ -80,6 +80,9 @@ export function rules(surface) {
     `Actions (${code(s.run)}) preview first. Show the user the preview, and confirm (${s.confirm}) only an action they asked for. `
       + 'If the token lacks the scope (`insufficient_scope`), report it; do not look for another token.',
     'A stale view (`freshness.stale`, "Collector stalled") is the dashboard\'s problem, not the PR\'s: say so.',
+    'A check "held by the night cap" (queue cause `night-cap`, a wait\'s `heldBy: night-cap`) is not your code either: '
+      + 'the host runs only a few CI jobs at night and starts it when a slot frees or the window ends. Keep waiting; '
+      + 'do not re-run it, cancel it or change anything for it.',
   ];
 }
 

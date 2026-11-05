@@ -131,6 +131,8 @@ const QUEUE_CAUSE_ALERTS = {
   'host-saturation': { severity: 'warning', title: 'Host is saturated and work is queued' },
   'repo-capacity': { severity: 'warning', title: 'Every runner for this repo is busy' },
   'github-delay': { severity: 'info', title: 'Probable GitHub dispatch delay' },
+  // Held on purpose (lib/night-cap.js); it starts as slots free or at the end.
+  'night-cap': { severity: 'info', title: 'Held by the night cap' },
 };
 
 // The condition, not the instance it was noticed on.

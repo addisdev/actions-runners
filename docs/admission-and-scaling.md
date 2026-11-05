@@ -346,6 +346,65 @@ their reliability justifies sharding.
 - [ ] Run `./cleanup.sh` (dry run) and confirm stale `__dirlock` removal is
       mentioned without errors.
 
+## Night cap
+
+From 22:00 to 06:00 local time, at most 2 CI runners on the coordinator's host
+may be busy, so the night queue's batch jobs get the machine (Model Ladder's
+`CI_MAX_BUSY`, decision D4 of its night-queue plan, 2026-11-04). It holds until
+CI moves to its own box, so it is a setting: `FLEET_NIGHT_CAP_MODE=off` in
+`fleet.env` ends it within a tick. Settings:
+[Night cap variables](configuration.md#night-cap-variables).
+
+**Jobs wait in GitHub's queue, not in the hook.** A hold in `job-started.sh`
+is charged to the job's `timeout-minutes`, and the held job's `Runner.Worker`
+still counts as busy. So the cap works the way [tiers](design/tiers.md#parking-no-twin)
+parking does. On every fast tick inside the window:
+
+1. `busy` is this host's runners with a `Runner.Worker` or that GitHub reports
+   busy. The free slots are the limit minus `busy`.
+2. The free slots go to the oldest queued jobs (a queued run, or a queued job
+   of a run already in progress), one runner each: one already online and
+   idle, else one the cap parked, which it resumes. A job GitHub holds for a
+   concurrency group, or one whose labels no runner here has, takes no slot.
+3. Every other idle, online runner is parked: `drain-runner.sh --drain
+   --by=night-cap`. Its jobs wait in GitHub's queue, where the wait costs
+   nothing.
+4. Busy runners are left alone while `busy` is at or under the limit. Over it
+   (the window opened on a busy host) each is drained the same way, which for a
+   busy runner means *draining*: it finishes its job, and the job-completed
+   hook stops it. Nothing is ever cancelled or stopped mid-job.
+
+When the window ends, or the mode is set to `off`, every runner the cap parked
+is resumed. It never touches a runner an operator, `host-drain.sh` or the tiers
+controller drained, and sends nothing while the host is switched off. Inside
+the window the headroom gate refuses to add runners (a new one would only be
+parked), with the reason `the night cap allows at most 2 busy CI runners until
+06:00`.
+
+**Not your code.** A queued run it holds has the cause `night-cap`, confidence
+high, an ETA from the next job to finish on the host to the end of the window,
+and `notYourCode: true`. The runner reads `parked by the night cap until
+06:00`. `wait_for_checks` and `cockpit wait` answer `pending` with `heldBy:
+night-cap` and the reason `held by the night cap until 06:00: ultra runs at
+most 2 CI jobs from 22:00 to 06:00 and 2 are running. It starts when a slot
+frees or the window ends. Not your code: keep waiting.` `cockpit why` and
+`cockpit status` print a `night cap:` line.
+
+**Local time.** The window is read on the zone's wall clock through `Intl`
+(`FLEET_NIGHT_CAP_TZ`, else the host's own zone). It opens when the clock first
+reads the start time and closes when it first reads the end time: the default
+night is 9 hours when DST ends and 7 when it starts. A boundary inside the hour
+the clock skips opens when the clock jumps past it; one inside the repeated
+hour counts its first showing only.
+
+**Known costs.** A slot goes to a runner a tick (15 s) after it frees, plus the
+runner's start-up. Between a busy runner finishing and the next tick, GitHub
+may hand it another job of its own repo: that keeps `busy` where it was, so the
+cap is not exceeded, but that repo goes ahead of an older job elsewhere. A
+runner GitHub hands a job in the second before it is parked takes the job and
+is drained after it. If the daemon is down at 06:00, parked runners stay
+parked until it is back.
+
 ## Failure behaviour
 
 Every failure path in admission exits 0. A hook that cannot read its config,

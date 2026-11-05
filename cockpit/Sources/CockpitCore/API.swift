@@ -68,6 +68,10 @@ public struct V1Checks: Decodable, Sendable, Equatable {
     public var fleetSaid: String?
     public var checks: V1CheckSet?
     public var orphans: [V1Orphan]?
+    /// "night-cap" on a pending answer the night cap is holding.
+    public var heldBy: String?
+    /// The wait is the host's doing (the night cap), not the code's.
+    public var notYourCode: Bool?
     /// On a green: what GitHub's side of the check covered. A daemon that
     /// confirms every green on GitHub always sends it, so a green without it
     /// came from an older daemon and is confirmed by the client
@@ -104,6 +108,8 @@ public struct V1Diagnosis: Decodable, Sendable {
     public var checks: [V1CheckSet]
     public var orphans: [V1Orphan]
     public var incidents: [Incident]
+    /// The night cap, from a daemon that has one configured.
+    public var nightCap: NightCap?
     public var freshness: Freshness
 
     public struct Freshness: Decodable, Sendable {

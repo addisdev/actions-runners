@@ -102,7 +102,8 @@ export const ROUTES = [
       + 'the classified cause and ETA, its active and recently finished runs, the checks of its latest '
       + 'commits as green, red or pending, its recent failures (each '
       + 'marked notYourCode when the host or the account caused it), jobs orphaned by a runner that went '
-      + 'away while they were finishing, and open incidents that mention it, beside the fleet verdict. '
+      + 'away while they were finishing, open incidents that mention it, and the night cap when one is set, beside the fleet verdict. '
+      + 'A queued run with cause night-cap is held on purpose until the cap\'s `until`: not your code. '
       + 'A failure with notYourCode true, or an orphan with workPassed true, is never fixed by changing code.',
     params: repoPath,
     handler: (ctx, p) => {
@@ -133,6 +134,9 @@ export const ROUTES = [
         runners, queue, runs, recent, failures, checks,
         orphans: byRepo(ctx.orphans(g), full),
         incidents,
+        // The night cap, while configured (lib/night-cap.js): a queued run with
+        // cause night-cap is held on purpose until `until`.
+        ...(g.nightCap ? { nightCap: g.nightCap } : {}),
         freshness: freshness(g),
       };
     },
@@ -150,7 +154,8 @@ export const ROUTES = [
       + '(at most 300) until the checks finish; pending means the wait ran out, so ask again. pointless means '
       + 'waiting cannot end well: the host is down, the disk floor is holding jobs, GitHub is refusing this repo\'s jobs, '
       + 'a queued check will never start, or a job was orphaned; reason says which, and orphans carry their '
-      + 'recovery. Cancelled is red, not green. Green means GitHub itself has every workflow run for the head '
+      + 'recovery. A pending answer with heldBy night-cap (and notYourCode true) is a check the night cap holds '
+      + 'until its window ends or a slot frees; reason says until when: keep waiting. Cancelled is red, not green. Green means GitHub itself has every workflow run for the head '
       + 'completed with all of its jobs passed, and nothing new for 30 s (verified says what it covered): runs '
       + 'and needs-gated jobs register after a push, so a green first wave is not the end. '
       + 'Use this instead of polling gh pr checks. A client that gives '

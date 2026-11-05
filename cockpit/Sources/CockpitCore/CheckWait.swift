@@ -155,6 +155,9 @@ public struct CheckWait: Sendable {
             }
         default:
             out.append("… \(label): timed out\(progress.map { " at \($0)" } ?? " (no runs seen)")\(note)")
+            // Still waiting for a reason worth saying: the night cap holding
+            // the check, or a green GitHub has not confirmed yet.
+            if let r = a.reason { out.append("  \(r)") }
         }
         return out.joined(separator: "\n")
     }

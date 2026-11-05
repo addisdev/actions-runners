@@ -224,6 +224,36 @@ OUT="$(FLEET_ROOT="$TMP" "$ROOT/scripts/drain-runner.sh" app-up --resume --by=ti
 case "$OUT" in *"not drained"*) ok "an owned resume of an undrained runner does nothing" ;; *) bad "owned resume of undrained runner (got: $OUT)" ;; esac
 check "and does not start the service" "$(svc_log app-up)" ""
 
+echo
+echo "drain-runner.sh --by=night-cap — the night cap's drains"
+# dashboard/lib/night-cap.js parks runners with this owner and resumes them at
+# the end of the window. It must neither take over the tiers controller's
+# marker nor stop a runner that is in the middle of a job.
+make_runner app-nc testowner/app-nc host-app-nc
+FLEET_ROOT="$TMP" "$ROOT/scripts/drain-runner.sh" app-nc --drain --by=tiers >/dev/null 2>&1
+OUT="$(FLEET_ROOT="$TMP" "$ROOT/scripts/drain-runner.sh" app-nc --drain --by=night-cap 2>&1)"
+case "$OUT" in *"left alone"*) ok "a night-cap drain leaves a tiers drain alone" ;; *) bad "a night-cap drain leaves a tiers drain alone (got: $OUT)" ;; esac
+check "the marker stays the controller's" "$(sed -n 's/^by=//p' "$TMP/app-nc/.drain")" "tiers"
+FLEET_ROOT="$TMP" "$ROOT/scripts/drain-runner.sh" app-nc --resume --by=night-cap >/dev/null 2>&1
+check "and a night-cap resume does not undo it" "$([ -f "$TMP/app-nc/.drain" ] && echo yes || echo no)" "yes"
+
+make_runner app-ncb testowner/app-ncb host-app-ncb
+(
+  exec -a "$TMP/app-ncb/bin/Runner.Worker spawnclient 1 2" sleep 20
+) &
+NCB_PID=$!
+sleep 0.5
+FLEET_ROOT="$TMP" "$ROOT/scripts/drain-runner.sh" app-ncb --drain --by=night-cap >/dev/null 2>&1
+check "a busy runner it drains is marked draining" "$(head -1 "$TMP/app-ncb/.drain")" "draining"
+check "with the night cap as owner" "$(sed -n 's/^by=//p' "$TMP/app-ncb/.drain")" "night-cap"
+check "and its job is not stopped" "$(svc_log app-ncb)" ""
+check "it stops after the job instead" "$([ -f "$TMP/app-ncb/.drain-stop" ] && echo yes || echo no)" "yes"
+kill "$NCB_PID" 2>/dev/null
+wait "$NCB_PID" 2>/dev/null
+FLEET_ROOT="$TMP" "$ROOT/scripts/drain-runner.sh" app-ncb --resume --by=night-cap >/dev/null 2>&1
+check "the night cap resumes its own drain" "$([ -f "$TMP/app-ncb/.drain" ] && echo yes || echo no)" "no"
+check "and starts the service" "$(svc_log app-ncb)" "start,"
+
 if FLEET_ROOT="$TMP" "$ROOT/scripts/drain-runner.sh" app-up --drain '--by=a b' >/dev/null 2>&1; then
   bad "refuses an owner that is not a plain identifier"
 else

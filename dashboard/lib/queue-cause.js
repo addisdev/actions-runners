@@ -23,6 +23,8 @@
 // 5. label-mismatch         — no runner matches the job's runs-on labels
 // 6. runner-down            — the repo's runner exists but is offline/dead/draining
 // 7. concurrency-block      — workflow concurrency group limit reached, or account blocked
+//    night-cap              — the night cap (lib/night-cap.js) parked the runner, or every
+//                             runner for it is busy while the cap holds the host at its limit
 // 8. host-saturation        — the headroom gate is refusing additions
 // 9. repo-capacity          — all matching runners are busy; adding one would help
 // 10. github-delay          — eligible idle runner exists; probable GitHub dispatch lag
@@ -49,6 +51,7 @@ export const CAUSES = {
   HOST_SATURATION: 'host-saturation',
   REPO_CAPACITY: 'repo-capacity',
   GITHUB_DELAY: 'github-delay',
+  NIGHT_CAP: 'night-cap',
 };
 
 export const RECOMMENDED = {
@@ -62,7 +65,18 @@ export const RECOMMENDED = {
   [CAUSES.HOST_SATURATION]: 'Do not add another runner on this host. Let running jobs finish, reduce workflow fan-out, or add capacity on another host.',
   [CAUSES.REPO_CAPACITY]: 'Add a runner for this repo. The Capacity tab shows whether the host can take one.',
   [CAUSES.GITHUB_DELAY]: 'Probably fine — GitHub dispatch takes a few seconds. If the job is still queued in 2 minutes, check for GitHub API errors.',
+  [CAUSES.NIGHT_CAP]: 'Nothing to do, and not your code: the night cap starts this run when a slot frees or its window ends.',
 };
+
+// The night cap's words for one run, from the fast tick's context:
+// { active, until, maxBusy, window, busy, host }.
+function nightCapResult(nightCap, evidence) {
+  const host = nightCap.host ?? 'this host';
+  evidence.push(`Night cap: ${host} runs at most ${nightCap.maxBusy} CI jobs from ${String(nightCap.window).replace('-', ' to ')}; ${nightCap.busy} running now`);
+  return result(CAUSES.NIGHT_CAP, 'high', evidence, false, {
+    recommended: `Held by the night cap until ${nightCap.until}. It starts when a slot frees or the window ends. Not your code: do not re-run or change it.`,
+  });
+}
 
 /**
  * Classify why a single queued run has not been picked up.
@@ -77,9 +91,10 @@ export const RECOMMENDED = {
  * @param {boolean}  [opts.hasLintFindings] - Whether this run's own workflow job has a critical
  *                                            label finding (see lintFindingForRun)
  * @param {object}   [opts.lintFinding] - That finding, to cite in the evidence
+ * @param {object}   [opts.nightCap] - The night cap while it enforces: { active, until, maxBusy, window, busy, host }
  * @returns {{ cause, confidence, evidence: string[], recommended, actionEligible }}
  */
-export function classifyQueueCause({ run, runners, capacity, api = {}, collector = {}, runLabels = null, hasLintFindings = false, lintFinding = null } = {}) {
+export function classifyQueueCause({ run, runners, capacity, api = {}, collector = {}, runLabels = null, hasLintFindings = false, lintFinding = null, nightCap = null } = {}) {
   const evidence = [];
 
   // ---- telemetry availability -------------------------------------------
@@ -187,6 +202,8 @@ export function classifyQueueCause({ run, runners, capacity, api = {}, collector
     for (const r of downRunners) {
       if (r.drainState && r.hostOff) {
         evidence.push(`${r.name} is ${r.drainState}: host ${r.hostName ?? r.hostId} is switched off`);
+      } else if (r.drainState && r.drainBy === 'night-cap' && !r.hostOff) {
+        evidence.push(`${r.name} is parked by the night cap${nightCap?.until ? ` until ${nightCap.until}` : ''}`);
       } else if (r.drainState && r.drainBy === 'tiers') {
         // No twin is serving the job either, or it would be online above.
         evidence.push(`${r.name} is ${r.drainState} by the tiers controller: parked until a host slot frees, so the job waits here and not against its timeout`);
@@ -202,6 +219,14 @@ export function classifyQueueCause({ run, runners, capacity, api = {}, collector
     // and this run is in the queue it reads to choose which. That is a wait for
     // capacity, and runner-down would say the run never starts: a critical
     // alert, a repair to run, and "pointless" to anyone waiting on its checks.
+    // The night cap parked it: a runner comes back for this run when a slot
+    // frees, and every one comes back when the window ends. Not runner-down,
+    // which says the run never starts on its own.
+    if (downRunners.some((r) => r.drainState && r.drainBy === 'night-cap' && !r.hostOff)) {
+      return nightCap?.active
+        ? nightCapResult(nightCap, evidence)
+        : result(CAUSES.NIGHT_CAP, 'medium', evidence, false);
+    }
     if (downRunners.some((r) => r.drainState && r.drainBy === 'tiers' && !r.hostOff)) {
       return result(CAUSES.HOST_SATURATION, 'high', evidence, false, {
         recommended: 'Nothing to do: the tiers controller resumes a parked runner for this run when a build-lane slot frees.',
@@ -254,6 +279,17 @@ export function classifyQueueCause({ run, runners, capacity, api = {}, collector
     evidence.push(`${idleOnline.length} idle online runner(s) exist`);
     evidence.push(`Queued ${Math.round(waitMs / 1000)}s — within normal dispatch latency`);
     return result(CAUSES.GITHUB_DELAY, 'low', evidence, false);
+  }
+
+  // ---- the night cap --------------------------------------------------------
+  // Every runner that can take it is busy, and the cap is what keeps another
+  // from starting (and the headroom gate from adding one).
+  const capped = nightCap?.active
+    && serving.some((r) => nightCap.hostId == null || r.hostId == null || r.hostId === nightCap.hostId);
+  if (capped) {
+    const busyHere = onlineRunners.filter((r) => r.ghBusy || r.workingLocally);
+    if (busyHere.length) evidence.push(`All ${busyHere.length} runner(s) for this repo are executing a job`);
+    return nightCapResult(nightCap, evidence);
   }
 
   // ---- host saturation ----------------------------------------------------

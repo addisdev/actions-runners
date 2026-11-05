@@ -254,7 +254,8 @@ export function deriveDrift({ runners, elsewhere, active, repos, now = Date.now(
     // this fleet has already made once.
     const c = classify?.(run) ?? null;
     if (c) {
-      const severity = c.confidence === 'high' && c.cause !== 'github-delay' ? 'serious' : 'warning';
+      // A run the night cap holds is waiting on purpose: never serious.
+      const severity = c.confidence === 'high' && c.cause !== 'github-delay' && c.cause !== 'night-cap' ? 'serious' : 'warning';
       add(severity, 'stuck-queue', `${run.repo.split('/').pop()} · ${run.workflowName}`,
         `queued ${Math.round(waited / 60000)}m — ${c.cause}`,
         c.recommended,

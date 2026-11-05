@@ -70,6 +70,7 @@ export function busyCount(runners = []) {
 }
 
 /**
+ * @param {object} [nightCap] - { active, maxBusy, until } while the night cap enforces
  * @returns {{ ok: boolean, busy: number, ceiling: number, maxTotalRunners: number,
  *   reasons: string[] }}
  *   reasons is empty when ok. Every string is written to be shown verbatim in
@@ -83,10 +84,16 @@ export function busyCount(runners = []) {
  *   for that — which a remote host reports as 3 — makes any host with three
  *   runners look full.
  */
-export function headroom({ host = {}, runners = [], limits = {} } = {}) {
+export function headroom({ host = {}, runners = [], limits = {}, nightCap = null } = {}) {
   const lim = { ...CAPACITY_DEFAULTS, ...limits };
   const busy = busyCount(runners);
   const reasons = [];
+
+  // The night cap (lib/night-cap.js) parks every runner beyond its slots, so a
+  // runner added inside its window would only be parked too.
+  if (nightCap?.active) {
+    reasons.push(`the night cap allows at most ${nightCap.maxBusy} busy CI runners until ${nightCap.until}`);
+  }
 
   if (runners.length >= lim.maxTotalRunners) {
     reasons.push(

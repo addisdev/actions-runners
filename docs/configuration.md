@@ -377,6 +377,22 @@ The standby host's agent needs `FLEET_AGENT_ALLOW_COMMANDS=1` to carry out
 `tiers.drain` and `tiers.resume`; `FLEET_AGENT_COMMANDS` can narrow it to
 drain and resume only.
 
+## Night cap variables
+
+Read by the coordinator's daemon (`dashboard/lib/night-cap.js`) from
+`fleet.env` on every fast tick, so a change, switching it off included, takes
+effect within a tick and needs no restart. It caps this host's own runners.
+How it works: [Night cap](admission-and-scaling.md#night-cap).
+
+| Variable | Default | What it does |
+|---|---|---|
+| `FLEET_NIGHT_CAP_MODE` | `off` | `off` / `observe` / `enforce`. `observe` logs and shows what it would park or resume and touches nothing. `enforce` parks runners beyond the free slots inside the window. `off` resumes every runner it parked (never anyone else's). Anything else reads as `off`. |
+| `FLEET_NIGHT_CAP_WINDOW` | `22:00-06:00` | The window, `HH:MM-HH:MM` in local wall-clock time. A start after the end runs across midnight. On a DST night the window is as long as the clock says (9 h or 7 h for the default). |
+| `FLEET_NIGHT_CAP_MAX_BUSY` | `2` | Busy runners allowed inside the window (a `Runner.Worker` running, or GitHub reporting the runner busy). `0` parks every idle runner. |
+| `FLEET_NIGHT_CAP_TZ` | the host's zone | IANA time zone the window is read in, e.g. `America/New_York`. |
+
+A value that does not parse keeps its default, and the daemon's log names it.
+
 ## Job audio variable
 
 Used by both job hooks. Apple simulators route app audio through the host and

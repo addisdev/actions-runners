@@ -10,6 +10,20 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Added
 
+- **Night cap: at most 2 busy CI runners on the host from 22:00 to 06:00.**
+  The night queue's batch jobs share ultra with CI, and its own gate allows
+  them only beside 2 busy runners (`CI_MAX_BUSY`, night-queue decision D4).
+  `FLEET_NIGHT_CAP_MODE=enforce` makes fleetd park every idle runner beyond the
+  free slots inside `FLEET_NIGHT_CAP_WINDOW` (22:00-06:00, local time, DST
+  handled on the wall clock) with `drain-runner.sh --by=night-cap`, so the jobs
+  wait in GitHub's queue rather than against their timeout, and bring one back
+  per free slot for the oldest queued job; all come back when the window ends.
+  It never stops a running job. The headroom gate refuses scale-up inside the
+  window. Queued runs it holds read cause `night-cap` (not your code), and
+  `wait_for_checks` / `cockpit wait` / `cockpit why` say "held by the night cap
+  until 06:00". Off by default; read from `fleet.env` every tick, so `off`
+  needs no restart.
+
 - **Admission holds heavy jobs while the host thrashes.** Lanes counted jobs
   and the floors counted disk, so on ultra, 2026-11-02, heavy jobs kept starting
   through half an hour of 1–7k swap-ins/s and critical pressure, until

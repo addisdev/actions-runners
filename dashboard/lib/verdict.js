@@ -238,6 +238,8 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
   const queue = snapshot.queue ?? [];
   const host = snapshot.host ?? {};
   const openAlerts = snapshot.alertState?.open ?? [];
+  // The night cap (lib/night-cap.js) while it is holding jobs.
+  const nightCap = snapshot.nightCap?.mode === 'enforce' && snapshot.nightCap.active ? snapshot.nightCap : null;
   const floorGb = o.floorGb ?? null;
 
   // ---- admission waiters --------------------------------------------------
@@ -318,7 +320,9 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
       detail = d?.detail ?? 'sibling runners carry different labels';
     } else if (r.drainState) {
       state = 'draining';
-      detail = r.hostOff ? `host switched off (${r.drainState})` : `drain ${r.drainState}`;
+      detail = r.hostOff ? `host switched off (${r.drainState})`
+        : r.drainBy === 'night-cap' ? `parked by the night cap${nightCap?.until ? ` until ${nightCap.until}` : ''}`
+          : `drain ${r.drainState}`;
     } else if (r.ghUnknown) {
       state = 'unknown';
       detail = 'GitHub state not read this tick';
@@ -577,6 +581,7 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
         slotHeld.length ? `${slotHeld.length} waiting for an admission slot` : null,
       ].filter(Boolean).join(', ') + '. A queue is not a stall.',
       evidence: [
+        ...(nightCap ? [`Night cap until ${nightCap.until}: at most ${nightCap.maxBusy} busy CI runners${nightCap.host ? ` on ${nightCap.host}` : ''}, ${nightCap.busy} busy; held runs start as slots free. Not your code.`] : []),
         ...plainQueue.slice(0, 4).map((q) => `${short(q.repo)} · ${q.workflowName}: ${q.cause} (${q.confidence})`),
         ...slotHeld.slice(0, 3).map((w) => `${short(w.repo ?? w.runner)} held: ${w.reason}`),
       ],
@@ -739,6 +744,8 @@ export function buildGlance(snapshot, result, opts = {}) {
         etaStartMs: q.etaStartMs ?? null,
         etaDoneMs: q.etaDoneMs ?? null,
         etaBasis: q.etaBasis ?? null,
+        // Held by the night cap: waiting is the whole remedy.
+        notYourCode: q.cause === 'night-cap' ? true : null,
       });
     }),
     // Runs, compact: what is building now, and what finished in the last two
@@ -790,7 +797,30 @@ export function buildGlance(snapshot, result, opts = {}) {
     // unless the controller is configured, so the recorded fixtures and older
     // cockpits see the payload they always did.
     ...(snapshot.tiers && snapshot.tiers.mode !== 'off' ? { tiers: compactTiers(snapshot.tiers) } : {}),
+    // The night cap (lib/night-cap.js), likewise absent while it is off.
+    ...(snapshot.nightCap && snapshot.nightCap.mode !== 'off' ? { nightCap: compactNightCap(snapshot.nightCap) } : {}),
   };
+}
+
+function compactNightCap(n) {
+  return strip({
+    mode: n.mode,
+    // Holding jobs right now: enforce, inside the window.
+    active: n.mode === 'enforce' && Boolean(n.active),
+    inWindow: Boolean(n.inWindow),
+    window: n.window,
+    timeZone: n.timeZone ?? null,
+    host: n.host ?? null,
+    maxBusy: n.maxBusy,
+    busy: n.busy,
+    until: n.until ?? null,
+    endsAt: n.endsAt ?? null,
+    startsAt: n.startsAt ?? null,
+    parked: n.parked ?? 0,
+    // Runs with a job waiting for a slot: what a wait on one of them names.
+    held: n.mode === 'enforce' ? n.held ?? [] : [],
+    reason: n.reason ?? null,
+  });
 }
 
 function compactTiers(t) {
