@@ -1059,6 +1059,198 @@ kill "$HEAD_PID" 2>/dev/null
 wait "$HEAD_PID" 2>/dev/null
 
 # ---------------------------------------------------------------------------
+# The priority lane (FLEET_ADMIT_PRIORITY). The daemon is a curl stub: a repo
+# listed in $ROOT/priority-repos is a run of a PR (#7) carrying the label.
+# ---------------------------------------------------------------------------
+priority_setup() {
+  # $1 = FLEET_ADMIT_LANES, $2 = total (FLEET_ADMIT_MAX_CONCURRENT), $3 = heavy limit
+  lanes_setup "$1" "$2" "$3" 5
+  {
+    echo 'FLEET_ADMIT_PRIORITY_URL=http://fleet.test/api/job-priority'
+    echo 'FLEET_ADMIT_PRIORITY_CHECK_S=5'
+  } >> "$ROOT/fleet.env"
+  : > "$ROOT/priority-repos"
+  cat > "$BIN/curl" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$ROOT/curl-calls"
+case "\$*" in
+  *fleet.test/api/job-priority*)
+    repo=""
+    for a in "\$@"; do case "\$a" in repo=*) repo="\${a#repo=}" ;; esac; done
+    if grep -qx "\$repo" "$ROOT/priority-repos"; then
+      printf '{"priority":true,"pr":7,"label":"priority"}'
+    else
+      printf '{"priority":false,"pr":null,"label":"priority"}'
+    fi
+    exit 0 ;;
+esac
+exit 7
+EOF
+  chmod +x "$BIN/curl"
+}
+admitted_order() {
+  grep '"event":"admitted"' "$LOG" | sed -n 's/.*"runner":"\([^"]*\)".*/\1/p' | tr '\n' ' '
+}
+priority_marks() { ls -1 "$ROOT/.admission/priority" 2>/dev/null | wc -l | tr -d ' '; }
+
+echo "== priority: a labelled PR takes the next heavy slot ahead of older jobs =="
+priority_setup enforce 10 1
+echo 'acme/h-p' > "$ROOT/priority-repos"
+LIVE=$(fake_slot occupied)
+start_bg h-1
+sleep 1
+start_bg h-2
+sleep 1
+start_bg h-p
+wait_for "3" "events held" 10
+# The priority job's first poll asks the daemon and marks it; the older
+# waiters see the mark on their next poll and log why they wait now.
+wait_for "2" "events hold-reason" 15
+ok "the priority job's hold carries its PR" \
+  "$(field "$(row h-p held)" priority)/$(field "$(row h-p held)" pr)" "label/7"
+ok "an older heavy job says a priority PR is next" \
+  "$(field "$(row h-1 hold-reason)" reason)" "a priority PR is next: h-p#7"
+ok "...and so does the next one" "$(field "$(row h-2 hold-reason)" reason)" "a priority PR is next: h-p#7"
+ok "a job without the label logs no priority" "$(field "$(row h-1 held)" priority)" ""
+kill "$LIVE" 2>/dev/null
+wait_for "1" "events admitted" 15
+ok "the priority job went first" "$(admitted_order)" "h-p "
+ok "its admission is marked priority" "$(field "$(row h-p admitted)" priority)" "label"
+ok "it left no mark behind" "$(priority_marks)" "0"
+complete h-p
+wait_for "2" "events admitted" 15
+ok "then the oldest of the rest" "$(admitted_order)" "h-p h-1 "
+end_jobs
+
+echo "== priority: a light job is not held by a heavy priority waiter =="
+priority_setup enforce 10 1
+echo 'acme/h-p' > "$ROOT/priority-repos"
+LIVE=$(fake_slot occupied)
+start_bg h-p
+wait_for "1" "events held" 10
+wait_for "1" "priority_marks" 10
+BEFORE=$(date +%s)
+start l-1
+AFTER=$(date +%s)
+ok "the light job was admitted" "$(field "$(row l-1 admitted)" lane)" "light"
+ok "...at once" "$([ $((AFTER - BEFORE)) -le 3 ] && echo prompt || echo slow)" "prompt"
+kill "$LIVE" 2>/dev/null
+end_jobs
+
+echo "== priority: the single line (lanes off) =="
+priority_setup off 1 1
+echo 'acme/pr-job' > "$ROOT/priority-repos"
+LIVE=$(fake_slot occupied)
+start_bg old-job
+sleep 1
+start_bg pr-job
+wait_for "1" "events hold-reason" 15
+ok "the older job yields" "$(field "$(row old-job hold-reason)" reason)" "a priority PR is next: pr-job#7"
+kill "$LIVE" 2>/dev/null
+wait_for "1" "events admitted" 15
+ok "the priority job went first" "$(admitted_order)" "pr-job "
+end_jobs
+
+echo "== priority: FLEET_ADMIT_PRIORITY=off keeps arrival order and asks nothing =="
+priority_setup enforce 10 1
+echo 'FLEET_ADMIT_PRIORITY=off' >> "$ROOT/fleet.env"
+echo 'acme/h-p' > "$ROOT/priority-repos"
+LIVE=$(fake_slot occupied)
+start_bg h-1
+sleep 1
+start_bg h-p
+wait_for "2" "events held" 10
+sleep 2
+kill "$LIVE" 2>/dev/null
+wait_for "1" "events admitted" 15
+ok "the oldest went first" "$(admitted_order)" "h-1 "
+ok "the daemon was not asked" "$(count_in job-priority "$ROOT/curl-calls")" "0"
+end_jobs
+
+echo "== priority: a removed label sends the job back to its place =="
+priority_setup enforce 10 1
+echo 'acme/h-p' > "$ROOT/priority-repos"
+LIVE=$(fake_slot occupied)
+start_bg h-1
+sleep 1
+start_bg h-p
+wait_for "1" "events hold-reason" 15
+ok "while labelled, the older job yields" "$(field "$(row h-1 hold-reason)" reason)" "a priority PR is next: h-p#7"
+: > "$ROOT/priority-repos"
+wait_for "0" "priority_marks" 15
+ok "the mark is gone" "$(priority_marks)" "0"
+kill "$LIVE" 2>/dev/null
+wait_for "1" "events admitted" 15
+ok "arrival order again" "$(admitted_order)" "h-1 "
+end_jobs
+
+echo "== priority: no daemon answer, no priority =="
+priority_setup enforce 10 1
+echo 'FLEET_ADMIT_PRIORITY_URL=http://unreachable.test/api/job-priority' >> "$ROOT/fleet.env"
+echo 'acme/h-p' > "$ROOT/priority-repos"
+LIVE=$(fake_slot occupied)
+start_bg h-1
+sleep 1
+start_bg h-p
+wait_for "2" "events held" 10
+sleep 2
+ok "nothing was marked" "$(priority_marks)" "0"
+kill "$LIVE" 2>/dev/null
+wait_for "1" "events admitted" 15
+ok "arrival order" "$(admitted_order)" "h-1 "
+end_jobs
+
+echo "== priority: the starvation guard stops a long wait from yielding =="
+priority_setup enforce 10 1
+echo 'FLEET_ADMIT_PRIORITY_STARVE_S=4' >> "$ROOT/fleet.env"
+echo 'acme/h-p' > "$ROOT/priority-repos"
+LIVE=$(fake_slot occupied)
+start_bg h-1
+sleep 1
+start_bg h-p
+wait_for "1" "events promoted" 20
+ok "the old job was promoted" "$(field "$(row h-1 promoted)" priority)" "starved"
+ok "...and says why" \
+  "$(field "$(row h-1 promoted)" reason | sed 's/[0-9][0-9]*/N/g')" \
+  "waited N min, past the N min guard, behind a priority PR: no longer yields to one"
+kill "$LIVE" 2>/dev/null
+wait_for "1" "events admitted" 15
+ok "the promoted job went first, by arrival" "$(admitted_order)" "h-1 "
+ok "its admission says it was promoted" "$(field "$(row h-1 admitted)" priority)" "starved"
+complete h-1
+wait_for "2" "events admitted" 15
+ok "then the priority job" "$(admitted_order)" "h-1 h-p "
+end_jobs
+
+echo "== priority: the lockless check sees the priority line =="
+setup enforce 1 30 1
+echo 'FLEET_ADMIT_LANES=enforce' >> "$ROOT/fleet.env"
+W="$ROOT/.admission/waiters"
+P="$ROOT/.admission/priority"
+mkdir -p "$W" "$P"
+sleep 300 >/dev/null 2>&1 &
+HEAD_PID=$!
+printf 'pid=%s\nrunner=h-1\nlane=heavy\n' "$HEAD_PID" > "$W/00000000000000000001-0000000001-heavy-h-1"
+printf 'pid=%s\nrunner=h-2\nlane=heavy\n' "$$" > "$W/00000000000000000002-0000000002-heavy-h-2"
+printf 'pid=%s\nrunner=h-3\nlane=heavy\n' "$$" > "$W/00000000000000000003-0000000003-heavy-h-3"
+printf 'pid=%s\nrunner=l-1\nlane=light\n' "$$" > "$W/00000000000000000004-0000000004-light-l-1"
+printf 'pid=%s\nkind=label\nrepo=acme/h-3\npr=9\nrunner=h-3\n' "$$" > "$P/00000000000000000003-0000000003-heavy-h-3"
+ok "the priority waiter is not behind the older heavy ones" \
+  "$(behind_lane 00000000000000000003-0000000003-heavy-h-3 heavy)" "decide"
+ok "the oldest heavy waiter is behind the priority one" \
+  "$(behind_lane 00000000000000000001-0000000001-heavy-h-1 heavy)" "behind"
+ok "a light waiter is not behind a heavy priority one" \
+  "$(behind_lane 00000000000000000004-0000000004-light-l-1 light)" "decide"
+printf 'pid=999999\nkind=label\nrepo=acme/h-2\npr=8\nrunner=h-2\n' > "$P/00000000000000000002-0000000002-heavy-h-2"
+ok "a dead priority waiter is no head" \
+  "$(behind_lane 00000000000000000003-0000000003-heavy-h-3 heavy)" "decide"
+rm -f "$W/00000000000000000003-0000000003-heavy-h-3"
+ok "a mark without its waiter is no head" \
+  "$(behind_lane 00000000000000000002-0000000002-heavy-h-2 heavy)" "behind"
+kill "$HEAD_PID" 2>/dev/null
+wait "$HEAD_PID" 2>/dev/null
+
+# ---------------------------------------------------------------------------
 # The memory hold (FLEET_ADMIT_HEAVY_*). ultra 2026-11-02: half an hour of
 # 1-7k swap-ins/s with heavy jobs still being admitted, then WindowServer
 # aborted and the session logged out.

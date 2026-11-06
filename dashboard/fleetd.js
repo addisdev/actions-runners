@@ -35,6 +35,7 @@ import { deriveGroups } from './lib/groups.js';
 import { Backfill } from './lib/backfill.js';
 import { RunSettler } from './lib/settle.js';
 import { RunStatus } from './lib/run-status.js';
+import { JobPriority } from './lib/priority.js';
 import { createJobClass } from './lib/job-class.js';
 import { loadByBusy } from './lib/load-table.js';
 import { analytics, repoDetail } from './lib/analytics.js';
@@ -297,6 +298,15 @@ const runStatus = new RunStatus({
     const want = repo.toLowerCase();
     return (snapshot.repos ?? []).some((r) => r.fullName?.toLowerCase() === want);
   },
+});
+const servedRepo = (repo) => {
+  const want = repo.toLowerCase();
+  return (snapshot.repos ?? []).some((r) => r.fullName?.toLowerCase() === want);
+};
+const jobPriority = new JobPriority({
+  fetchRun: (repo, runId) => gh.run(repo, runId),
+  fetchLabels: (repo, pr) => gh.issueLabels(repo, pr),
+  knownRepo: servedRepo,
 });
 const CONTROL_TOKEN = CONFIG.readOnly ? null : loadOrCreateToken(CONFIG.tokenFile, log);
 // Agent token authenticates remote host agents (heartbeat / results routes).
@@ -3544,6 +3554,19 @@ const server = http.createServer(async (req, res) => {
       return json(res, await runStatus.lookup(url.searchParams.get('repo'), url.searchParams.get('run')));
     } catch (err) {
       if (!err.status) warn('run-status api:', err.message);
+      return json(res, { error: err.message }, err.status ?? 502);
+    }
+  }
+
+  // Whether a held job's run belongs to a PR carrying the priority label
+  // (hooks/common.sh, PRIORITY LANE): { priority, pr, label }.
+  if (url.pathname === '/api/job-priority') {
+    try {
+      return json(res, await jobPriority.lookup(
+        url.searchParams.get('repo'), url.searchParams.get('run'), url.searchParams.get('label'),
+      ));
+    } catch (err) {
+      if (!err.status) warn('job-priority api:', err.message);
       return json(res, { error: err.message }, err.status ?? 502);
     }
   }

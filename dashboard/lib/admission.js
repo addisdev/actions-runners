@@ -23,6 +23,13 @@ import { join } from 'node:path';
 // future hook change cannot break this ingest.
 export const ADMISSION_EVENTS = ['admitted', 'held', 'timeout', 'released', 'would-hold', 'observed'];
 
+// A runner whose newest event is one of these is waiting at the hook now.
+// `continued-hold` (a strict hold past FLEET_ADMIT_MAX_WAIT_S), `hold-reason`
+// (the reason changed, e.g. a priority PR is now ahead) and `promoted` (the
+// priority lane's starvation guard) all come after a `held` and before the
+// event that ends the wait.
+export const WAITING_EVENTS = ['held', 'continued-hold', 'hold-reason', 'promoted'];
+
 // One NDJSON line from hooks/ → the row's values, or null for a line that is
 // not an object. Shared by the local file ingest and lines an agent host ships
 // in its heartbeat, so both hosts' events are read identically.
@@ -61,6 +68,9 @@ function rowFrom(line) {
     e.lane_would_hold === true ? 1 : e.lane_would_hold === false ? 0 : null,
     num(e.lane_wait_s),
     e.lane_reason || null,
+    // Priority lane, present only on lines of a job with priority.
+    e.priority || null,
+    e.pr != null && e.pr !== '' ? String(e.pr) : null,
   ];
 }
 
@@ -79,8 +89,9 @@ export function createAdmission({ db, logPath, warn = () => {}, hostId = null })
                                   owner_pid, reason,
                                   lanes, lane, lane_source, heavy_busy, light_busy,
                                   heavy_limit, light_limit, total_limit,
-                                  lane_would_hold, lane_wait_s, lane_reason, host_id)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+                                  lane_would_hold, lane_wait_s, lane_reason,
+                                  priority, pr, host_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   // Rows from before host_id existed were all written by this host's hooks.
   if (hostId) {
     try {
@@ -100,7 +111,7 @@ export function createAdmission({ db, logPath, warn = () => {}, hostId = null })
     // job's first step is otherwise invisible.
     latestPerRunner: db.prepare(`
       SELECT runner, repo, event, ts, reason, busy, limit_n, host_id, lane, lanes,
-             lane_would_hold, lane_reason
+             lane_would_hold, lane_reason, waited_s, priority, pr
       FROM admission_events
       WHERE id IN (
         SELECT MAX(id) FROM admission_events WHERE runner IS NOT NULL GROUP BY host_id, runner
@@ -112,7 +123,7 @@ export function createAdmission({ db, logPath, warn = () => {}, hostId = null })
       SELECT ts, event, mode, runner, repo, job, waited_s, ran_s, busy, limit_n,
              owner_kind, owner_pid, reason, host_id,
              lanes, lane, lane_source, heavy_busy, light_busy, heavy_limit, light_limit,
-             total_limit, lane_would_hold, lane_wait_s, lane_reason
+             total_limit, lane_would_hold, lane_wait_s, lane_reason, priority, pr
       FROM admission_events ORDER BY ts DESC LIMIT ?`),
     // The newest line from a hook with lanes on: their mode and limits.
     lastLanes: db.prepare(`
@@ -172,7 +183,7 @@ export function createAdmission({ db, logPath, warn = () => {}, hostId = null })
     for (const r of latest) {
       if (!isLocal(r) || !r.lane || !(r.lane in running)) continue;
       if (['admitted', 'timeout', 'observed', 'would-hold'].includes(r.event)) running[r.lane] += 1;
-      else if (r.event === 'held') waiting[r.lane] += 1;
+      else if (WAITING_EVENTS.includes(r.event)) waiting[r.lane] += 1;
     }
     const day = {
       // observe: held by the single lane, where the lanes would have admitted
@@ -293,11 +304,13 @@ export function createAdmission({ db, logPath, warn = () => {}, hostId = null })
       const last = stmt.last.get(local);
       const latest = stmt.latestPerRunner.all();
       const waiting = latest
-        .filter((r) => r.event === 'held')
+        .filter((r) => WAITING_EVENTS.includes(r.event))
         .map((r) => ({
           runner: r.runner,
           repo: r.repo,
-          since: r.ts,
+          // When the wait began: a later line (continued-hold, hold-reason,
+          // promoted) carries the seconds waited so far.
+          since: r.event !== 'held' && Number(r.waited_s) > 0 ? r.ts - Number(r.waited_s) * 1000 : r.ts,
           reason: r.reason,
           busy: r.busy,
           limit: r.limit_n,
@@ -305,6 +318,12 @@ export function createAdmission({ db, logPath, warn = () => {}, hostId = null })
           lane: r.lane ?? null,
           laneWouldHold: r.lane_would_hold == null ? null : r.lane_would_hold === 1,
           laneReason: r.lane_reason ?? null,
+          // label: its PR carries the priority label; starved: promoted by
+          // the starvation guard; null: no priority.
+          priority: r.priority ?? null,
+          pr: r.pr != null ? Number(r.pr) || null : null,
+          // Waiting because a priority PR is ahead of it.
+          yieldingToPriority: typeof r.reason === 'string' && r.reason.startsWith('a priority PR is next'),
         }));
       // Mode and limit per host, newest decision each. A fleet where one host
       // enforces 2 and another 6 is not described by a single number.

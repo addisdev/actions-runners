@@ -345,6 +345,18 @@ judge the host by the limits the hooks actually enforce. After changing any of t
 | `FLEET_ADMIT_CLASS_CACHE_S` | `300` | How long the hook reuses the daemon's answer for one repo and job. |
 | `FLEET_ADMIT_CLASS_URL` | `/api/job-class` beside `FLEET_ADMIT_STATUS_URL` | Where the hook asks a job's class. Empty, or an empty `FLEET_ADMIT_STATUS_URL`, skips it: unnamed jobs are then heavy. |
 
+### Priority lane variables
+
+[Priority lane](admission-and-scaling.md#priority-lane): a PR carrying the label takes the next free slot in its lane.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `FLEET_ADMIT_PRIORITY` | `on` | `off` turns the priority lane off: arrival order only, and the daemon is never asked. |
+| `FLEET_ADMIT_PRIORITY_LABEL` | `priority` | The PR label that gives its jobs priority (matched without regard to case). `cockpit priority --label <name>` if you change it. |
+| `FLEET_ADMIT_PRIORITY_STARVE_MIN` | `45` | Starvation guard: a job held this many minutes while a priority job was ahead of it stops yielding and goes by arrival. `0` = never. |
+| `FLEET_ADMIT_PRIORITY_CHECK_S` | `30` | How often a waiting job asks again whether its PR has the label (minimum 5). |
+| `FLEET_ADMIT_PRIORITY_URL` | `/api/job-priority` beside `FLEET_ADMIT_STATUS_URL` | Where the hook asks. Empty, or an empty `FLEET_ADMIT_STATUS_URL`, means no priority. |
+
 Eligible enforced waiters are FIFO. A Simulator waiter blocked by its
 resource-specific limit does not prevent an unrelated waiter from using free
 host capacity. A waiter is removed when its hook exits, and stale entries are

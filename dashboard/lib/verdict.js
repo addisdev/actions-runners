@@ -334,7 +334,11 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
         : `offline for ${minutes(now - since)}`;
     } else if (held) {
       state = held.disk ? 'held-disk' : 'held-slot';
-      detail = `held: ${held.reason}`;
+      // A priority PR's own job says so: "held (priority PR #12): 4 heavy job(s)…".
+      // One that yields to it reads "held: a priority PR is next: app#12".
+      const tag = held.priority === 'label' ? ` (priority PR${held.pr ? ` #${held.pr}` : ''})`
+        : held.priority === 'starved' ? ' (next by arrival: waited past the priority guard)' : '';
+      detail = `held${tag}: ${held.reason}`;
       since = held.since ? held.since * (held.since < 1e12 ? 1000 : 1) : null;
     } else if (job || r.ghBusy || r.workingLocally) {
       state = job?.overdue ? 'overdue' : 'busy';

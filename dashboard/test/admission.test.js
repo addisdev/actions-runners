@@ -250,3 +250,35 @@ describe('lanes', () => {
     assert.equal(s.waiting[0].laneWouldHold, false);
   });
 });
+
+describe('priority lane', () => {
+  test('a job held for a priority PR, and the PR\'s own job, are both waiting', () => {
+    const t = now - 120;
+    const { admission } = fresh([
+      line({ ts: t, event: 'held', runner: 'r1', reason: '4 heavy job(s) already running, at the heavy limit of 4' }),
+      line({ ts: t + 60, event: 'hold-reason', runner: 'r1', waited_s: 60, reason: 'a priority PR is next: app#12' }),
+      line({ ts: t + 30, event: 'held', runner: 'r2', reason: 'an older job is waiting for the next heavy slot', priority: 'label', pr: '12' }),
+      line({ ts: t, event: 'held', runner: 'r3', reason: 'x' }),
+      line({ ts: t + 90, event: 'continued-hold', runner: 'r3', waited_s: 90, reason: 'x' }),
+    ]);
+    const byRunner = Object.fromEntries(admission.summary().waiting.map((w) => [w.runner, w]));
+    assert.deepEqual(Object.keys(byRunner).sort(), ['r1', 'r2', 'r3'], 'a later hold line is still a wait');
+    assert.equal(byRunner.r1.reason, 'a priority PR is next: app#12');
+    assert.equal(byRunner.r1.yieldingToPriority, true);
+    assert.equal(byRunner.r1.since, t * 1000, 'the wait began at the first hold, not the reason change');
+    assert.equal(byRunner.r3.since, t * 1000);
+    assert.deepEqual([byRunner.r2.priority, byRunner.r2.pr, byRunner.r2.yieldingToPriority], ['label', 12, false]);
+    assert.equal(byRunner.r3.priority, null);
+    assert.equal(admission.summary().last24h.held, 3, 'a reason change is not a second hold');
+  });
+
+  test('priority fields are stored as written, and absent on other lines', () => {
+    const { admission } = fresh([
+      line({ event: 'admitted', runner: 'r1', priority: 'starved' }),
+      line({ event: 'admitted', runner: 'r2' }),
+    ]);
+    const rows = Object.fromEntries(admission.recent().map((r) => [r.runner, r]));
+    assert.deepEqual([rows.r1.priority, rows.r1.pr], ['starved', null]);
+    assert.deepEqual([rows.r2.priority, rows.r2.pr], [null, null]);
+  });
+});

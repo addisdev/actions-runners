@@ -189,6 +189,12 @@ ADMIT_WAIT_START="$(admit_now)"
 ANNOUNCED=0
 TIMEOUT_ANNOUNCED=0
 LAST_CANCEL_CHECK=-1
+LAST_PRIORITY_CHECK=-1
+# What the last log line said about this hold, digits aside: a hold whose
+# reason changes kind (a priority PR arrives ahead of it, or leaves) or whose
+# priority changes logs `hold-reason`, so the dashboard shows why it waits now
+# rather than why it first waited.
+LOGGED_HOLD=""
 admit_resolve_wait_owner
 admit_resolve_worker_log || true
 while :; do
@@ -214,16 +220,19 @@ while :; do
   # nothing under the mutex (see admit_waiting_behind_older). With lanes
   # enforced the line is the job's own lane, not the host.
   BEHIND=0
+  ADMIT_PRIORITY_HEAD=""
   if [ "$ADMIT_LANES" = enforce ]; then
     if admit_waiting_behind_older_in_lane; then
       BEHIND=1
       BLOCKER="$(admit_lane_queue_reason)"
+      admit_yielding_to_priority && BLOCKER="$(admit_priority_reason)"
       ADMIT_LANE_BLOCKER="$BLOCKER"
       ADMIT_LANE_VIEWED=1
     fi
   elif admit_waiting_behind_older; then
     BEHIND=1
     BLOCKER="an older job is waiting for the next host slot"
+    admit_yielding_to_priority && BLOCKER="$(admit_priority_reason)"
     if [ "$ADMIT_LANES" = observe ] && [ -z "$ADMIT_LANE_WAIT" ]; then
       admit_lane_view_lockless
       [ -n "$ADMIT_LANE_BLOCKER" ] || ADMIT_LANE_WAIT="$WAITED"
@@ -242,11 +251,13 @@ while :; do
       if [ -z "$BLOCKER" ] \
         && ! admit_waiter_is_first_in_lane "$SIMULATOR_BUSY"; then
         BLOCKER="$(admit_lane_queue_reason)"
+        admit_yielding_to_priority && BLOCKER="$(admit_priority_reason)"
         ADMIT_LANE_BLOCKER="$BLOCKER"
       fi
     elif [ -z "$BLOCKER" ] \
       && ! admit_waiter_is_first_eligible "$SIMULATOR_BUSY"; then
       BLOCKER="an older job is waiting for the next host slot"
+      admit_yielding_to_priority && BLOCKER="$(admit_priority_reason)"
     fi
     # observe-lanes: would the job's own line have let it go? And from when.
     if [ "$ADMIT_LANES" = observe ]; then
@@ -287,6 +298,24 @@ while :; do
     fi
   fi
 
+  # Priority: asked only once the job has to wait, then every
+  # ADMIT_PRIORITY_CHECK_S, so a label added while it waits takes effect.
+  if [ "$ADMIT_PRIORITY_ON" = 1 ] && [ -n "$ADMIT_WAITER" ] \
+    && { [ "$LAST_PRIORITY_CHECK" -lt 0 ] \
+      || [ $((WAITED - LAST_PRIORITY_CHECK)) -ge "$ADMIT_PRIORITY_CHECK_S" ]; }; then
+    LAST_PRIORITY_CHECK="$WAITED"
+    admit_priority_refresh
+  fi
+  # Starvation guard: long enough behind a priority PR, stop yielding.
+  if [ "$ADMIT_PRIORITY_ON" = 1 ] && [ -z "$ADMIT_PRIORITY" ] \
+    && [ "$ADMIT_PRIORITY_STARVE_S" -gt 0 ] && [ "$WAITED" -ge "$ADMIT_PRIORITY_STARVE_S" ] \
+    && admit_yielding_to_priority; then
+    ADMIT_PRIORITY=starved
+    admit_priority_mark starved
+    admit_log promoted "waited $((WAITED / 60)) min, past the $((ADMIT_PRIORITY_STARVE_S / 60)) min guard, behind a priority PR: no longer yields to one" "$WAITED" "$BUSY"
+    echo "fleet: waited $((WAITED / 60)) min behind priority PRs — next in line by arrival now"
+  fi
+
   if [ "$WAITED" -ge "$ADMIT_MAX_WAIT" ] \
     && [ "$ADMIT_TIMEOUT_ACTION" = "admit" ] \
     && [ "$STRICT_LIMIT" -eq 0 ]; then
@@ -309,8 +338,15 @@ while :; do
 
   # Logged once per hold rather than once per poll, so a ten-minute wait is one
   # line and a `held`/`admitted` pair carries the total in waited_s.
+  HOLD_NOW="${BLOCKER//[0-9]/}|$ADMIT_PRIORITY"
+  if [ "$ANNOUNCED" -eq 1 ] && [ -n "$BLOCKER" ] && [ "$HOLD_NOW" != "$LOGGED_HOLD" ]; then
+    admit_log hold-reason "$BLOCKER" "$WAITED" "$BUSY"
+    LOGGED_HOLD="$HOLD_NOW"
+    if admit_yielding_to_priority; then echo "fleet: holding this job — $BLOCKER"; fi
+  fi
   if [ "$ANNOUNCED" -eq 0 ]; then
     admit_log held "$BLOCKER" 0 "$BUSY"
+    LOGGED_HOLD="$HOLD_NOW"
     ANNOUNCED=1
     if [ "$ADMIT_TIMEOUT_ACTION" = "hold" ] || [ "$STRICT_LIMIT" -eq 1 ]; then
       echo "fleet: holding this job — $BLOCKER (strict resource limit)"

@@ -349,6 +349,13 @@ test('GET /api/job-class answers without auth, unknown for a job never seen', as
   assert.deepEqual([body.class, body.n, body.shortJobS], ['unknown', 0, 90]);
 });
 
+test('GET /api/job-priority answers without auth, refuses bad queries and unserved repos', async () => {
+  const bad = await fetch(url('/api/job-priority?repo=nope&run=1'));
+  assert.equal(bad.status, 400);
+  const other = await fetch(url('/api/job-priority?repo=someone%2Felse&run=1'));
+  assert.equal(other.status, 404);
+});
+
 test('GET /api/load-by-busy returns rows, the window and the core count', async () => {
   const r = await fetch(url('/api/load-by-busy?days=3'));
   assert.equal(r.status, 200);

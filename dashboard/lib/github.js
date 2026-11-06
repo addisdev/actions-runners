@@ -414,6 +414,14 @@ export class GitHub {
     return data;
   }
 
+  // A PR's label names, for held jobs asking whether they are a priority PR's
+  // (lib/priority.js). Asked at most twice a minute per PR, and an unchanged
+  // answer is a free 304.
+  async issueLabels(repo, number) {
+    const { data } = await this.get(`repos/${repo}/issues/${number}/labels?per_page=100`);
+    return Array.isArray(data) ? data.map((l) => l?.name).filter((n) => typeof n === 'string') : [];
+  }
+
   // One job by id. Uncached: it is asked once, about a job whose row stopped
   // moving (lib/settle.js), and the answer is final.
   async job(repo, jobId) {

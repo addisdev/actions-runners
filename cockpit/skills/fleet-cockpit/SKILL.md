@@ -85,6 +85,7 @@ frozen; mention it.
 - Actions (`fleet run <action>` or `cockpit run <action>`) preview first. Show the user the preview, and confirm (`--yes`) only an action they asked for. If the token lacks the scope (`insufficient_scope`), report it; do not look for another token.
 - A stale view (`freshness.stale`, "Collector stalled") is the dashboard's problem, not the PR's: say so.
 - A check "held by the night cap" (queue cause `night-cap`, a wait's `heldBy: night-cap`) is not your code either: the host runs only a few CI jobs at night and starts it when a slot frees or the window ends. Keep waiting; do not re-run it, cancel it or change anything for it.
+- Never add the `priority` label to a PR or run `cockpit priority` unless the user asks for that PR: it puts the PR's jobs ahead of every other session's. A job "held: a priority PR is next" is not your code: keep waiting.
 <!-- /generated:rules -->
 
 ## When the dashboard does not answer

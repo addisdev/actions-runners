@@ -124,6 +124,22 @@ describe('what does not count', () => {
     assert.equal(r.runners.get('build-host-comet-web').state, 'held-slot');
   });
 
+  test('a priority hold says so, on the PR\'s job and on the jobs it is ahead of', () => {
+    const s = SCENARIOS.quiet();
+    const since = Math.floor(s.now / 1000) - 60;
+    s.snapshot.admission.waiting = [
+      { runner: 'build-host-comet-web', repo: 'acme/comet-web', since, priority: 'label', pr: 12,
+        reason: '4 heavy job(s) already running, at the heavy limit of 4', busy: 4, limit: 16 },
+      { runner: 'build-host-ember-ios', repo: 'acme/ember-ios', since,
+        reason: 'a priority PR is next: comet-web#12', busy: 4, limit: 16 },
+    ];
+    const r = computeVerdict(s.snapshot, s.facts, { now: s.now, floorGb: 40 });
+    assert.equal(r.verdict.id, 'waiting');
+    assert.equal(r.runners.get('build-host-comet-web').detail,
+      'held (priority PR #12): 4 heavy job(s) already running, at the heavy limit of 4');
+    assert.equal(r.runners.get('build-host-ember-ios').detail, 'held: a priority PR is next: comet-web#12');
+  });
+
   test('once disk is freed, a job held at 38 GB is waiting for a slot, not disk-held', () => {
     // Seen live 2026-09-30: after cleanup took the host to 46.8 GB, two jobs
     // still carried "38 GB disk free, below the 40 GB floor" from when their
