@@ -131,6 +131,19 @@ export const SCHEMA = {
   // "unavailable" — it is never treated as an error.
   billingOrg: { type: 'string', default: '', env: 'FLEET_BILLING_ORG',
     label: 'GitHub org or user to check billing for (leave blank to disable)' },
+
+  // ---- billing guard (lib/billing-guard.js) ------------------------------
+  // Once a day: no GitHub-hosted minutes outside the exempt repos, Actions
+  // storage under the floor, and no GitHub artifacts or caches in a private
+  // repo. Reads the user billing API, so the token needs the `user` scope.
+  billingGuard: { type: 'bool', default: true, env: 'FLEET_BILLING_GUARD',
+    label: 'Check once a day that nothing runs or is kept at GitHub' },
+  billingGuardAccount: { type: 'string', default: '', env: 'FLEET_BILLING_GUARD_ACCOUNT',
+    label: 'GitHub user whose Actions billing must stay at zero (blank: the owner of every repo the fleet serves)' },
+  billingGuardExempt: { type: 'list', default: ['actions-runners', 'fleet-runner'], env: 'FLEET_BILLING_GUARD_EXEMPT',
+    label: 'Repos allowed GitHub-hosted runners (public, free minutes)' },
+  billingGuardStorageFloorGbh: { type: 'float', default: 1, min: 0, max: 10000, env: 'FLEET_BILLING_GUARD_STORAGE_FLOOR_GBH',
+    label: 'Actions storage a day, in GB-hours, the other repos may hold between them' },
 };
 
 function parseValue(type, raw, def) {

@@ -825,6 +825,27 @@ Source: [`hooks/shm-reap.sh`](https://github.com/addisdev/actions-runners/blob/m
 hooks/tests/shm.sh   # fake ipcs/ipcrm; no real segment is touched
 ```
 
+### `hooks/ci-artifacts-prune.sh`
+
+Prunes `~/ci-artifacts`, where self-hosted jobs keep their screenshots, reports
+and test bundles instead of uploading them to GitHub
+(`~/ci-artifacts/<repo>/<run_id>-<run_attempt>/`, viewed at the dashboard's
+[`/artifacts/`](../remote-access.md#ci-artifacts)). Removes an entry directly
+under a repo's folder that is older than `FLEET_CI_ARTIFACTS_KEEP_MIN` minutes
+(1440, one day) unless anything inside it was written in the last
+`FLEET_CI_ARTIFACTS_FRESH_MIN` (60). It never follows a symlink. The
+job-completed hook runs it detached with `--apply --if-due` (at most every
+`FLEET_CI_ARTIFACTS_EVERY_S`, 600 s, host-wide); `cleanup.sh` reports the
+folder's size and prunes it on `--apply`. Dry run without `--apply`.
+`FLEET_CI_ARTIFACTS_PRUNE=0` turns the hook's run off.
+Source: [`hooks/ci-artifacts-prune.sh`](https://github.com/addisdev/actions-runners/blob/main/hooks/ci-artifacts-prune.sh).
+
+```bash
+bash hooks/ci-artifacts-prune.sh            # what it would remove
+bash hooks/ci-artifacts-prune.sh --apply    # remove it
+hooks/tests/ci-artifacts.sh                 # against a throwaway ~/ci-artifacts
+```
+
 ### `hooks/job-completed.sh`
 
 Runs after a job's last step. Its main job is to give back the slot
@@ -841,7 +862,9 @@ booted before the selected jobs began.
 
 It also handles drain, and does so **before** the admission-mode check, because
 a drain has nothing to do with admission and must work on a fleet that never
-turned admission on. It identifies the runner's directory from
+turned admission on. It starts the `~/ci-artifacts` prune
+([`hooks/ci-artifacts-prune.sh`](#hooksci-artifacts-prunesh)) the same way,
+detached. It identifies the runner's directory from
 `RUNNER_WORKSPACE` (falling back to `GITHUB_WORKSPACE` for older runner
 versions), and if a `.drain-stop` flag is there it launches
 `scripts/drain-stop-when-idle.sh` detached and returns immediately.

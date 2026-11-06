@@ -18,7 +18,9 @@
 #   ./fleetctl.sh api-token <name> [--scopes read,act]  # a scoped /api/v1 token for an agent
 #   ./fleetctl.sh remote status        # show bind, LAN URLs, Tailscale state
 #   ./fleetctl.sh remote lan on|off    # bind to 0.0.0.0 / revert to loopback
-#   ./fleetctl.sh remote tailscale on|off  # configure Tailscale Serve (tailnet only)
+#   ./fleetctl.sh remote tailscale on|off [port]  # configure Tailscale Serve (tailnet only);
+#                                      # a port serves plain http on it (http://<name>:<port>/)
+#                                      # instead of https on 443, which may already be taken
 #   ./fleetctl.sh remote funnel on|off     # publish only /mcp to the internet with Tailscale Funnel
 #   ./fleetctl.sh remote cloudflare on <hostname>|off  # the same through a Cloudflare Tunnel
 #
@@ -549,7 +551,16 @@ cmd_remote() {
           "$ts" status >/dev/null 2>&1 || { echo "Tailscale is not connected — run: $ts up" >&2; return 1; }
           # Serve only, never Funnel: Serve is reachable from your tailnet,
           # Funnel from the whole internet.
-          "$ts" serve --bg --https=443 "http://127.0.0.1:$PORT" || {
+          # A port of its own: plain http on that tailnet port, for a machine
+          # whose 443 already serves something else (ultra's serves Immich).
+          # The tailnet carries it encrypted either way; the daemon keeps its
+          # loopback bind, so the LAN still cannot reach it.
+          local serve_port="${3:-}" serve_flag="--https=443" scheme="https" suffix="/"
+          if [ -n "$serve_port" ] && [ "$serve_port" != 443 ]; then
+            case "$serve_port" in *[!0-9]*) echo "port must be a number" >&2; return 1 ;; esac
+            serve_flag="--http=$serve_port"; scheme="http"; suffix=":$serve_port/"
+          fi
+          "$ts" serve --bg "$serve_flag" "http://127.0.0.1:$PORT" || {
             echo "tailscale serve failed — if it printed a link, Serve must first be enabled for your tailnet there." >&2
             return 1
           }
@@ -557,20 +568,22 @@ cmd_remote() {
           dns="$("$ts" status --json 2>/dev/null | json_get Self.DNSName 2>/dev/null | sed 's/\.$//' || true)"
           echo ""
           echo "Tailscale Serve is on. Reachable from your tailnet only (Funnel is never used)."
-          [ -n "$dns" ] && echo "  https://$dns/"
+          [ -n "$dns" ] && echo "  $scheme://$dns$suffix" && echo "  $scheme://$dns${suffix}artifacts/"
           echo ""
           echo "To use controls from a remote device: ./fleetctl.sh pair"
           ;;
         off)
           # Only our listener: 'serve reset' would also remove anything else
           # this machine serves on the tailnet.
-          "$ts" serve --https=443 off 2>/dev/null || "$ts" serve --https=443 "http://127.0.0.1:$PORT" off 2>/dev/null || {
+          local off_flag="--https=443"
+          if [ -n "${3:-}" ] && [ "${3:-}" != 443 ]; then off_flag="--http=${3}"; fi
+          "$ts" serve "$off_flag" off 2>/dev/null || "$ts" serve "$off_flag" "http://127.0.0.1:$PORT" off 2>/dev/null || {
             echo "could not remove the Serve config; inspect with: $ts serve status" >&2
             return 1
           }
           echo "Tailscale Serve for the dashboard is off."
           ;;
-        *) echo "usage: $0 remote tailscale on|off" >&2; return 1 ;;
+        *) echo "usage: $0 remote tailscale on|off [port]" >&2; return 1 ;;
       esac
       ;;
 
@@ -761,5 +774,5 @@ case "${1:-status}" in
   devices)     cmd_devices ;;
   revoke)      cmd_revoke "${2:-}" ;;
   remote)      cmd_remote "${2:-status}" "${3:-}" "${4:-}" ;;
-  *) sed -n '2,24p' "$0"; exit 1 ;;
+  *) sed -n '2,26p' "$0"; exit 1 ;;
 esac

@@ -38,6 +38,16 @@ ROOT="${FLEET_ROOT:-$(cd "$HERE/.." && pwd)}"
 # the next job happens to start.
 [ -f "$HERE/shm-reap.sh" ] && FLEET_ROOT="$ROOT" bash "$HERE/shm-reap.sh" completed
 
+# ~/ci-artifacts keeps one day (what self-hosted jobs write instead of GitHub
+# artifacts, served at the dashboard's /artifacts/). The jobs prune their own
+# repo's folder; this catches the rest. Detached, at most every 10 minutes
+# host-wide, and it never touches a folder written in the last hour.
+# FLEET_CI_ARTIFACTS_PRUNE=0 turns it off. An empty RUNNER_TRACKING_ID keeps
+# the runner's end-of-job process sweep from killing it mid-prune.
+if [ "${FLEET_CI_ARTIFACTS_PRUNE:-1}" != "0" ] && [ -f "$HERE/ci-artifacts-prune.sh" ]; then
+  RUNNER_TRACKING_ID="" nohup bash "$HERE/ci-artifacts-prune.sh" --apply --if-due >/dev/null 2>&1 &
+fi
+
 # Drain, handled BEFORE the admission-mode check below, because a drain has
 # nothing to do with admission and must work on a fleet that never turned
 # admission on.

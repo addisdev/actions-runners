@@ -393,6 +393,35 @@ How it works: [Night cap](admission-and-scaling.md#night-cap).
 
 A value that does not parse keeps its default, and the daemon's log names it.
 
+## CI artifacts and the billing guard
+
+The daemon serves `~/ci-artifacts` read-only at `/artifacts/`
+([CI artifacts](remote-access.md#ci-artifacts)), and once a day checks that
+nothing runs or is kept at GitHub (`dashboard/lib/billing-guard.js`). The
+guard is red, naming the repo and SKU, when a repo outside the exempt list used
+GitHub-hosted Actions minutes today or yesterday (UTC), when Actions storage in
+the other repos was over the floor on either day, or when a private repo holds
+GitHub artifacts or caches. It reads `/users/<account>/settings/billing/usage`,
+which needs a token with the `user` scope (`gh auth refresh -h github.com -s user`
+on the host); without it the guard reads *unavailable*, never green. Its result
+is on the dashboard under the drift list, at `GET /api/v1/billing-guard`
+(`fleet billing`), and in `<state dir>/checks.json` as the `billing-guard`
+check in the Homelab Map's product-check shape. The `billingGuard*` values are
+settings: editable on the Control tab, seeded by these variables.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `FLEET_CI_ARTIFACTS` | `~/ci-artifacts` | The folder `/artifacts/` serves and the hooks prune. |
+| `FLEET_CI_ARTIFACTS_KEEP_MIN` | `1440` | Minutes an entry under `~/ci-artifacts/<repo>/` is kept (hooks). |
+| `FLEET_CI_ARTIFACTS_FRESH_MIN` | `60` | An older folder with anything written this recently is kept (hooks). |
+| `FLEET_CI_ARTIFACTS_EVERY_S` | `600` | The job-completed hook prunes at most this often, host-wide. |
+| `FLEET_CI_ARTIFACTS_PRUNE` | `1` | `0` stops the job-completed hook from pruning; `cleanup.sh` still does. |
+| `FLEET_STATE_DIR` | `state/` beside the database | Where `billing-guard.json` and `checks.json` are written. |
+| `FLEET_BILLING_GUARD` | `1` | `0` turns the daily guard off. |
+| `FLEET_BILLING_GUARD_ACCOUNT` | the one owner of the fleet's repos | GitHub user whose billing is checked. |
+| `FLEET_BILLING_GUARD_EXEMPT` | `actions-runners fleet-runner` | Repos allowed GitHub-hosted runners: their minutes, storage and holdings are not counted. |
+| `FLEET_BILLING_GUARD_STORAGE_FLOOR_GBH` | `1` | GB-hours of Actions storage a day the other repos may hold between them. |
+
 ## Job audio variable
 
 Used by both job hooks. Apple simulators route app audio through the host and

@@ -547,6 +547,50 @@ function renderKpis(s) {
   }
 }
 
+// ------------------------------------------------------------ github guard
+// The daily billing guard (lib/billing-guard.js): nothing runs or is kept at
+// GitHub. One line when all is well, a line per repo and SKU when not. The
+// artifacts self-hosted jobs keep instead are one click away.
+function renderGithubGuard(s) {
+  const g = s.billingGuard ?? { state: 'pending' };
+  const el = $('#github-guard');
+  const artifacts = h('a', { href: '/artifacts/', class: 'guard-link', text: 'CI artifacts on this host' });
+  const when = g.checkedAt ? ` · checked ${new Date(g.checkedAt).toLocaleString()}` : '';
+  if (g.state === 'red') {
+    mount(el,
+      h('div', { class: 'section-head' },
+        h('h2', { text: 'GitHub billing guard' }),
+        h('span', { class: 'count', text: `${(g.findings ?? []).length + (g.more ?? 0)} to act on` })
+      ),
+      h('div', { class: 'drift-list guard-list' },
+        (g.findings ?? []).map((f) =>
+          h('div', { class: 'drift-item critical guard-item' },
+            h('span', { class: 'drift-sev', text: f.kind }),
+            h('span', { class: 'drift-subject', text: `${f.repo} · ${f.sku}` }),
+            h('span', { class: 'drift-detail', text: f.detail }))),
+        g.more ? h('div', { class: 'muted', text: `and ${g.more} more: GET /api/billing-guard` }) : null,
+        h('div', { class: 'muted guard-meta' }, `${g.account ?? ''} ${g.window?.from ?? ''}..${g.window?.to ?? ''}${when} · `, artifacts)
+      )
+    );
+    return;
+  }
+  if (g.state === 'unavailable') {
+    mount(el, h('div', { class: 'drift-list guard-list' },
+      h('div', { class: 'drift-item warning guard-item' },
+        h('span', { class: 'drift-sev', text: 'unknown' }),
+        h('span', { class: 'drift-subject', text: 'GitHub billing guard' }),
+        h('span', { class: 'drift-detail' }, g.summary ?? 'not readable', when, ' · ', artifacts))));
+    return;
+  }
+  if (g.state === 'green') {
+    mount(el, h('div', { class: 'all-clear guard-clear' }, h('b', { text: '✓' }),
+      ` Nothing runs or is kept at GitHub: ${g.summary}${when} · `, artifacts));
+    return;
+  }
+  mount(el, h('div', { class: 'muted guard-meta' },
+    g.state === 'off' ? 'GitHub billing guard is off · ' : 'GitHub billing guard: first check pending · ', artifacts));
+}
+
 // -------------------------------------------------------------------- drift
 
 function renderDrift(s) {
@@ -1464,9 +1508,11 @@ function render() {
   const live = view === 'fleet' || view === 'runs';
   $('#kpis').classList.toggle('is-hidden', !live);
   $('#drift').classList.toggle('is-hidden', !live);
+  $('#github-guard').classList.toggle('is-hidden', !live);
   if (live) {
     renderKpis(snap);
     renderDrift(snap);
+    renderGithubGuard(snap);
     if (view === 'fleet') { renderGlanceCard(snap); renderFleet(snap); }
     else renderRuns(snap);
   } else if (view === 'control') {

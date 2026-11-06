@@ -58,6 +58,8 @@ async function startDaemon(extraEnv = {}) {
       FLEET_BACKFILL_MS: '999999999',
       FLEET_FAST_MS: '999999999',
       FLEET_SLOW_MS: '999999999',
+      // Never the developer's real ~/ci-artifacts.
+      FLEET_CI_ARTIFACTS: join(dir, 'ci-artifacts'),
       ...extraEnv,
     },
     stdio: 'ignore',
@@ -391,6 +393,28 @@ test('GET / returns 200 (static index.html)', async () => {
   assert.equal(r.status, 200);
   const text = await r.text();
   assert.match(text, /<html/i);
+});
+
+test('GET /artifacts/ serves ~/ci-artifacts read-only, behind the Host check', async () => {
+  const run = join(daemon.dir, 'ci-artifacts', 'homelake', '123-1');
+  mkdirSync(run, { recursive: true });
+  writeFileSync(join(run, 'shot.png'), 'png');
+  const index = await fetch(url('/artifacts/'));
+  assert.equal(index.status, 200);
+  assert.match(await index.text(), /href="homelake\/"/);
+  const runPage = await (await fetch(url('/artifacts/homelake/123-1/'))).text();
+  assert.match(runPage, /<img loading="lazy" src="shot\.png"/);
+  const file = await fetch(url('/artifacts/homelake/123-1/shot.png'));
+  assert.equal(file.headers.get('content-type'), 'image/png');
+  assert.match(file.headers.get('content-security-policy'), /^sandbox/);
+  assert.equal((await fetch(url('/artifacts/homelake/123-1/shot.png'), { method: 'DELETE' })).status, 405);
+  assert.equal((await fetch(url('/artifacts/%2e%2e/fleet.db'))).status, 404);
+  // A rebinding page arrives with its own name in Host.
+  const rebound = await new Promise((resolve) => {
+    http.get({ host: '127.0.0.1', port: daemon.port, path: '/artifacts/', headers: { host: 'evil.example' } },
+      (res) => { res.resume(); resolve(res.statusCode); });
+  });
+  assert.equal(rebound, 421);
 });
 
 test('GET /nonexistent returns 404', async () => {

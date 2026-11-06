@@ -240,6 +240,22 @@ export const ROUTES = [
     handler: (ctx) => ({ items: ctx.glance().hosts ?? [] }),
   },
   {
+    id: 'billing_guard',
+    cli: { name: 'billing' },
+    method: 'GET',
+    path: '/billing-guard',
+    scope: 'read',
+    summary: 'Whether anything runs or is kept at GitHub',
+    description:
+      'The daily billing guard: red, naming the repository and SKU, when a repository other than the exempt ones '
+      + '(public, on GitHub-hosted runners by decision) used GitHub-hosted Actions minutes, when Actions storage '
+      + 'in the other repositories grew past a small floor on a day, or when a private repository holds GitHub '
+      + 'artifacts or caches. Unavailable when the token cannot read the user billing API (it needs the `user` '
+      + 'scope). Self-hosted jobs keep their artifacts on the runner host, served at /artifacts/.',
+    params: [],
+    handler: (ctx) => ctx.billingGuard?.() ?? { state: 'off', summary: null },
+  },
+  {
     id: 'list_actions',
     cli: { name: 'actions' },
     method: 'GET',
