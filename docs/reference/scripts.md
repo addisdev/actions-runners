@@ -846,6 +846,31 @@ bash hooks/ci-artifacts-prune.sh --apply    # remove it
 hooks/tests/ci-artifacts.sh                 # against a throwaway ~/ci-artifacts
 ```
 
+### `hooks/work-trim.sh`
+
+Gives a runner's disk back when its job ends. The job-completed hook runs it
+last, on the job's own workspace (`$RUNNER_WORKSPACE`, `_work/<repo>/`):
+
+- the checkout's ignored and untracked files (`build/`, `node_modules`, test
+  output), which actions/checkout's `git clean -ffdx` deletes at the next
+  job's start anyway. Tracked files and `.git` stay.
+- the warm caches beside the checkout (everything there that is not a git
+  checkout), when usable disk is under `FLEET_CLEANUP_PRESSURE_GB` (the
+  admission floor + 20) or one is unused for `FLEET_CLEANUP_RUNNER_CACHE_DAYS`.
+  `FLEET_WORK_TRIM_KEEP` spares named caches from the pressure rule.
+
+Everything is renamed into `.work-trash/` at the fleet root and deleted by a
+detached `work-trim.sh empty`, so the hook takes a second or two. It never
+touches `_work/_temp`, `_tool`, `_actions` or another runner's work, and logs
+each job's block to `logs/work-trim.log` (one line also goes to the job log).
+`cleanup.sh` runs the same trims over idle runners. `FLEET_WORK_TRIM=0` turns
+the hook's part off.
+Source: [`hooks/work-trim.sh`](https://github.com/addisdev/actions-runners/blob/main/hooks/work-trim.sh).
+
+```bash
+hooks/tests/work-trim.sh   # a throwaway fleet root with a real git checkout
+```
+
 ### `hooks/job-completed.sh`
 
 Runs after a job's last step. Its main job is to give back the slot

@@ -138,6 +138,9 @@ jobs:
       - name: CI artifacts prune tests
         run: bash hooks/tests/ci-artifacts.sh
 
+      - name: Work tree trim tests
+        run: bash hooks/tests/work-trim.sh
+
       - name: Host sentinel tests
         run: bash scripts/test-sentinel.sh
 

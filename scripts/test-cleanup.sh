@@ -27,7 +27,8 @@ setup() {
   mkdir -p "$T/bin" "$T/home/Library/Developer/Xcode/DerivedData"
   mkdir -p "$T/hooks"
   cp "$HERE/cleanup.sh" "$T/"
-  cp "$HERE/hooks/free-disk.sh" "$HERE/hooks/emulator-control.sh" "$T/hooks/"
+  cp "$HERE/hooks/free-disk.sh" "$HERE/hooks/emulator-control.sh" "$HERE/hooks/work-trim.sh" "$T/hooks/"
+  mkdir -p "$T/tmp"
   for r in web android ios; do
     mkdir -p "$T/$r/_work/_tool/ms-playwright/chromium" "$T/$r/_diag"
     printf '{"agentName":"RL-%s","gitHubUrl":"https://github.com/acme/%s"}' "$r" "$r" > "$T/$r/.runner"
@@ -89,7 +90,7 @@ EOF
 }
 
 clean() {
-  HOME="$T/home" FLEET_ROOT="$T" PATH="$T/bin:$PATH" ANDROID_AVD_HOME="" \
+  HOME="$T/home" FLEET_ROOT="$T" PATH="$T/bin:$PATH" ANDROID_AVD_HOME="" FLEET_CLEANUP_TMPDIR="$T/tmp" \
     FLEET_PS="$T/bin/fakeps" FLEET_ADB="$T/bin/adb" bash "$T/cleanup.sh" "$@" 2>&1
 }
 calls() { grep -c "$1" "$T/calls" 2>/dev/null; }
@@ -526,6 +527,81 @@ ok "kept a crash with a bundle id of our own" "$(gone "$R/ours-old.ips")" "kept"
 ok "kept a host report" "$(gone "$R/host-old.ips")" "kept"
 ok "kept what it cannot read" "$(gone "$R/garbage.ips")" "kept"
 ok "counted them" "$(grep -A1 'simulator daemon crash reports' "$T/out" | grep -c '2 files')" "1"
+
+echo "== work trees: a checkout's ignored output and any cache beside it, never tracked files =="
+setup 90
+echo 120 > "$T/free"
+echo "RL-web" > "$T/busy"
+for r in ios web; do
+  co="$T/$r/_work/$r/$r"
+  mkdir -p "$co"
+  git -C "$co" init -q
+  printf 'build/\nnode_modules/\n' > "$co/.gitignore"
+  echo src > "$co/main.txt"
+  git -C "$co" add -A && git -C "$co" -c user.email=t@t -c user.name=t commit -qm init
+  mkdir -p "$co/build/out" "$co/node_modules/x" "$co/app/build"
+  echo obj > "$co/build/out/a.o"
+  echo js > "$co/node_modules/x/i.js"
+  echo stray > "$co/untracked.txt"
+  # Caches the old name list missed: a venv folder, a one-off native build tree.
+  mkdir -p "$T/$r/_work/$r/venvs/py" "$T/$r/_work/$r/duckdb-native-work/build"
+  touch "$T/$r/_work/$r/venvs/py/x" "$T/$r/_work/$r/duckdb-native-work/build/x"
+done
+touch -t 202601010000 "$T/ios/_work/ios/duckdb-native-work/build/x" "$T/ios/_work/ios/duckdb-native-work/build" \
+  "$T/ios/_work/ios/duckdb-native-work"
+clean --apply > "$T/out"
+co="$T/ios/_work/ios/ios"
+ok "removed the checkout's ignored build output" "$(gone "$co/build")" "removed"
+ok "removed its node_modules" "$(gone "$co/node_modules")" "removed"
+ok "removed an untracked file" "$(gone "$co/untracked.txt")" "removed"
+ok "kept the tracked files" "$(gone "$co/main.txt")" "kept"
+ok "kept .git" "$(gone "$co/.git")" "kept"
+ok "removed a week-old native build tree whatever its name" "$(gone "$T/ios/_work/ios/duckdb-native-work")" "removed"
+ok "kept a venv used this week, with room on the disk" "$(gone "$T/ios/_work/ios/venvs")" "kept"
+ok "left a building runner's checkout output" "$(gone "$T/web/_work/web/web/build")" "kept"
+ok "the trash is emptied" "$(find "$T/.work-trash" -mindepth 1 -maxdepth 1 -name 'run.*' 2>/dev/null | wc -l | tr -d ' ')" "0"
+echo 45 > "$T/free"
+FLEET_WORK_TRIM_KEEP="ven*" clean --apply > "$T/out"
+ok "under pressure FLEET_WORK_TRIM_KEEP keeps a cache" "$(gone "$T/ios/_work/ios/venvs")" "kept"
+clean --apply > "$T/out"
+ok "under pressure an idle runner's venv goes too" "$(gone "$T/ios/_work/ios/venvs")" "removed"
+ok "...and never a building runner's" "$(gone "$T/web/_work/web/venvs")" "kept"
+
+echo "== CI simulators: agent-shots devices count, and a long-unused one is deleted =="
+setup 91
+echo 120 > "$T/free"
+echo 1 > "$T/.cleanup-last-full"
+for u in SHOTS OLD NEW; do mkdir -p "$T/sim/$u/data"; touch "$T/sim/$u/device.plist"; done
+touch -t 202601010000 "$T/sim/OLD/device.plist"
+cat > "$T/sims.json" <<EOF
+{"devices": {
+  "com.apple.CoreSimulator.SimRuntime.iOS-27-0": [
+    {"name": "agent-shots-RL-ios_", "udid": "U-SHOTS", "state": "Shutdown", "dataPathSize": 5368709120, "dataPath": "$T/sim/SHOTS/data"},
+    {"name": "agent-shots-RL-gone", "udid": "U-SHOTSGONE", "state": "Shutdown", "dataPathSize": 1048576},
+    {"name": "ci-RL-android iOS 27.0", "udid": "U-OLD", "state": "Shutdown", "dataPathSize": 1048576, "dataPath": "$T/sim/OLD/data"},
+    {"name": "ci-RL-web iOS 27.0", "udid": "U-NEW", "state": "Shutdown", "dataPathSize": 1048576, "dataPath": "$T/sim/NEW/data"},
+    {"name": "iPhone 17", "udid": "U-PERSON", "state": "Shutdown", "dataPathSize": 12884901888, "dataPath": "$T/sim/OLD/data"}
+  ]}}
+EOF
+clean --apply > "$T/out"
+ok "erased an agent-shots device over 3 GB" "$(calls 'simctl erase U-SHOTS$')" "1"
+ok "deleted an agent-shots device whose runner is gone" "$(calls 'simctl delete U-SHOTSGONE')" "1"
+ok "deleted a CI device not booted for days" "$(calls 'simctl delete U-OLD')" "1"
+ok "kept a small CI device used today" "$(calls 'U-NEW')" "0"
+ok "never touched a device outside CI, however old" "$(calls 'U-PERSON')" "0"
+
+echo "== Robolectric runtimes a day old leave the temp folder =="
+setup 92
+echo 120 > "$T/free"
+echo 1 > "$T/.cleanup-last-full"
+mkdir -p "$T/tmp/robolectric-nativeruntime111" "$T/tmp/robolectric-nativeruntime222" "$T/tmp/other-old"
+touch -t 202601010000 "$T/tmp/robolectric-nativeruntime111" "$T/tmp/other-old"
+clean > "$T/out"
+ok "a dry run keeps it" "$(gone "$T/tmp/robolectric-nativeruntime111")" "kept"
+clean --apply > "$T/out"
+ok "removed the day-old runtime" "$(gone "$T/tmp/robolectric-nativeruntime111")" "removed"
+ok "kept one a test may be using" "$(gone "$T/tmp/robolectric-nativeruntime222")" "kept"
+ok "never touched anything else in the temp folder" "$(gone "$T/tmp/other-old")" "kept"
 
 echo
 echo "passed $PASS, failed $FAIL"
