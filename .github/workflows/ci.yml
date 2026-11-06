@@ -135,6 +135,9 @@ jobs:
       - name: Shared memory sweep tests
         run: bash hooks/tests/shm.sh
 
+      - name: CI artifacts prune tests
+        run: bash hooks/tests/ci-artifacts.sh
+
       - name: Host sentinel tests
         run: bash scripts/test-sentinel.sh
 

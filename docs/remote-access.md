@@ -86,6 +86,41 @@ To disable:
 This removes only the HTTPS listener on port 443. Anything else the machine
 serves on your tailnet is left alone.
 
+If 443 already serves something else on the machine, give Serve a port of its
+own. It then serves plain HTTP on that tailnet port (the tailnet itself is
+encrypted), and the daemon stays on loopback, so the LAN still cannot reach it:
+
+```sh
+./dashboard/fleetctl.sh remote tailscale on 7878    # http://<hostname>.<tailnet-name>.ts.net:7878/
+./dashboard/fleetctl.sh remote tailscale off 7878
+```
+
+The service worker needs HTTPS, so the offline install below works only on 443.
+
+## CI artifacts
+
+Self-hosted jobs keep what they used to upload to GitHub (screenshots, reports,
+traces, test bundles) on the runner host, at
+`~/ci-artifacts/<repo>/<run_id>-<run_attempt>/<name>/`, and print a link to it in
+the job summary. The daemon serves that folder read-only at `/artifacts/`:
+
+- `/artifacts/`: every repository, with its number of runs, size and newest run
+- `/artifacts/<repo>/`: its runs, newest first, with size, age and the run log on GitHub
+- `/artifacts/<repo>/<run_id>-<run_attempt>/…`: images as a grid, `.html`
+  reports opened as pages, logs as text, everything else as a download; any
+  folder in a run (an `.xcresult` bundle, say) downloads as a zip with `?zip=1`
+
+It is read only (`GET` and `HEAD`). Every path is resolved and must land inside
+the folder, so neither `..` nor a symlink a job left can reach outside it, and
+dot files are never served. Files are served with
+`Content-Security-Policy: sandbox`: a report's own scripts run, but in an opaque
+origin that cannot read the dashboard's stored token or call its API as the
+dashboard. Exposure is the dashboard's own: the same listener and Host check,
+and open to whoever can reach it, like the other read routes.
+
+The folder is `FLEET_CI_ARTIFACTS` (default `~/ci-artifacts`). It keeps one day:
+the job-completed hook prunes it ([`hooks/ci-artifacts-prune.sh`](reference/scripts.md#hooksci-artifacts-prunesh)).
+
 ### Offline/PWA install over Tailscale
 
 Because Tailscale Serve provides HTTPS, the service worker is active when
@@ -239,7 +274,7 @@ Device tokens can also be revoked from the Control tab → Remote devices panel.
 ### What is open
 
 All GET read routes are open to any address that can reach the server:
-`/api/state`, `/api/stream`, `/api/health`, `/api/alerts`, etc. This matches the
+`/api/state`, `/api/stream`, `/api/health`, `/api/alerts`, `/artifacts/`, etc. This matches the
 loopback model — anyone who could `curl` the loopback could already read the
 fleet. LAN and tailnet access extend that to trusted network peers.
 

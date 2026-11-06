@@ -7,7 +7,7 @@
 // KeepAlive — the whole reason health.sh exists is that theirs do not.
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { existsSync, statSync, readFileSync } from 'node:fs';
+import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { join, dirname, extname, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
@@ -93,6 +93,8 @@ import { TickGuard, stage } from './lib/tick-guard.js';
 import { decideTiers, tiersConfigFromEnv, primaryRungs, DRAIN_OWNER } from './lib/tiers.js';
 import { admissionSettings, admissionBlocker } from './lib/admit-gate.js';
 import { switchOffImpact, drainsToReassert, reassertArgs, markerStillHeld } from './lib/host-switch.js';
+import { handleArtifacts, ARTIFACTS_PREFIX } from './lib/artifacts.js';
+import { runBillingGuard, guardDue, guardAccount, statusEntry } from './lib/billing-guard.js';
 import { nightCapConfig, nightWindow, decideNightCap, queuedJobs, NIGHT_CAP_OWNER } from './lib/night-cap.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -190,6 +192,15 @@ const CONFIG = {
   admitMaxWaitS: Number(process.env.FLEET_ADMIT_MAX_WAIT_S ?? 600),
   admitMinFreeDiskGb: process.env.FLEET_ADMIT_MIN_FREE_DISK_GB
     ? Number(process.env.FLEET_ADMIT_MIN_FREE_DISK_GB) : null,
+  // What self-hosted jobs keep instead of uploading to GitHub, served
+  // read-only at /artifacts/ (lib/artifacts.js). The runner hooks prune it.
+  artifactsRoot: process.env.FLEET_CI_ARTIFACTS || join(os.homedir(), 'ci-artifacts'),
+  // Where the daemon's own checks are written for other tools to read: the
+  // billing guard's last result, and checks.json in the Homelab Map's
+  // product-check shape. Beside the database by default, so a test daemon
+  // with its own FLEET_DB never writes into the real one.
+  stateDir: process.env.FLEET_STATE_DIR
+    || join(dirname(process.env.FLEET_DB ?? join(HERE, 'fleet.db')), 'state'),
 };
 
 // Grouping, capacity and autoscaling settings do NOT live in CONFIG. They are
@@ -217,6 +228,67 @@ const ha = new HaCoordinator({
 const db = openDb(CONFIG.db);
 const settings = createSettings(db);
 const gh = new GitHub({ log });
+
+// ------------------------------------------------------------ billing guard
+// Once a day, from the slow loop: is anything running or kept at GitHub
+// (lib/billing-guard.js)? The result is kept in memory, published in the
+// snapshot, and written to the state directory so a restart does not ask
+// again and the Homelab Map can read it (checks.json).
+const BILLING_GUARD_FILE = join(CONFIG.stateDir, 'billing-guard.json');
+const CHECKS_FILE = join(CONFIG.stateDir, 'checks.json');
+let billingGuardResult = (() => {
+  try { return JSON.parse(readFileSync(BILLING_GUARD_FILE, 'utf8')); } catch { return null; }
+})();
+let billingGuardRunning = false;
+
+function writeStateFile(file, value) {
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}`;
+  writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`);
+  renameSync(tmp, file);
+}
+
+function billingGuardView() {
+  const r = billingGuardResult;
+  if (!r) return { state: settings.get('billingGuard') ? 'pending' : 'off', summary: null };
+  return {
+    state: r.state, account: r.account, checkedAt: r.checkedAt, window: r.window, summary: r.summary,
+    findings: (r.findings ?? []).slice(0, 25).map(({ kind, repo, sku, amount, unit, detail }) => ({ kind, repo, sku, amount, unit, detail })),
+    more: Math.max(0, (r.findings ?? []).length - 25),
+  };
+}
+
+async function maybeBillingGuard(now = Date.now()) {
+  if (!settings.get('billingGuard') || billingGuardRunning || !guardDue(billingGuardResult, now)) return;
+  const account = guardAccount(settings.get('billingGuardAccount'), repoRoster);
+  if (!account) return;
+  billingGuardRunning = true;
+  try {
+    const result = await runBillingGuard({
+      gh,
+      account,
+      repos: repoRoster,
+      now,
+      config: {
+        exempt: settings.get('billingGuardExempt'),
+        storageFloorGbh: settings.get('billingGuardStorageFloorGbh'),
+      },
+    });
+    billingGuardResult = result;
+    log(`billing guard: ${result.state} — ${result.summary}`);
+    try {
+      writeStateFile(BILLING_GUARD_FILE, result);
+      let checks = {};
+      try { checks = JSON.parse(readFileSync(CHECKS_FILE, 'utf8')) ?? {}; } catch { /* first write */ }
+      writeStateFile(CHECKS_FILE, { ...checks, 'billing-guard': statusEntry(result) });
+    } catch (err) {
+      warn('billing guard state:', err.message);
+    }
+  } finally {
+    billingGuardRunning = false;
+  }
+}
+
 const backfill = new Backfill({ db, gh, log, warn });
 const runSettler = new RunSettler({ db, gh, warn });
 const runStatus = new RunStatus({
@@ -572,6 +644,7 @@ function asApiError(err) {
 
 const API_CONTEXT = {
   glance: () => currentGlance(),
+  billingGuard: () => billingGuardResult ?? billingGuardView(),
   orphans: (glance) => findOrphans(activeRunJobs, glance.runners),
   waitForChecks: (target, opts) => waitForChecks(target, CHECKS_SOURCE, opts),
   readOnly: () => CONFIG.readOnly,
@@ -2275,6 +2348,8 @@ async function fastTick(progress = null) {
     active,
     recent,
     repos: repoRoster,
+    // Is anything running or kept at GitHub? (lib/billing-guard.js, daily)
+    billingGuard: billingGuardView(),
     drift,
     projects: groups.order,
     // Published on every tick, not computed when a button is pressed, so the UI
@@ -3008,6 +3083,10 @@ async function slowTick() {
       warn(`billing probe for ${billingOrg}:`, err.message);
     }
   }
+
+  // The billing guard, once a day. Not awaited: it is ~2 calls per private
+  // repo, and the next slow tick should not wait on them.
+  maybeBillingGuard().catch((err) => warn('billing guard:', err.message));
 }
 
 // --------------------------------------------------------------------- server
@@ -3052,6 +3131,15 @@ async function serveStatic(res, urlPath) {
     'cache-control': 'no-cache',
   });
   res.end(body);
+}
+
+// owner/repo for an artifact folder's name, from the repositories the fleet
+// tracks, so a run folder can link to its run log. Null when two owners hold
+// the name or the fleet does not know it.
+function artifactRepo(name) {
+  const want = String(name).toLowerCase();
+  const hits = (snapshot.repos ?? []).filter((r) => r.fullName?.split('/')[1]?.toLowerCase() === want);
+  return hits.length === 1 ? hits[0].fullName : null;
 }
 
 // Rejected Host values are logged so an operator who reaches the dashboard by a
@@ -3102,6 +3190,20 @@ const server = http.createServer(async (req, res) => {
     }
   }
   const url = new URL(req.url, 'http://localhost');
+
+  if (url.pathname === ARTIFACTS_PREFIX || url.pathname.startsWith(`${ARTIFACTS_PREFIX}/`)) {
+    try {
+      return await handleArtifacts(req, res, url, {
+        root: CONFIG.artifactsRoot,
+        rootLabel: CONFIG.artifactsRoot.replace(os.homedir(), '~'),
+        githubRepo: artifactRepo,
+      });
+    } catch (err) {
+      warn('artifacts:', err.message);
+      if (!res.headersSent) return json(res, { error: 'could not read the artifact' }, 500);
+      return res.destroy();
+    }
+  }
 
   if (url.pathname === API_PREFIX || url.pathname.startsWith(`${API_PREFIX}/`)) {
     const v1 = { 'fleet-api-version': '1' };
@@ -3379,6 +3481,8 @@ const server = http.createServer(async (req, res) => {
       return json(res, { error: err.message }, 500);
     }
   }
+
+  if (url.pathname === '/api/billing-guard') return json(res, billingGuardResult ?? billingGuardView());
 
   if (url.pathname === '/api/autoscale') {
     try {

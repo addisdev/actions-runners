@@ -10,6 +10,31 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Added
 
+- **CI artifacts viewer: `~/ci-artifacts` at `/artifacts/`, read-only.**
+  Self-hosted jobs keep their screenshots, reports and test bundles on the
+  runner host (`~/ci-artifacts/<repo>/<run_id>-<run_attempt>/`) instead of
+  GitHub, whose Free-plan artifact storage ran out on 2026-11-05. fleetd lists
+  repos and runs (newest first, size, age, run-log link), lays images out as a
+  grid, opens `.html` reports as pages, serves logs as text and the rest as
+  downloads, and zips any folder in a run on the fly (`?zip=1`, for
+  `.xcresult` bundles). Paths are resolved and confined to the folder, dot
+  files and symlinks out of it are refused, and every file is served under
+  `Content-Security-Policy: sandbox` so a report's scripts cannot reach the
+  dashboard's token. `remote tailscale on <port>` serves the dashboard on a
+  tailnet port of its own when 443 is taken.
+- **One-day prune of `~/ci-artifacts`** (`hooks/ci-artifacts-prune.sh`): the
+  job-completed hook runs it detached at most every 10 minutes, and it never
+  removes a folder written in the last hour. `cleanup.sh` reports the folder's
+  size and prunes it with `--apply`.
+- **Billing guard: nothing runs or is kept at GitHub.** Once a day fleetd reads
+  the user billing usage API and each private repo's caches and artifacts, and
+  goes red, naming repo and SKU, on any GitHub-hosted minute outside
+  actions-runners and fleet-runner, Actions storage over 1 GB-h a day, or a
+  private repo holding GitHub artifacts or caches. On the dashboard, at
+  `GET /api/v1/billing-guard` (`fleet billing`, MCP `billing_guard`), and in
+  `state/checks.json` for the Homelab Map. Needs the token's `user` scope;
+  without it the guard reads unavailable, not green.
+
 - **Night cap: at most 2 busy CI runners on the host from 22:00 to 06:00.**
   The night queue's batch jobs share ultra with CI, and its own gate allows
   them only beside 2 busy runners (`CI_MAX_BUSY`, night-queue decision D4).

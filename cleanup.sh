@@ -758,6 +758,21 @@ else
   say "    ${n} lock files"
 fi
 
+# ---------------------------------------------------------------------------
+# ~/ci-artifacts: what self-hosted jobs keep instead of uploading to GitHub,
+# one day (hooks/ci-artifacts-prune.sh, which the job-completed hook also
+# runs). Reported every run so its size is in the disk picture, and pruned
+# with the rest when this run applies.
+# ---------------------------------------------------------------------------
+if [ -f "$HERE/hooks/ci-artifacts-prune.sh" ]; then
+  # shellcheck source=hooks/ci-artifacts-prune.sh
+  . "$HERE/hooks/ci-artifacts-prune.sh"
+  say "==> CI artifacts ($CI_ARTIFACTS) older than $((CI_ARTIFACTS_KEEP_MIN / 60))h"
+  ci_artifacts_prune "$APPLY" | sed 's/^/    /'
+  _ca_kb="$(ci_artifacts_kb)"
+  [ -n "$_ca_kb" ] && say "    $((_ca_kb / 1024)) MB kept in $CI_ARTIFACTS"
+fi
+
 after=$(free_gb)
 say "==> free after:  ${after} GB  (reclaimed $((after - before)) GB)"
 if [ "$APPLY" = "1" ]; then

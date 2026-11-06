@@ -416,6 +416,12 @@ button.kpi {
   color: var(--good); background: var(--good-wash); border-radius: 50%;
 }
 
+/* ------------------------------------------------------------ github guard */
+#github-guard { margin-top: 8px; }
+#github-guard:empty { display: none; }
+.guard-meta { font-size: 12px; padding: 4px 2px; }
+.guard-link { white-space: nowrap; }
+
 /* ------------------------------------------------------------ runner tiles */
 
 .project { margin-bottom: 16px; }
