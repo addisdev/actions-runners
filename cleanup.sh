@@ -29,6 +29,10 @@
 #     ci- (or shots-) device, with one exception: a simulator booted longer
 #     than FLEET_CLEANUP_SIM_STRAY_S that no host process names, while
 #     Simulator.app is closed, is shut down (never erased or deleted).
+#     A CI device is deleted only while it is shut down, untouched for
+#     FLEET_CLEANUP_SIM_STALE_HOURS (24), its runner is not building, and
+#     neither Load Warden nor the Fleet Runner registry lists it; if either
+#     cannot be read, no device is changed.
 #   - never throw away a runner's quick-boot snapshot AVD (the kit's
 #     emulator_snapshot) while its runner exists and used it in the last
 #     FLEET_CLEANUP_AVD_KEEP_DAYS, except to stay under
@@ -60,10 +64,24 @@ case "$RUNNER_CACHE_DAYS" in '' | *[!0-9]*) RUNNER_CACHE_DAYS=7 ;; esac
 # (2026-11-05).
 DIAG_AGE_DAYS="${FLEET_CLEANUP_DIAG_DAYS:-5}"
 case "$DIAG_AGE_DAYS" in '' | *[!0-9]*) DIAG_AGE_DAYS=5 ;; esac
-# A CI simulator (ci-<runner>…, agent-shots-<runner>) shut down and not booted
-# for this many days is deleted rather than erased: its job creates it again.
-SIM_IDLE_DAYS="${FLEET_CLEANUP_SIM_IDLE_DAYS:-2}"
-case "$SIM_IDLE_DAYS" in '' | *[!0-9]*) SIM_IDLE_DAYS=2 ;; esac
+# A CI simulator (ci-<runner>…, agent-shots-<runner>) shut down and untouched
+# for this many hours is deleted rather than erased: its job creates it again.
+# ultra, 2026-11-05: 63 devices, 50 GB under CoreSimulator/Devices. The old
+# setting, FLEET_CLEANUP_SIM_IDLE_DAYS, still counts (in days) when this one
+# is not set.
+SIM_STALE_H="${FLEET_CLEANUP_SIM_STALE_HOURS:-}"
+case "$SIM_STALE_H" in
+  '' | *[!0-9]*)
+    case "${FLEET_CLEANUP_SIM_IDLE_DAYS:-}" in
+      '' | *[!0-9]*) SIM_STALE_H=24 ;;
+      *) SIM_STALE_H=$(( 10#$FLEET_CLEANUP_SIM_IDLE_DAYS * 24 )) ;;
+    esac ;;
+esac
+[ "$SIM_STALE_H" -lt 1 ] && SIM_STALE_H=24
+# What else may be using a simulator, by UDID: Load Warden (its CLI) and the
+# Fleet Runner lab's device registry. Empty skips that check.
+SIM_WARDEN="${FLEET_CLEANUP_WARDEN-warden}"
+SIM_LAB_URL="${FLEET_CLEANUP_LAB_DEVICES_URL-http://127.0.0.1:8789/api/devices}"
 # Robolectric unpacks its native runtime (about 200 MB) into the temp folder
 # for every test JVM and leaves it behind; ultra had 15 of them, 2 GB, on
 # 2026-11-05. One a day old belongs to no running test.
@@ -518,10 +536,10 @@ fi
 # Simulators whose runtime is no longer installed. These accumulate silently
 # across Xcode upgrades and are pure waste — nothing can boot them.
 # ---------------------------------------------------------------------------
+# Not gated on an idle host: a device whose runtime is gone cannot be booted,
+# so no job can be using it, and on a busy CI host the gate meant it never ran.
 say "==> unavailable simulators"
-if ! host_idle; then
-  :
-elif [ "$APPLY" = "1" ]; then
+if [ "$APPLY" = "1" ]; then
   xcrun simctl delete unavailable 2>&1 | sed 's/^/    /'
 else
   cnt=$(xcrun simctl list devices 2>/dev/null | grep -c "unavailable" || true)
@@ -637,30 +655,66 @@ say "    ${n} directories"
 # and none had ever been erased.
 # ---------------------------------------------------------------------------
 sim_limit="$SIM_MAX_GB"; [ "$PRESSURE" = 1 ] && sim_limit="$SIM_PRESSURE_GB"
-say "==> CI simulators over ${sim_limit} GB"
+say "==> CI simulators: stale ones (shut down, untouched ${SIM_STALE_H}h) deleted, others over ${sim_limit} GB erased"
+# Devices something else is using, by UDID: Load Warden's sessions (warden
+# status) and the Fleet Runner lab's registry, which lists some ci- devices
+# too (ultra, 2026-11-05: two watchOS ones). Either one that cannot be read
+# means this pass changes nothing: when unsure, keep.
+sim_tracked=" "
+sim_unsure=""
+if [ -n "$SIM_WARDEN" ] && command -v "$SIM_WARDEN" >/dev/null 2>&1; then
+  if out="$("$SIM_WARDEN" status --json 2>/dev/null)" && [ -n "$out" ]; then
+    sim_tracked="$sim_tracked$(printf '%s' "$out" | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}' | tr 'a-f' 'A-F' | tr '\n' ' ')"
+  else
+    sim_unsure="Load Warden did not answer (warden status --json)"
+  fi
+fi
+if [ -z "$sim_unsure" ] && [ -n "$SIM_LAB_URL" ]; then
+  if out="$(curl -fsS --max-time 10 "$SIM_LAB_URL" 2>/dev/null)" && printf '%s' "$out" | grep -q '"devices"'; then
+    sim_tracked="$sim_tracked$(printf '%s' "$out" | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}' | tr 'a-f' 'A-F' | tr '\n' ' ')"
+  else
+    sim_unsure="the Fleet Runner registry did not answer ($SIM_LAB_URL; FLEET_CLEANUP_LAB_DEVICES_URL= on a host without one)"
+  fi
+fi
+[ -n "$sim_unsure" ] && say "    (changing nothing: $sim_unsure)"
 n=0
-while IFS='|' read -r udid state bytes runner idle_d name; do
+del_n=0; del_kb=0; erase_n=0; erase_kb=0
+kept_booted=0; kept_recent=0; kept_tracked=0; kept_building=0
+while IFS='|' read -r udid state bytes runner idle_h name; do
   [ -n "$udid" ] || continue
-  if [ "$state" != "Shutdown" ]; then continue; fi
-  if building "$runner"; then continue; fi
-  gb=$(awk -v b="$bytes" 'BEGIN{printf "%.1f", b/1073741824}')
-  case "$known" in
-    *" $runner "*)
-      if [ "$idle_d" -ge "$SIM_IDLE_DAYS" ]; then
-        say "    ${gb} GB  delete ${name} ($udid): not booted for ${idle_d}d"
-        run xcrun simctl delete "$udid"
-      else
-        awk -v b="$bytes" -v l="$sim_limit" 'BEGIN{exit !(b >= l*1073741824)}' || continue
-        say "    ${gb} GB  erase ${name} ($udid)"
-        run xcrun simctl erase "$udid"
-      fi ;;
-    *)
-      say "    ${gb} GB  delete ${name} ($udid): no such runner here"
-      run xcrun simctl delete "$udid" ;;
+  [ -n "$sim_unsure" ] && continue
+  if [ "$state" != "Shutdown" ]; then kept_booted=$((kept_booted + 1)); continue; fi
+  case "$sim_tracked" in
+    *" $(printf '%s' "$udid" | tr 'a-f' 'A-F') "*) kept_tracked=$((kept_tracked + 1)); continue ;;
   esac
+  if building "$runner"; then kept_building=$((kept_building + 1)); continue; fi
+  gb=$(awk -v b="$bytes" 'BEGIN{printf "%.1f", b/1073741824}')
+  kb=$(( ${bytes:-0} / 1024 ))
+  # idle_h is -1 when the device's age cannot be read: never stale.
+  if [ "$idle_h" -ge "$SIM_STALE_H" ]; then
+    case "$known" in
+      *" $runner "*) why="untouched for ${idle_h}h" ;;
+      *) why="untouched for ${idle_h}h, no such runner here" ;;
+    esac
+    say "    ${gb} GB  delete ${name} ($udid): ${why}"
+    run xcrun simctl delete "$udid"
+    del_n=$((del_n + 1)); del_kb=$((del_kb + kb))
+  else
+    case "$known" in
+      *" $runner "*) ;;
+      *) kept_recent=$((kept_recent + 1)); continue ;;
+    esac
+    if ! awk -v b="$bytes" -v l="$sim_limit" 'BEGIN{exit !(b >= l*1073741824)}'; then
+      kept_recent=$((kept_recent + 1)); continue
+    fi
+    say "    ${gb} GB  erase ${name} ($udid)"
+    run xcrun simctl erase "$udid"
+    erase_n=$((erase_n + 1)); erase_kb=$((erase_kb + kb))
+  fi
   n=$((n + 1))
 done < <(xcrun simctl list devices -j 2>/dev/null | python3 -c '
 import json, os, re, sys, time
+from datetime import datetime
 try:
     devices = json.load(sys.stdin)["devices"]
 except Exception:
@@ -668,24 +722,39 @@ except Exception:
 for devs in devices.values():
     for d in devs:
         name = d.get("name", "")
-        # "ci-<runner> [<app>] <platform> <version>" (the kit and the repos),
-        # and "agent-shots-<runner>" (homelake ios-ci.yml, its agent-shots
-        # sheet: 4-6 GB each on ultra, 2026-11-05, never erased before).
+        # Only devices CI creates, by the names it gives them: the kit and the
+        # repos make one per runner, "ci-<runner> [<app>] <platform> <version>"
+        # (the kit ios-ci.yml; Jerv ci/sim.py: "ci-ultra-jerv-2 jerv iOS
+        # 27.0"), and homelake ios-ci.yml "agent-shots-<runner>" (4-6 GB each
+        # on ultra, 2026-11-05). Anything else is somebody else'"'"'s: the
+        # default set ("iPhone 17", "Apple TV"), the Fleet Runner lab
+        # ("fleet-explore-ios"), a session'"'"'s own ("hl-lanes-ios").
+        if name.startswith("fleet"):
+            continue
         m = re.match(r"ci-(\S+) (?:\S+ )?(iOS|tvOS|watchOS|visionOS|xrOS) [0-9.]+$", name) \
             or re.match(r"agent-shots-([A-Za-z0-9.-]+?)_*$", name)
         if not m or "|" in name:
             continue
-        # Days since the device last changed state (device.plist is rewritten
-        # at every boot and shutdown); 0 when it cannot be read.
-        idle = 0
+        # Hours since the device was last touched: the newer of device.plist
+        # (rewritten at every boot and shutdown) and lastBootedAt; -1 when
+        # neither can be read, which is never stale.
+        touched = None
         try:
             plist = os.path.join(os.path.dirname(d["dataPath"]), "device.plist")
-            idle = int((time.time() - os.path.getmtime(plist)) // 86400)
+            touched = os.path.getmtime(plist)
         except Exception:
             pass
+        try:
+            booted = datetime.fromisoformat(d["lastBootedAt"].replace("Z", "+00:00")).timestamp()
+            touched = booted if touched is None else max(touched, booted)
+        except Exception:
+            pass
+        idle = -1 if touched is None else max(0, int((time.time() - touched) // 3600))
         print("|".join([d["udid"], d.get("state", ""), str(d.get("dataPathSize", 0)), m.group(1), str(idle), name]))
 ')
-say "    ${n} devices"
+del_gb=$(awk -v k="$del_kb" 'BEGIN{printf "%.1f", k/1048576}')
+erase_gb=$(awk -v k="$erase_kb" 'BEGIN{printf "%.1f", k/1048576}')
+say "    ${n} devices: delete ${del_n} (${del_gb} GB), erase ${erase_n} (up to ${erase_gb} GB); kept ${kept_booted} booted, ${kept_tracked} in use by Load Warden or Fleet Runner, ${kept_building} on a building runner, ${kept_recent} recent"
 
 # ---------------------------------------------------------------------------
 # A runner's leftover self-update. The runner unpacks a new version into

@@ -78,7 +78,10 @@ Used by `cleanup.sh` and `cleanupctl.sh`. See
 | `FLEET_WORK_TRIM_KEEP` | (none) | Space-separated shell patterns of cache names in `_work/<repo>/` that the pressure rule leaves alone (for example `venvs DerivedData-*`). The unused rule still applies. |
 | `FLEET_WORK_TRIM_LOG` | `logs/work-trim.log` | Where the hook writes what it gave back, one block per job. |
 | `FLEET_CLEANUP_SIM_MAX_GB` | `3` | Erase an idle runner's `ci-` or `agent-shots-` simulator past this size. |
-| `FLEET_CLEANUP_SIM_IDLE_DAYS` | `2` | Delete (not erase) an idle runner's `ci-` or `agent-shots-` simulator that has not been booted for this many days; its job creates it again. |
+| `FLEET_CLEANUP_SIM_STALE_HOURS` | `24` | Delete (not erase) a `ci-` or `agent-shots-` simulator that is shut down and untouched (device.plist, `lastBootedAt`) for this many hours, unless its runner is building or Load Warden or the Fleet Runner registry lists it; its job creates it again. Runs in the daily full pass. |
+| `FLEET_CLEANUP_SIM_IDLE_DAYS` | (unset) | The old setting, in days; used when `FLEET_CLEANUP_SIM_STALE_HOURS` is not set. |
+| `FLEET_CLEANUP_WARDEN` | `warden` | Load Warden's CLI. A device `warden status --json` names is kept; a warden that does not answer stops the simulator pass. Empty skips the check. |
+| `FLEET_CLEANUP_LAB_DEVICES_URL` | `http://127.0.0.1:8789/api/devices` | The Fleet Runner device registry. A device it lists is kept; a registry that does not answer stops the simulator pass. Set it empty on a host without Fleet Runner. |
 | `FLEET_CLEANUP_DIAG_DAYS` | `5` | Delete runner `_diag` logs older than this. |
 | `FLEET_CLEANUP_TMPDIR` | the user's temp folder | Where Robolectric's unpacked native runtimes (`robolectric-*`) are removed once a day old. |
 | `FLEET_CLEANUP_SIM_PRESSURE_GB` | `1` | ...and past this under pressure. |
