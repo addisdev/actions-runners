@@ -307,9 +307,12 @@ What it refuses to do:
 - **Nothing host-wide while any runner is building.** Deleting DerivedData out
   from under a live `xcodebuild` produces a failure that looks like a code
   problem and is not reproducible afterwards.
-- **It never touches a simulator outside CI.** Only devices named `ci-…` are
-  erased, only while shut down, and never runs `simctl shutdown all` or kills
-  `CoreSimulatorService`. `simctl delete unavailable` removes only devices
+- **It never touches a simulator outside CI.** Only devices named `ci-…` or
+  `agent-shots-…` are erased or deleted, only while shut down, never one Load
+  Warden or the Fleet Runner registry lists (if either does not answer, none
+  is), and never runs `simctl shutdown all` or kills `CoreSimulatorService`.
+  The default device set (`iPhone 17`, `Apple TV`, …), the lab's `fleet-…`
+  devices and anything a person named are left alone. `simctl delete unavailable` removes only devices
   whose runtime is already gone.
 - **It never touches a runner's checkouts or build caches in `_work`.** Wiping
   them makes every job re-clone and recompile from cold. The one exception is

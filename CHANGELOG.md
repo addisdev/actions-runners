@@ -10,6 +10,20 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Added
 
+- **Stale CI simulators go after 24 hours, not 2 days.** `cleanup.sh`'s
+  daily full pass (the cleanup LaunchAgent) deletes a `ci-<runner> …` or
+  `agent-shots-<runner>` simulator that is shut down and untouched for
+  `FLEET_CLEANUP_SIM_STALE_HOURS` (24; the newer of device.plist and
+  `lastBootedAt`), its runner not building. Never a booted one, never one
+  Load Warden (`warden status --json`) or the Fleet Runner registry
+  (`:8789/api/devices`, which lists two `ci-` watchOS devices on ultra) names,
+  and if either does not answer, nothing changes in that pass. A device of a
+  runner that no longer exists now waits the 24 h too, and one whose age
+  cannot be read is never deleted. `simctl delete unavailable` runs while
+  jobs run too: a device without its runtime cannot be in use. The dry run
+  prints each device with its size and a summary line. ultra, 2026-11-05: 63
+  devices, 50 GB under `CoreSimulator/Devices`; the default set, the lab's
+  `fleet-…` devices and sessions' own (`hl-lanes-ios`) stay.
 - **Priority lane in admission.** A PR labelled `priority` gets the next free
   slot in its lane on the host; jobs without the label wait while one of its
   jobs waits (`hooks/common.sh`, PRIORITY LANE). `cockpit priority <repo> <pr>`

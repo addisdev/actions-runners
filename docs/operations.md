@@ -126,6 +126,10 @@ What it cleans:
 - DerivedData older than 7 days (keyed on mtime, so actively used projects are
   never candidates)
 - Unavailable simulators (`xcrun simctl delete unavailable`)
+- CI simulators (`ci-<runner> …`, `agent-shots-<runner>`) shut down and
+  untouched for `FLEET_CLEANUP_SIM_STALE_HOURS` (24), unless Load Warden or the
+  Fleet Runner registry lists them; a dry run prints each with its size and a
+  summary line of what it deletes, erases and keeps
 - Runner `_diag` logs older than 14 days
 - Each idle runner's warm build caches beside its checkout
   (`_work/<repo>/DerivedData-*`, `spm-*`, `.build-cache-*`) with nothing

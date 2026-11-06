@@ -42,13 +42,17 @@ if [ -f "$T/usable" ]; then cat "$T/usable"; else cat "$T/free"; fi
 EOF
   : > "$T/busy"
   : > "$T/calls"
-  cat > "$T/sims.json" <<'EOF'
+  # U-GONE was last touched in January: stale. The others have no readable
+  # age, which is never stale.
+  mkdir -p "$T/sim/GONE/data"
+  touch -t 202601010000 "$T/sim/GONE/device.plist"
+  cat > "$T/sims.json" <<EOF
 {"devices": {
   "com.apple.CoreSimulator.SimRuntime.iOS-27-0": [
     {"name": "ci-RL-web iOS 27.0", "udid": "U-WEB", "state": "Shutdown", "dataPathSize": 5368709120},
     {"name": "ci-RL-android iOS 27.0", "udid": "U-ANDROID", "state": "Shutdown", "dataPathSize": 1610612736},
     {"name": "ci-RL-ios iOS 27.0", "udid": "U-IOS", "state": "Booted", "dataPathSize": 6442450944},
-    {"name": "ci-RL-gone iOS 27.0", "udid": "U-GONE", "state": "Shutdown", "dataPathSize": 1048576},
+    {"name": "ci-RL-gone iOS 27.0", "udid": "U-GONE", "state": "Shutdown", "dataPathSize": 1048576, "dataPath": "$T/sim/GONE/data"},
     {"name": "iPhone 17", "udid": "U-PERSON", "state": "Shutdown", "dataPathSize": 12884901888}
   ]}}
 EOF
@@ -89,9 +93,13 @@ EOF
   chmod +x "$T/bin/"*
 }
 
+# No Load Warden and no Fleet Runner registry unless a case stubs them: the
+# machine running the tests may well have both.
 clean() {
   HOME="$T/home" FLEET_ROOT="$T" PATH="$T/bin:$PATH" ANDROID_AVD_HOME="" FLEET_CLEANUP_TMPDIR="$T/tmp" \
-    FLEET_PS="$T/bin/fakeps" FLEET_ADB="$T/bin/adb" bash "$T/cleanup.sh" "$@" 2>&1
+    FLEET_PS="$T/bin/fakeps" FLEET_ADB="$T/bin/adb" \
+    FLEET_CLEANUP_WARDEN="${TEST_WARDEN:-}" FLEET_CLEANUP_LAB_DEVICES_URL="${TEST_LAB_URL:-}" \
+    bash "$T/cleanup.sh" "$@" 2>&1
 }
 calls() { grep -c "$1" "$T/calls" 2>/dev/null; }
 gone() { [ -e "$1" ] && echo kept || echo removed; }
@@ -251,13 +259,14 @@ cat > "$T/sims.json" <<'EOF'
     {"name": "iPhone 17 Pro", "udid": "U-PERSON", "state": "Shutdown", "dataPathSize": 12884901888}
   ],
   "com.apple.CoreSimulator.SimRuntime.watchOS-27-0": [
-    {"name": "ci-RL-gone jerv watchOS 27.0", "udid": "U-JGONE", "state": "Shutdown", "dataPathSize": 1048576}
+    {"name": "ci-RL-gone jerv watchOS 27.0", "udid": "U-JGONE", "state": "Shutdown", "dataPathSize": 1048576, "dataPath": "$T/sim/GONE/data"}
   ]}}
 EOF
+sed -i '' "s#\$T#$T#g" "$T/sims.json" 2>/dev/null || sed -i "s#\$T#$T#g" "$T/sims.json"
 clean --apply > "$T/out"
 ok "erased an idle runner's app device over 3 GB" "$(calls 'simctl erase U-JERV')" "1"
 ok "left a busy runner's app device" "$(calls 'U-JWEB')" "0"
-ok "deleted an app device whose runner is gone" "$(calls 'simctl delete U-JGONE')" "1"
+ok "deleted a stale app device whose runner is gone" "$(calls 'simctl delete U-JGONE')" "1"
 ok "never touched a device outside CI" "$(calls 'U-PERSON')" "0"
 
 echo "== idle runners' AVDs and leftover self-updates go, nothing else =="
@@ -577,7 +586,7 @@ cat > "$T/sims.json" <<EOF
 {"devices": {
   "com.apple.CoreSimulator.SimRuntime.iOS-27-0": [
     {"name": "agent-shots-RL-ios_", "udid": "U-SHOTS", "state": "Shutdown", "dataPathSize": 5368709120, "dataPath": "$T/sim/SHOTS/data"},
-    {"name": "agent-shots-RL-gone", "udid": "U-SHOTSGONE", "state": "Shutdown", "dataPathSize": 1048576},
+    {"name": "agent-shots-RL-gone", "udid": "U-SHOTSGONE", "state": "Shutdown", "dataPathSize": 1048576, "dataPath": "$T/sim/OLD/data"},
     {"name": "ci-RL-android iOS 27.0", "udid": "U-OLD", "state": "Shutdown", "dataPathSize": 1048576, "dataPath": "$T/sim/OLD/data"},
     {"name": "ci-RL-web iOS 27.0", "udid": "U-NEW", "state": "Shutdown", "dataPathSize": 1048576, "dataPath": "$T/sim/NEW/data"},
     {"name": "iPhone 17", "udid": "U-PERSON", "state": "Shutdown", "dataPathSize": 12884901888, "dataPath": "$T/sim/OLD/data"}
@@ -589,6 +598,89 @@ ok "deleted an agent-shots device whose runner is gone" "$(calls 'simctl delete 
 ok "deleted a CI device not booted for days" "$(calls 'simctl delete U-OLD')" "1"
 ok "kept a small CI device used today" "$(calls 'U-NEW')" "0"
 ok "never touched a device outside CI, however old" "$(calls 'U-PERSON')" "0"
+
+echo "== stale CI simulators: 24 h untouched, shut down, CI-made, nobody's =="
+setup 93
+echo 120 > "$T/free"
+echo 1 > "$T/.cleanup-last-full"
+ago() { date -r $(( $(date +%s) - $1 * 3600 )) +%Y%m%d%H%M; }
+for u in OLD25 NEW23 BOOT WARD LAB BUSY EXPLORE DEFAULT SESSION; do
+  mkdir -p "$T/sim/$u/data"; touch -t "$(ago 25)" "$T/sim/$u/device.plist"
+done
+touch -t "$(ago 23)" "$T/sim/NEW23/device.plist"
+# lastBootedAt newer than device.plist counts as a touch.
+mkdir -p "$T/sim/REBOOT/data"; touch -t "$(ago 30)" "$T/sim/REBOOT/device.plist"
+REBOOT_AT="$(date -u -r $(( $(date +%s) - 2 * 3600 )) +%Y-%m-%dT%H:%M:%SZ)"
+echo "RL-ios" > "$T/busy"
+d() { printf '{"name": "%s", "udid": "%s", "state": "%s", "dataPathSize": %s, "dataPath": "%s"%s}' "$1" "$2" "$3" "$4" "$T/sim/$5/data" "${6:-}"; }
+cat > "$T/sims.json" <<EOF
+{"devices": {
+  "com.apple.CoreSimulator.SimRuntime.iOS-27-0": [
+    $(d "ci-RL-web iOS 27.0" U-OLD25 Shutdown 2147483648 OLD25),
+    $(d "ci-RL-android iOS 27.0" U-NEW23 Shutdown 1048576 NEW23),
+    $(d "agent-shots-RL-web_" U-BOOT Booted 5368709120 BOOT),
+    $(d "ci-RL-web jerv iOS 27.0" U-WARD Shutdown 1048576 WARD),
+    $(d "ci-RL-web watchOS 27.0" U-LAB Shutdown 1048576 LAB),
+    $(d "ci-RL-ios iOS 27.0" U-BUSY Shutdown 1048576 BUSY),
+    $(d "ci-RL-android tvOS 27.0" U-REBOOT Shutdown 1048576 REBOOT ", \"lastBootedAt\": \"$REBOOT_AT\""),
+    $(d "fleet-explore-ios" U-EXPLORE Shutdown 2147483648 EXPLORE),
+    $(d "iPhone 17" U-DEFAULT Shutdown 4294967296 DEFAULT),
+    $(d "hl-lanes-ios" U-SESSION Shutdown 2147483648 SESSION)
+  ]}}
+EOF
+printf '#!/usr/bin/env bash\n[ "$1 $2" = "status --json" ] || exit 2\necho %s\n' \
+  "'{\"resources\":[{\"kind\":\"simDevice\",\"key\":\"U-WARD\"}]}'" > "$T/bin/fakewarden"
+chmod +x "$T/bin/fakewarden"
+# The registry lists devices by UDID; the stub is curl, as the real call is.
+cat > "$T/bin/curl" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *lab.test/api/devices*) [ -f "$T/lab-down" ] && exit 7; echo '{"devices":[{"device_id":"U-LAB","kind":"simulator"}]}' ;;
+  *) exit 7 ;;
+esac
+EOF
+chmod +x "$T/bin/curl"
+# The fake UDIDs are not UUID-shaped, so the stubs answer with real-looking
+# ones mapped back: simpler to give the devices UUIDs. Map them here.
+for pair in U-WARD:AAAAAAAA-0000-0000-0000-000000000001 U-LAB:AAAAAAAA-0000-0000-0000-000000000002; do
+  from="${pair%%:*}"; to="${pair#*:}"
+  sed -i '' "s/$from/$to/g" "$T/sims.json" "$T/bin/fakewarden" "$T/bin/curl" 2>/dev/null \
+    || sed -i "s/$from/$to/g" "$T/sims.json" "$T/bin/fakewarden" "$T/bin/curl"
+done
+export TEST_WARDEN="$T/bin/fakewarden" TEST_LAB_URL="http://lab.test/api/devices"
+clean > "$T/out"
+ok "a dry run deletes nothing" "$(calls 'simctl delete')" "0"
+ok "...and says what it would, with the size" \
+  "$(grep -c '2.0 GB  delete ci-RL-web iOS 27.0 (U-OLD25): untouched for 2[5-6]h' "$T/out")" "1"
+ok "...and sums it up" \
+  "$(grep -c 'delete 1 (2.0 GB), erase 0 (up to 0.0 GB); kept 1 booted, 2 in use by Load Warden or Fleet Runner, 1 on a building runner, 2 recent' "$T/out")" "1"
+clean --apply > "$T/out"
+ok "deleted the CI device untouched for 25 h" "$(calls 'simctl delete U-OLD25')" "1"
+ok "kept one touched 23 h ago" "$(calls 'U-NEW23')" "0"
+ok "kept one booted 2 h ago, whatever device.plist says" "$(calls 'U-REBOOT')" "0"
+ok "never a booted device" "$(calls 'U-BOOT')" "0"
+ok "never one Load Warden tracks" "$(calls 'AAAAAAAA-0000-0000-0000-000000000001')" "0"
+ok "never one the Fleet Runner registry lists" "$(calls 'AAAAAAAA-0000-0000-0000-000000000002')" "0"
+ok "never one whose runner is building" "$(calls 'U-BUSY')" "0"
+ok "never the lab's, the default set or a session's own" "$(grep -cE 'U-(EXPLORE|DEFAULT|SESSION)' "$T/calls")" "0"
+ok "deleted unavailable devices with a runner building" "$(calls 'simctl delete unavailable')" "1"
+: > "$T/calls"
+TEST_WARDEN="$T/bin/nowarden-here" clean --apply > "$T/out"
+ok "no warden on PATH is no tracking, not unsure" "$(calls 'simctl delete U-OLD25')" "1"
+: > "$T/calls"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$T/bin/fakewarden"
+clean --apply > "$T/out"
+ok "a warden that does not answer changes nothing" "$(grep -cE 'simctl (delete|erase) U-' "$T/calls")" "0"
+ok "...and says why" "$(grep -c 'changing nothing: Load Warden did not answer' "$T/out")" "1"
+: > "$T/calls"
+TEST_WARDEN="" ; touch "$T/lab-down"
+clean --apply > "$T/out"
+ok "an unreachable lab registry changes nothing" "$(grep -cE 'simctl (delete|erase) U-' "$T/calls")" "0"
+rm -f "$T/lab-down"
+: > "$T/calls"
+TEST_LAB_URL="" FLEET_CLEANUP_SIM_IDLE_DAYS=2 clean --apply > "$T/out"
+ok "the old days setting still counts, as hours" "$(calls 'simctl delete U-OLD25')" "0"
+unset TEST_WARDEN TEST_LAB_URL
 
 echo "== Robolectric runtimes a day old leave the temp folder =="
 setup 92
