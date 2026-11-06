@@ -21,6 +21,9 @@ commands:
                       --recover (with --pr): recover this PR's orphaned runs (force-cancel,
                       then re-run) instead of stopping; recorded in the dashboard's action log
   top                 the host's top CPU users, naming Spotlight when it is the culprit
+  priority <repo> <pr>  put the priority label on a PR (--off takes it off): its CI jobs take the
+                      next free admission slot on the host, ahead of jobs without it
+                      (--label <name> if the host's FLEET_ADMIT_PRIORITY_LABEL is not "priority")
   load                host load1 p50/p90 by number of busy runners (--days N, default 7),
                       to re-tune the admission lanes' heavy limit
   sentinel            check the host out of band (SSH, GitHub, the other machine) —
@@ -418,6 +421,17 @@ case "wait":
     case .refused(let e):
         fail(e)
     }
+case "priority":
+    guard opts.positional.count == 2, let pr = PriorityLabel.prNumber(opts.positional[1]) else {
+        fail("usage: cockpit priority <repo> <pr> [--off] [--label <name>]", code: 64)
+    }
+    let label = opts.flags["label"].flatMap { $0 == "true" ? nil : $0 } ?? PriorityLabel.defaultName
+    let on = opts.flags["off"] == nil
+    guard let full = await GHChecksProbe.fullName(opts.positional[0], glance: nil) else {
+        fail("cannot tell which repository \(opts.positional[0]) is: give it as owner/name", code: 3)
+    }
+    if let err = await PriorityLabel.apply(repo: full, pr: pr, on: on, label: label) { fail(err) }
+    print(PriorityLabel.text(repo: full, pr: pr, on: on, label: label))
 case "top":
     let alias = opts.via.first ?? defaultAliases[0]
     guard let top = await HostProbe.topCPU(alias: alias) else { fail("could not run ps on \(alias)", code: 3) }

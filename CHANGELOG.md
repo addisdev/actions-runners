@@ -10,6 +10,24 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Added
 
+- **Priority lane in admission.** A PR labelled `priority` gets the next free
+  slot in its lane on the host; jobs without the label wait while one of its
+  jobs waits (`hooks/common.sh`, PRIORITY LANE). `cockpit priority <repo> <pr>`
+  adds the label (creating it in the repo) and `--off` removes it. The hook
+  asks the daemon (`GET /api/job-priority`, the run's PR and its labels with
+  the daemon's token) once a job has to wait, then every 30 s, so a label
+  added while a job waits takes effect. Starvation guard: a job held 45 min
+  (`FLEET_ADMIT_PRIORITY_STARVE_MIN`) behind a priority job stops yielding.
+  Held jobs read `held: a priority PR is next: <repo>#<pr>` in `cockpit why`,
+  the Overview and the Capacity tab; the PR's own runner reads `held
+  (priority PR #N): …`. New log events `hold-reason` (a hold's reason changed)
+  and `promoted` (the guard), and `priority`/`pr` columns. A runner whose
+  newest line is `continued-hold` now counts as waiting too: on a strict host
+  every hold past `FLEET_ADMIT_MAX_WAIT_S` dropped out of "Waiting now".
+  ultra, 2026-11-05: the owner's PR sat for hours behind 40-odd queued jobs
+  from parallel Claude sessions. It orders the host's slots, not GitHub's
+  queue: a job still waiting at GitHub for one of its repo's runners waits for
+  one first.
 - **Each job gives its disk back as it ends** (`hooks/work-trim.sh`, run last
   by the job-completed hook). The checkout's ignored output (`build/`,
   `node_modules`, test output) goes every time, since the next checkout's

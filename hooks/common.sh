@@ -198,6 +198,57 @@ fi
 # The limit a log line reports: the total cap that is actually deciding.
 if [ "$ADMIT_LANES" = enforce ]; then ADMIT_LOG_LIMIT="$ADMIT_TOTAL_MAX"; else ADMIT_LOG_LIMIT="$ADMIT_MAX"; fi
 
+# PRIORITY LANE. ultra, 2026-11-05: 40-odd jobs queued, most of them PRs that
+# parallel Claude sessions opened under the owner's account, and the owner's
+# own PR waited behind them for hours. A job whose run belongs to a PR carrying
+# FLEET_ADMIT_PRIORITY_LABEL (`priority`; `cockpit priority <repo> <pr>` adds
+# it) goes to the head of its line: the next free slot in its lane is its, and
+# every job without the label waits while it does. The limits themselves do
+# not move: a priority job still waits for a free slot, it only waits first.
+#
+# Starvation guard: a job that has waited FLEET_ADMIT_PRIORITY_STARVE_MIN
+# minutes (45; 0 = never) while a priority job was ahead of it stops yielding,
+# by joining the priority line in its arrival order: being older than the
+# priority job, it takes the next slot. It still waits for a free slot.
+#
+# The hook learns the label from the daemon (GET /api/job-priority, next to
+# /api/run-status), which reads the run's PR and its labels with its own
+# token; a job does not ask unless it has to wait, and asks again every
+# FLEET_ADMIT_PRIORITY_CHECK_S while it does, so a label added to a PR whose
+# job is already waiting takes effect within that. No daemon, no priority.
+case "${FLEET_ADMIT_PRIORITY:-on}" in
+  off | 0 | no | false) ADMIT_PRIORITY_ON=0 ;;
+  *) ADMIT_PRIORITY_ON=1 ;;
+esac
+ADMIT_PRIORITY_LABEL="${FLEET_ADMIT_PRIORITY_LABEL:-priority}"
+ADMIT_PRIORITY_STARVE_S=$(( 10#$(admit_int "${FLEET_ADMIT_PRIORITY_STARVE_MIN:-}" 45) * 60 ))
+# In seconds, for the tests: a guard measured in minutes cannot be waited out.
+ADMIT_PRIORITY_STARVE_S="$(admit_int "${FLEET_ADMIT_PRIORITY_STARVE_S:-}" "$ADMIT_PRIORITY_STARVE_S")"
+ADMIT_PRIORITY_CHECK_S="$(admit_int "${FLEET_ADMIT_PRIORITY_CHECK_S:-}" 30)"
+[ "$ADMIT_PRIORITY_CHECK_S" -lt 5 ] && ADMIT_PRIORITY_CHECK_S=5
+ADMIT_PRIORITIES="$ADMIT_STATE/priority"
+if [ -n "${FLEET_ADMIT_PRIORITY_URL+x}" ]; then
+  ADMIT_PRIORITY_URL="$FLEET_ADMIT_PRIORITY_URL"
+elif [ -n "${FLEET_ADMIT_STATUS_URL+x}" ]; then
+  case "$FLEET_ADMIT_STATUS_URL" in
+    '') ADMIT_PRIORITY_URL="" ;;
+    */api/run-status) ADMIT_PRIORITY_URL="${FLEET_ADMIT_STATUS_URL%/api/run-status}/api/job-priority" ;;
+    *) ADMIT_PRIORITY_URL="http://127.0.0.1:${FLEET_PORT:-7878}/api/job-priority" ;;
+  esac
+else
+  ADMIT_PRIORITY_URL="http://127.0.0.1:${FLEET_PORT:-7878}/api/job-priority"
+fi
+# This job: "" (no priority), label (its PR carries the label) or starved
+# (the guard above promoted it). ADMIT_PRIORITY_PR is the PR number.
+ADMIT_PRIORITY=""
+ADMIT_PRIORITY_PR=""
+# Set by admit_priority_head: the waiter at the head of the priority line.
+ADMIT_PRIORITY_HEAD=""
+ADMIT_PRIORITY_HEAD_KIND=""
+ADMIT_PRIORITY_HEAD_REPO=""
+ADMIT_PRIORITY_HEAD_PR=""
+ADMIT_PRIORITY_HEAD_SIM=0
+
 # Set by admit_classify (job-started.sh) or read back from the slot
 # (job-completed.sh). Empty while lanes are off.
 ADMIT_LANE=""
@@ -276,7 +327,7 @@ admit_log() {
   # waited_s is time this job spent waiting for a slot; ran_s is how long a
   # released slot was occupied. Separate fields because they are separate
   # quantities — the release used to report its occupancy as a wait.
-  printf '{"ts":%s,"event":"%s","mode":"%s","runner":"%s","repo":"%s","run":"%s","job":"%s","waited_s":%s,"ran_s":%s,"busy":%s,"limit":%s,"owner_kind":"%s","owner_pid":"%s","reason":"%s"%s}\n' \
+  printf '{"ts":%s,"event":"%s","mode":"%s","runner":"%s","repo":"%s","run":"%s","job":"%s","waited_s":%s,"ran_s":%s,"busy":%s,"limit":%s,"owner_kind":"%s","owner_pid":"%s","reason":"%s"%s%s}\n' \
     "$(admit_now)" \
     "$(admit_json_str "$event")" \
     "$(admit_json_str "$ADMIT_MODE")" \
@@ -288,8 +339,18 @@ admit_log() {
     "$(admit_json_str "$ADMIT_OWNER_KIND")" \
     "$(admit_json_str "$ADMIT_OWNER_PID")" \
     "$(admit_json_str "$reason")" \
+    "$(admit_priority_json)" \
     "$(admit_lane_json)" \
     >> "$ADMIT_LOG" 2>/dev/null || true
+}
+
+# The priority fields of a log line, with their leading comma, or nothing for
+# a job without priority: the line is then exactly the one it always was.
+# priority is label or starved, pr the PR number when the daemon named one.
+admit_priority_json() {
+  [ -n "$ADMIT_PRIORITY" ] || return 0
+  printf ',"priority":"%s","pr":"%s"' \
+    "$(admit_json_str "$ADMIT_PRIORITY")" "$(admit_json_str "$ADMIT_PRIORITY_PR")"
 }
 
 # The lane fields of a log line, with their leading comma, or nothing while
@@ -477,7 +538,10 @@ admit_join_waiters() {
 }
 
 admit_leave_waiters() {
-  [ -n "$ADMIT_WAITER" ] && rm -f "$ADMIT_WAITER" 2>/dev/null
+  if [ -n "$ADMIT_WAITER" ]; then
+    rm -f "$ADMIT_PRIORITIES/${ADMIT_WAITER##*/}" 2>/dev/null
+    rm -f "$ADMIT_WAITER" 2>/dev/null
+  fi
   ADMIT_WAITER=""
 }
 
@@ -491,6 +555,145 @@ admit_reap_waiters() {
       rm -f "$f" 2>/dev/null
     fi
   done
+  # A priority mark outlives its waiter only when the hook was killed.
+  [ -d "$ADMIT_PRIORITIES" ] || return 0
+  for f in "$ADMIT_PRIORITIES"/*; do
+    [ -f "$f" ] || continue
+    [ -f "$ADMIT_WAITERS/${f##*/}" ] || rm -f "$f" 2>/dev/null
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Priority lane (see PRIORITY LANE above). A priority waiter keeps its waiter
+# file, and so its place by arrival, and adds a mark of the same name under
+# $ADMIT_PRIORITIES. The head of a line is the oldest live marked waiter in
+# it when there is one, else the oldest waiter, as before. Like the lane
+# functions these return 0 unless they are tests (bash -e, see Lanes below).
+# ---------------------------------------------------------------------------
+
+# Asks the daemon about this job's run. Prints the PR number (possibly empty)
+# and returns 0 when the run's PR carries the label; 1 when it does not; 2
+# when there is no answer (no URL, no curl, the daemon down or too old to know
+# the route), which leaves the job's priority as it was.
+admit_priority_from_daemon() {
+  local repo="${GITHUB_REPOSITORY:-}" run="${GITHUB_RUN_ID:-}" body pr
+  [ -n "$repo" ] && [ -n "$run" ] || return 2
+  [ -n "$ADMIT_PRIORITY_URL" ] && command -v curl >/dev/null 2>&1 || return 2
+  body="$(curl -fsS --max-time 3 -G "$ADMIT_PRIORITY_URL" \
+    --data-urlencode "repo=$repo" --data-urlencode "run=$run" \
+    --data-urlencode "label=$ADMIT_PRIORITY_LABEL" 2>/dev/null)" || return 2
+  case "$body" in
+    *'"priority":true'*) ;;
+    *'"priority":false'*) return 1 ;;
+    *) return 2 ;;
+  esac
+  pr="$(printf '%s' "$body" | sed -n 's/.*"pr":\([0-9][0-9]*\).*/\1/p' | head -1)"
+  printf '%s' "$pr"
+  return 0
+}
+
+# Writes ($1 = label or starved) or removes (no $1) this waiter's mark.
+# Written aside and renamed (a dotfile, which no glob below lists), so a
+# reader never sees half of one.
+admit_priority_mark() {
+  local kind="${1:-}" f tmp
+  [ -n "$ADMIT_WAITER" ] || return 0
+  f="$ADMIT_PRIORITIES/${ADMIT_WAITER##*/}"
+  if [ -z "$kind" ]; then
+    rm -f "$f" 2>/dev/null
+    return 0
+  fi
+  mkdir -p "$ADMIT_PRIORITIES" 2>/dev/null || return 0
+  tmp="$ADMIT_PRIORITIES/.mark-$$"
+  if printf 'pid=%s\nkind=%s\nrepo=%s\npr=%s\nrunner=%s\n' \
+    "$$" "$kind" "${GITHUB_REPOSITORY:-}" "$ADMIT_PRIORITY_PR" "${RUNNER_NAME:-}" \
+    > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$f" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  fi
+  return 0
+}
+
+# Asks again whether this job is a priority job, and marks or unmarks it. A
+# job the guard promoted stays promoted; one whose label was removed goes back
+# to its place; no answer changes nothing.
+admit_priority_refresh() {
+  local pr="" rc=0
+  [ "$ADMIT_PRIORITY_ON" = 1 ] && [ -n "$ADMIT_WAITER" ] || return 0
+  pr="$(admit_priority_from_daemon)" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    ADMIT_PRIORITY=label
+    ADMIT_PRIORITY_PR="$pr"
+    admit_priority_mark label
+  elif [ "$rc" -eq 1 ] && [ "$ADMIT_PRIORITY" = label ]; then
+    ADMIT_PRIORITY=""
+    ADMIT_PRIORITY_PR=""
+    admit_priority_mark
+  fi
+  return 0
+}
+
+# Sets ADMIT_PRIORITY_HEAD (the waiter file at the head of the priority line,
+# empty when no live waiter is marked) and its kind, repo, PR, and whether it
+# is a Simulator job (ADMIT_PRIORITY_HEAD_SIM). $1 = heavy or light (that line
+# only) or any; $2 = Simulator jobs running, to skip a Simulator job the
+# Simulator limit holds, as the plain line does; empty skips nothing.
+admit_priority_head() {
+  local want="${1:-any}" simulator_busy="${2:-}" f name pid runner best="" mark
+  ADMIT_PRIORITY_HEAD=""
+  ADMIT_PRIORITY_HEAD_KIND=""
+  ADMIT_PRIORITY_HEAD_REPO=""
+  ADMIT_PRIORITY_HEAD_PR=""
+  ADMIT_PRIORITY_HEAD_SIM=0
+  [ "$ADMIT_PRIORITY_ON" = 1 ] && [ -d "$ADMIT_PRIORITIES" ] || return 0
+  for f in "$ADMIT_PRIORITIES"/*; do
+    [ -f "$f" ] || continue
+    name="${f##*/}"
+    [ -f "$ADMIT_WAITERS/$name" ] || continue
+    if [ "$want" != any ]; then
+      admit_waiter_line_of "$name"
+      [ "$ADMIT_WAITER_LINE" = "$want" ] || continue
+    fi
+    pid="$(sed -n 's/^pid=//p' "$f" 2>/dev/null | head -1)"
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
+    if [ -n "$simulator_busy" ] && [ "$ADMIT_SIMULATOR_MAX" -gt 0 ] \
+      && [ "$simulator_busy" -ge "$ADMIT_SIMULATOR_MAX" ]; then
+      runner="$(sed -n 's/^runner=//p' "$f" 2>/dev/null | head -1)"
+      admit_runner_matches "$runner" && continue
+    fi
+    if [ -z "$best" ] || [ "$name" \< "$best" ]; then best="$name"; fi
+  done
+  [ -n "$best" ] || return 0
+  ADMIT_PRIORITY_HEAD="$ADMIT_WAITERS/$best"
+  mark="$ADMIT_PRIORITIES/$best"
+  ADMIT_PRIORITY_HEAD_KIND="$(sed -n 's/^kind=//p' "$mark" 2>/dev/null | head -1)"
+  ADMIT_PRIORITY_HEAD_REPO="$(sed -n 's/^repo=//p' "$mark" 2>/dev/null | head -1)"
+  ADMIT_PRIORITY_HEAD_PR="$(sed -n 's/^pr=//p' "$mark" 2>/dev/null | head -1)"
+  if [ "$ADMIT_SIMULATOR_MAX" -gt 0 ]; then
+    runner="$(sed -n 's/^runner=//p' "$mark" 2>/dev/null | head -1)"
+    admit_runner_matches "$runner" && ADMIT_PRIORITY_HEAD_SIM=1
+  fi
+  return 0
+}
+
+# True when the last admit_priority_head found a labelled job ahead of this
+# one: the one case where this job is held for priority rather than order. A
+# promoted (starved) head is just an older job, and reads as one.
+admit_yielding_to_priority() {
+  [ -n "$ADMIT_PRIORITY_HEAD" ] \
+    && [ "$ADMIT_PRIORITY_HEAD" != "$ADMIT_WAITER" ] \
+    && [ "$ADMIT_PRIORITY_HEAD_KIND" = label ]
+}
+
+# The hold reason while yielding: "a priority PR is next: app#12". The dashboard
+# shows it as "held: a priority PR is next: app#12".
+admit_priority_reason() {
+  local repo="${ADMIT_PRIORITY_HEAD_REPO##*/}"
+  if [ -n "$ADMIT_PRIORITY_HEAD_PR" ]; then
+    printf 'a priority PR is next: %s#%s' "${repo:-?}" "$ADMIT_PRIORITY_HEAD_PR"
+  else
+    printf 'a priority PR is next: %s' "${repo:-?}"
+  fi
 }
 
 # True when the Runner.Worker this hook belongs to has exited. GitHub cancels a
@@ -566,6 +769,11 @@ admit_waiter_is_first_eligible() {
   local simulator_busy="$1" f first="" runner
   [ -n "$ADMIT_WAITER" ] || return 1
   admit_reap_waiters
+  admit_priority_head any "$simulator_busy"
+  if [ -n "$ADMIT_PRIORITY_HEAD" ]; then
+    [ "$ADMIT_PRIORITY_HEAD" = "$ADMIT_WAITER" ]
+    return
+  fi
   for f in "$ADMIT_WAITERS"/*; do
     [ -f "$f" ] || continue
     runner="$(sed -n 's/^runner=//p' "$f" 2>/dev/null | head -1)"
@@ -597,6 +805,14 @@ admit_waiter_is_first_eligible() {
 admit_waiting_behind_older() {
   local first pid runner
   [ -n "$ADMIT_WAITER" ] && [ -f "$ADMIT_WAITER" ] || return 1
+  # A marked waiter ahead of this one; a Simulator job at the head goes to
+  # the locked check, which may skip past it.
+  admit_priority_head any
+  if [ -n "$ADMIT_PRIORITY_HEAD" ]; then
+    [ "$ADMIT_PRIORITY_HEAD" = "$ADMIT_WAITER" ] && return 1
+    [ "$ADMIT_PRIORITY_HEAD_SIM" = 1 ] && return 1
+    return 0
+  fi
   first="$(LC_ALL=C ls -1 "$ADMIT_WAITERS" 2>/dev/null | head -1)"
   [ -n "$first" ] || return 1
   [ "$ADMIT_WAITERS/$first" = "$ADMIT_WAITER" ] && return 1
@@ -794,6 +1010,11 @@ admit_waiter_is_first_in_lane() {
   [ -n "$ADMIT_WAITER" ] || return 1
   [ "${2:-}" = noreap ] || admit_reap_waiters
   mine="$(admit_lane_line "$ADMIT_LANE")"
+  admit_priority_head "$mine" "$simulator_busy"
+  if [ -n "$ADMIT_PRIORITY_HEAD" ]; then
+    [ "$ADMIT_PRIORITY_HEAD" = "$ADMIT_WAITER" ]
+    return
+  fi
   for f in "$ADMIT_WAITERS"/*; do
     [ -f "$f" ] || continue
     name="${f##*/}"
@@ -817,6 +1038,12 @@ admit_waiting_behind_older_in_lane() {
   local name first="" mine pid runner
   [ -n "$ADMIT_WAITER" ] && [ -f "$ADMIT_WAITER" ] || return 1
   mine="$(admit_lane_line "$ADMIT_LANE")"
+  admit_priority_head "$mine"
+  if [ -n "$ADMIT_PRIORITY_HEAD" ]; then
+    [ "$ADMIT_PRIORITY_HEAD" = "$ADMIT_WAITER" ] && return 1
+    [ "$ADMIT_PRIORITY_HEAD_SIM" = 1 ] && return 1
+    return 0
+  fi
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     admit_waiter_line_of "$name"

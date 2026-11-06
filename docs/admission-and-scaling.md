@@ -346,6 +346,59 @@ their reliability justifies sharding.
 - [ ] Run `./cleanup.sh` (dry run) and confirm stale `__dirlock` removal is
       mentioned without errors.
 
+## Priority lane
+
+A PR carrying the label `priority` gets the next free slot in its
+[lane](#lanes) on the host, ahead of jobs without it: while one of its jobs
+waits in the hook, every job without the label in the same line waits too.
+ultra, 2026-11-05: 40-odd jobs were queued, most of them PRs parallel Claude
+sessions had opened under the owner's account, and the owner's own PR waited
+behind them for hours. It is on by default and does nothing until a PR has the
+label. Settings: [Priority lane variables](configuration.md#priority-lane-variables).
+
+**Using it.** `cockpit priority <repo> <pr>` adds the label (creating it in the
+repo the first time) and `cockpit priority <repo> <pr> --off` takes it off.
+`gh pr edit <pr> -R <owner/repo> --add-label priority` does the same. Nothing
+needs re-running: a job already waiting asks again every 30 s.
+
+**How it orders.** Lines stay as they are (one per lane, or one for the host
+with lanes off), and so do the limits: a priority job still waits for a free
+slot in its lane, it only waits first. A waiting priority job adds a mark of
+its waiter's name under `.admission/priority/`. The head of a line is the
+oldest live marked waiter in it when there is one, else the oldest waiter, as
+before; the lockless check and the locked one both read it, and a Simulator
+job the Simulator limit holds is skipped as in the plain line. A heavy
+priority job never holds a light job.
+
+**How a job knows.** Only a job that has to wait asks, then every
+`FLEET_ADMIT_PRIORITY_CHECK_S` (30) while it waits: `GET /api/job-priority`
+on the daemon ([API](api.md)), which reads the run's PR and that PR's labels
+with its own token, as `/api/run-status` does, cached 30 s per PR. A removed
+label sends the job back to its place by arrival. No daemon, no priority: the
+job waits in arrival order.
+
+**Starvation guard.** A job without the label that has waited
+`FLEET_ADMIT_PRIORITY_STARVE_MIN` minutes (45) while a priority job was ahead
+of it stops yielding: it joins the priority line in its arrival order, so,
+being older, it takes the next slot. It logs `promoted`. It is still held to
+the limits; "admitted anyway" means it no longer waits for priority jobs, not
+that it skips the heavy limit.
+
+**What it shows.** A job yielding to a priority job is held with the reason
+`a priority PR is next: <repo>#<pr>`: the runner reads `held: a priority PR
+is next: homelake#512` in `cockpit why` and on the Overview, and the Capacity
+tab's "Waiting now" table says the same. The priority job's own runner reads
+`held (priority PR #512): <reason>`. A hold whose reason changes kind after it
+began logs `hold-reason`, so the dashboard shows why a job waits now, and
+every line of a priority job carries `priority` (`label` or `starved`) and
+`pr`.
+
+**What it cannot do.** It orders the host's admission slots, not GitHub's
+queue. A job still queued at GitHub for a runner of its repository (every
+runner of that repo busy) is handed the next free runner in GitHub's order,
+and only then reaches the hook and goes first. When the owner's PR is in a
+repo whose runners are all taken, it still waits for one of them to finish.
+
 ## Night cap
 
 From 22:00 to 06:00 local time, at most 2 CI runners on the coordinator's host

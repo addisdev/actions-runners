@@ -415,6 +415,10 @@ export function openDb(path) {
     ['heavy_limit', 'INTEGER'], ['light_limit', 'INTEGER'], ['total_limit', 'INTEGER'],
     ['lane_would_hold', 'INTEGER'], ['lane_wait_s', 'INTEGER'], ['lane_reason', 'TEXT'],
   ]) addColumn(db, 'admission_events', col, type);
+  // The priority lane (hooks/common.sh, PRIORITY LANE): `priority` is label
+  // (the job's PR carries the label) or starved (promoted by the guard), `pr`
+  // the PR number. NULL for every job without priority.
+  for (const [col, type] of [['priority', 'TEXT'], ['pr', 'TEXT']]) addColumn(db, 'admission_events', col, type);
   // /api/job-class reads a job's recent releases by repo and job id.
   db.exec('CREATE INDEX IF NOT EXISTS idx_admission_repo_job ON admission_events(repo, job, ts DESC)');
 

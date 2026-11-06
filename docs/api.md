@@ -489,6 +489,17 @@ under `short_s` seconds (the hook's `FLEET_ADMIT_SHORT_JOB_S`; the host's
 treats as heavy. `source` is `admission`, `jobs` or `none`. Cached for 60 s.
 400 for a malformed query. No auth, like `/api/run-status`.
 
+### `GET /api/job-priority?repo=owner/name&run=123&label=priority`
+
+`{ "priority": true, "pr": 512, "label": "priority" }`: whether a workflow run
+belongs to a PR carrying the label (`label` defaults to `priority`, matched
+without regard to case), for the [priority lane](admission-and-scaling.md#priority-lane).
+`hooks/job-started.sh` asks once a job has to wait, then every 30 s. The run's
+PR comes from its `pull_requests` (cached for good) and the PR's labels from
+the issues API with the daemon's token (cached 30 s per PR). `pr` is null for
+a run of no PR. 400 for a malformed query, 404 for a repo this fleet does not
+serve. No auth, like `/api/run-status`.
+
 ### `GET /api/load-by-busy?days=7`
 
 `{ "days", "host", "since", "samples", "cores", "rows": [{ "busy", "n", "p50", "p90" }], "lanes" }`:

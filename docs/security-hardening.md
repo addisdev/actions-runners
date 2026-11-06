@@ -172,6 +172,7 @@ The following routes do not require a bearer token, by design:
 - `GET /api/analytics`, `/api/billing`, `/api/autoscale`, `/api/admission`
 - `GET /api/run-status` — one run's status, limited to repos this fleet serves
 - `GET /api/job-class` — a job's admission lane and median run time, from this database
+- `GET /api/job-priority` — whether a run's PR carries the priority label, limited to repos this fleet serves
 - `GET /api/load-by-busy` — host load by busy-runner count, from this database
 - `GET /api/actions` — action catalogue (knowing which buttons exist ≠ pressing them)
 - All static files under `/public/`

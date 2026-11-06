@@ -364,3 +364,36 @@ struct StoreTests {
         store.stop()
     }
 }
+
+@Suite("cockpit priority")
+struct PriorityLabelTests {
+    @Test("on creates the label, then adds it to the PR")
+    func on() {
+        let c = PriorityLabel.commands(repo: "acme/app", pr: 12, on: true)
+        #expect(c.count == 2)
+        #expect(Array(c[0].prefix(3)) == ["label", "create", "priority"])
+        #expect(c[0].contains("acme/app"))
+        #expect(c[1] == ["pr", "edit", "12", "-R", "acme/app", "--add-label", "priority"])
+    }
+
+    @Test("off only removes it, and the label can be named")
+    func off() {
+        #expect(PriorityLabel.commands(repo: "acme/app", pr: 7, on: false, label: "urgent")
+            == [["pr", "edit", "7", "-R", "acme/app", "--remove-label", "urgent"]])
+    }
+
+    @Test("a PR is a number, with or without #")
+    func pr() {
+        #expect(PriorityLabel.prNumber("512") == 512)
+        #expect(PriorityLabel.prNumber("#512") == 512)
+        #expect(PriorityLabel.prNumber("abc") == nil)
+        #expect(PriorityLabel.prNumber("0") == nil)
+    }
+
+    @Test("the confirmation says how to turn it off and what it cannot do")
+    func text() {
+        let t = PriorityLabel.text(repo: "acme/app", pr: 12, on: true)
+        #expect(t.contains("cockpit priority app 12 --off"))
+        #expect(t.contains("not GitHub's queue"))
+    }
+}

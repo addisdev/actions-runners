@@ -329,6 +329,8 @@ function admissionPanel(s) {
                 h('td', { class: 'mono', text: w.lane ?? '–' }),
                 h('td', { text: elapsed(w.since) }),
                 h('td', { class: 'muted', text:
+                  (w.priority === 'label' ? `priority PR${w.pr ? ` #${w.pr}` : ''}: ` : '') +
+                  (w.priority === 'starved' ? 'past the priority guard: ' : '') +
                   (w.reason ?? '–') + (w.laneWouldHold === false ? ' (the lanes would admit it)' : '') })
               )
             ))
