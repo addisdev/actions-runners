@@ -73,8 +73,14 @@ Used by `cleanup.sh` and `cleanupctl.sh`. See
 | Variable | Default | What it does |
 |---|---|---|
 | `FLEET_CLEANUP_PRESSURE_GB` | `FLEET_ADMIT_MIN_FREE_DISK_GB` + 20 | Below this much usable disk, `--auto` acts on every tick and takes the pressure steps too. |
-| `FLEET_CLEANUP_RUNNER_CACHE_DAYS` | `7` | Erase an idle runner's warm build caches (`_work/<repo>/DerivedData-*`, `spm-*`, `.build-cache-*`) unused this long; under pressure, all of them. |
-| `FLEET_CLEANUP_SIM_MAX_GB` | `3` | Erase an idle runner's `ci-` simulator past this size. |
+| `FLEET_CLEANUP_RUNNER_CACHE_DAYS` | `7` | Remove a runner's warm build caches (everything beside the checkout in `_work/<repo>/` that is not a git checkout: `DerivedData-*`, `spm-*`, `venvs`, `venv-kit-*`, `duckdb-native-work`, …) unused this long; under pressure, all of them. `cleanup.sh` does it to idle runners, the job-completed hook to the job's own workspace ([`hooks/work-trim.sh`](reference/scripts.md#hookswork-trimsh)). |
+| `FLEET_WORK_TRIM` | `1` | `0` stops the job-completed hook from trimming the job's workspace; `cleanup.sh` still trims idle runners. |
+| `FLEET_WORK_TRIM_KEEP` | (none) | Space-separated shell patterns of cache names in `_work/<repo>/` that the pressure rule leaves alone (for example `venvs DerivedData-*`). The unused rule still applies. |
+| `FLEET_WORK_TRIM_LOG` | `logs/work-trim.log` | Where the hook writes what it gave back, one block per job. |
+| `FLEET_CLEANUP_SIM_MAX_GB` | `3` | Erase an idle runner's `ci-` or `agent-shots-` simulator past this size. |
+| `FLEET_CLEANUP_SIM_IDLE_DAYS` | `2` | Delete (not erase) an idle runner's `ci-` or `agent-shots-` simulator that has not been booted for this many days; its job creates it again. |
+| `FLEET_CLEANUP_DIAG_DAYS` | `5` | Delete runner `_diag` logs older than this. |
+| `FLEET_CLEANUP_TMPDIR` | the user's temp folder | Where Robolectric's unpacked native runtimes (`robolectric-*`) are removed once a day old. |
 | `FLEET_CLEANUP_SIM_PRESSURE_GB` | `1` | ...and past this under pressure. |
 | `FLEET_CLEANUP_FULL_EVERY_S` | `86400` | `--auto` runs a full pass at least this often. |
 | `FLEET_CLEANUP_AVD_KEEP_DAYS` | `14` | Keep a runner's quick-boot snapshot AVD (`ci-<runner>-a<api>-<target>-<profile>`, the kit's `emulator_snapshot`) until it has gone this long without a boot. |

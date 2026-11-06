@@ -16,12 +16,15 @@
 #   - never `simctl shutdown all`, never kill CoreSimulatorService. Those close
 #     simulators the user is working in. `delete unavailable` only removes devices
 #     whose runtime is already gone, which nothing can be using.
-#   - never touch a runner's checkouts in _work, and never a warm build cache
-#     a job used this week: wiping them makes every job re-clone and recompile
-#     from cold. Warm caches (_work/<repo>/DerivedData-*, spm-*,
-#     .build-cache-*) go after FLEET_CLEANUP_RUNNER_CACHE_DAYS without use, or
-#     all of an idle runner's under disk pressure, as do its Playwright
-#     browsers.
+#   - never touch a checkout's tracked files or .git in _work, and never a
+#     warm build cache a job used this week: wiping them makes every job
+#     re-clone and recompile from cold. A checkout's ignored output goes (the
+#     next actions/checkout deletes it anyway); warm caches (everything beside
+#     the checkout in _work/<repo>/: DerivedData-*, spm-*, venvs, …) go after
+#     FLEET_CLEANUP_RUNNER_CACHE_DAYS without use, or all of an idle runner's
+#     under disk pressure, as do its Playwright browsers
+#     (hooks/work-trim.sh; the job-completed hook does the same to the job's
+#     own workspace as the job ends).
 #   - never touch a simulator or Android AVD that is not a runner's own
 #     ci- (or shots-) device, with one exception: a simulator booted longer
 #     than FLEET_CLEANUP_SIM_STRAY_S that no host process names, while
@@ -52,7 +55,20 @@ DERIVED_AGE_DAYS=7
 # without a build reading them means the next one rebuilds anyway.
 RUNNER_CACHE_DAYS="${FLEET_CLEANUP_RUNNER_CACHE_DAYS:-7}"
 case "$RUNNER_CACHE_DAYS" in '' | *[!0-9]*) RUNNER_CACHE_DAYS=7 ;; esac
-DIAG_AGE_DAYS=14
+# Runner _diag logs (Runner_*.log, Worker_*.log). Five days keeps a week's
+# incidents readable; at 14 they were 13.6 GB across ultra's runners
+# (2026-11-05).
+DIAG_AGE_DAYS="${FLEET_CLEANUP_DIAG_DAYS:-5}"
+case "$DIAG_AGE_DAYS" in '' | *[!0-9]*) DIAG_AGE_DAYS=5 ;; esac
+# A CI simulator (ci-<runner>…, agent-shots-<runner>) shut down and not booted
+# for this many days is deleted rather than erased: its job creates it again.
+SIM_IDLE_DAYS="${FLEET_CLEANUP_SIM_IDLE_DAYS:-2}"
+case "$SIM_IDLE_DAYS" in '' | *[!0-9]*) SIM_IDLE_DAYS=2 ;; esac
+# Robolectric unpacks its native runtime (about 200 MB) into the temp folder
+# for every test JVM and leaves it behind; ultra had 15 of them, 2 GB, on
+# 2026-11-05. One a day old belongs to no running test.
+TMP_DIR="${FLEET_CLEANUP_TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null)}"
+[ -d "$TMP_DIR" ] || TMP_DIR="${TMPDIR:-/tmp}"
 # Crash reports from Apple's own simulator daemons. iOS 27.0's trap by the
 # hundred in headless CI devices (ultra, 2026-10-30: 1,332 reports, ~150 a
 # day) and bury anything that matters.
@@ -90,6 +106,14 @@ else
   fleet_usable_free_gb() { fleet_plain_free_gb; }
 fi
 free_gb() { fleet_usable_free_gb; }
+# wt_checkout_trim, wt_cache_trim, wt_empty_trash: what the job-completed hook
+# does to its own workspace, run here over idle runners.
+if [ -f "$HERE/hooks/work-trim.sh" ]; then
+  # shellcheck source=hooks/work-trim.sh
+  . "$HERE/hooks/work-trim.sh"
+  WT_APPLY="$APPLY"
+  WT_PREFIX="    "
+fi
 PLAIN_HARD_GB="${FLEET_ADMIT_MIN_PLAIN_FREE_GB:-15}"
 # The admission floor itself: below it every job is held, so the snapshots go
 # first (see the AVD step).
@@ -551,6 +575,19 @@ for path in sys.stdin.read().splitlines():
 say "    ${n} files"
 
 # ---------------------------------------------------------------------------
+# Robolectric's unpacked native runtimes in the temp folder (see TMP_DIR).
+# ---------------------------------------------------------------------------
+say "==> leftover Robolectric runtimes in the temp folder, a day old"
+n=0
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  say "    $(du -sh "$f" 2>/dev/null | cut -f1)  ${f##*/}"
+  run rm -rf "$f"
+  n=$((n + 1))
+done < <(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -name 'robolectric-*' -mmin +1440 2>/dev/null)
+say "    ${n} directories"
+
+# ---------------------------------------------------------------------------
 # Superseded runner versions. The runner self-updates into bin.<version> and
 # externals.<version> beside the old pair and only repoints the bin/externals
 # links, so every runner keeps a dead copy of the version before. At 59 runners
@@ -602,32 +639,51 @@ say "    ${n} directories"
 sim_limit="$SIM_MAX_GB"; [ "$PRESSURE" = 1 ] && sim_limit="$SIM_PRESSURE_GB"
 say "==> CI simulators over ${sim_limit} GB"
 n=0
-while IFS='|' read -r udid state bytes runner; do
+while IFS='|' read -r udid state bytes runner idle_d name; do
   [ -n "$udid" ] || continue
   if [ "$state" != "Shutdown" ]; then continue; fi
   if building "$runner"; then continue; fi
   gb=$(awk -v b="$bytes" 'BEGIN{printf "%.1f", b/1073741824}')
   case "$known" in
     *" $runner "*)
-      awk -v b="$bytes" -v l="$sim_limit" 'BEGIN{exit !(b >= l*1073741824)}' || continue
-      say "    ${gb} GB  erase ci-${runner} ($udid)"
-      run xcrun simctl erase "$udid" ;;
+      if [ "$idle_d" -ge "$SIM_IDLE_DAYS" ]; then
+        say "    ${gb} GB  delete ${name} ($udid): not booted for ${idle_d}d"
+        run xcrun simctl delete "$udid"
+      else
+        awk -v b="$bytes" -v l="$sim_limit" 'BEGIN{exit !(b >= l*1073741824)}' || continue
+        say "    ${gb} GB  erase ${name} ($udid)"
+        run xcrun simctl erase "$udid"
+      fi ;;
     *)
-      say "    ${gb} GB  delete ci-${runner} ($udid): no such runner here"
+      say "    ${gb} GB  delete ${name} ($udid): no such runner here"
       run xcrun simctl delete "$udid" ;;
   esac
   n=$((n + 1))
 done < <(xcrun simctl list devices -j 2>/dev/null | python3 -c '
-import json, re, sys
+import json, os, re, sys, time
 try:
     devices = json.load(sys.stdin)["devices"]
 except Exception:
     sys.exit(0)
 for devs in devices.values():
     for d in devs:
-        m = re.match(r"ci-(\S+) (?:\S+ )?(iOS|tvOS|watchOS|visionOS|xrOS) [0-9.]+$", d.get("name", ""))
-        if m:
-            print("|".join([d["udid"], d.get("state", ""), str(d.get("dataPathSize", 0)), m.group(1)]))
+        name = d.get("name", "")
+        # "ci-<runner> [<app>] <platform> <version>" (the kit and the repos),
+        # and "agent-shots-<runner>" (homelake ios-ci.yml, its agent-shots
+        # sheet: 4-6 GB each on ultra, 2026-11-05, never erased before).
+        m = re.match(r"ci-(\S+) (?:\S+ )?(iOS|tvOS|watchOS|visionOS|xrOS) [0-9.]+$", name) \
+            or re.match(r"agent-shots-([A-Za-z0-9.-]+?)_*$", name)
+        if not m or "|" in name:
+            continue
+        # Days since the device last changed state (device.plist is rewritten
+        # at every boot and shutdown); 0 when it cannot be read.
+        idle = 0
+        try:
+            plist = os.path.join(os.path.dirname(d["dataPath"]), "device.plist")
+            idle = int((time.time() - os.path.getmtime(plist)) // 86400)
+        except Exception:
+            pass
+        print("|".join([d["udid"], d.get("state", ""), str(d.get("dataPathSize", 0)), m.group(1), str(idle), name]))
 ')
 say "    ${n} devices"
 
@@ -654,36 +710,42 @@ done
 say "    ${n} directories"
 
 # ---------------------------------------------------------------------------
-# Warm build caches in each runner's _work/<repo>/: DerivedData-<scheme>,
-# spm-* (SwiftPM checkouts) and .build-cache-*, which the kit's iOS and
-# SwiftPM jobs keep per runner so a build is incremental (CI plan Phase 1.4).
-# Each one is a few GB and per runner, so across 80 runners they are the disk.
-# One whose newest file (two levels down, where xcodebuild and SwiftPM write on
-# every build) is older than RUNNER_CACHE_DAYS goes; under pressure, all of an
-# idle runner's go. Never a building runner's, never under _work/_*/ (the
-# runner's own _temp, _tool, _actions), and never a directory that is a git
-# checkout (a repo that happens to be named spm-something).
+# Each idle runner's _work/<repo>/ (hooks/work-trim.sh, which the
+# job-completed hook also runs on the job's own workspace). Two things:
+#   - the checkout's ignored output (build/, node_modules, test output), which
+#     actions/checkout's own `git clean -ffdx` deletes at the next job's start
+#     anyway. Tracked files and .git stay, so the next fetch is incremental.
+#   - the warm caches beside the checkout: every entry there that is not a git
+#     checkout (DerivedData-*, spm-*, .build-cache-*, venvs, venv-kit-*,
+#     node-kit-*, gradle-kit-*, duckdb-native-work). One whose newest file (two
+#     levels down, where builds write) is older than RUNNER_CACHE_DAYS goes;
+#     under pressure, all of an idle runner's but FLEET_WORK_TRIM_KEEP.
+# Never a building runner's, never under _work/_*/ (the runner's own _temp,
+# _tool, _actions).
 # ---------------------------------------------------------------------------
-say "==> runner build caches unused for ${RUNNER_CACHE_DAYS}d$([ "$PRESSURE" = 1 ] && echo ' (under pressure: all of them, on idle runners)')"
-n=0
-for d in "$ROOT"/*/; do
-  d="${d%/}"
-  [ -f "$d/.runner" ] && [ -d "$d/_work" ] || continue
-  building "$(runner_name "$d")" && continue
-  for cache in "$d"/_work/*/DerivedData* "$d"/_work/*/spm* "$d"/_work/*/.build-cache*; do
-    [ -d "$cache" ] || continue
-    case "$cache" in "$d"/_work/_*) continue ;; esac
-    [ -e "$cache/.git" ] && continue
-    if [ "$PRESSURE" != 1 ] \
-      && [ -n "$(find "$cache" -maxdepth 2 -mtime -"$RUNNER_CACHE_DAYS" -print -quit 2>/dev/null)" ]; then
-      continue
-    fi
-    say "    $(du -sh "$cache" 2>/dev/null | cut -f1)  ${cache#"$ROOT"/}"
-    run rm -rf "$cache"
-    n=$((n + 1))
+say "==> runner work trees: checkout output, and build caches unused for ${RUNNER_CACHE_DAYS}d$([ "$PRESSURE" = 1 ] && echo ' (under pressure: all of them, on idle runners)')"
+if command -v wt_cache_trim >/dev/null 2>&1; then
+  WT_CACHE_DAYS="$RUNNER_CACHE_DAYS"
+  WT_N=0
+  WT_KB=0
+  WT_LINES=""
+  for d in "$ROOT"/*/; do
+    d="${d%/}"
+    [ -f "$d/.runner" ] && [ -d "$d/_work" ] || continue
+    building "$(runner_name "$d")" && continue
+    for ws in "$d"/_work/*/; do
+      ws="${ws%/}"
+      case "${ws##*/}" in _*) continue ;; esac
+      wt_checkout_trim "$ws/${ws##*/}"
+      wt_cache_trim "$ws" "$PRESSURE"
+    done
   done
-done
-say "    ${n} directories"
+  printf '%s' "$WT_LINES"
+  say "    ${WT_N} entries, $((WT_KB / 1024)) MB"
+  [ "$APPLY" = "1" ] && wt_empty_trash
+else
+  say "    (hooks/work-trim.sh missing)"
+fi
 
 # ---------------------------------------------------------------------------
 # Spotlight stays out of every runner's build tree. register.sh writes the

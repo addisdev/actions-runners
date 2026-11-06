@@ -13,10 +13,20 @@
 # failed after its steps have already succeeded, which is the most confusing
 # possible outcome — a green build reported red by its own cleanup.
 
-trap 'exit 0' EXIT
-
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${FLEET_ROOT:-$(cd "$HERE/.." && pwd)}"
+
+# Last of all, on every way out (the admission-off and no-common.sh exits
+# below included): give back the disk this job's workspace grew, the checkout's
+# ignored output and, under disk pressure, the warm caches beside it
+# (hooks/work-trim.sh). Last, because the Playwright ingest below reads the
+# checkout's test-results/. It renames into a trash folder and a detached
+# process deletes, so it costs the job a second or two, not the deletion.
+work_trim_at_exit() {
+  [ -f "$HERE/work-trim.sh" ] && FLEET_ROOT="$ROOT" bash "$HERE/work-trim.sh" job
+  exit 0
+}
+trap 'work_trim_at_exit' EXIT
 
 # Restore host audio for selected runners before any unrelated early exit below.
 # The lease count keeps output muted if another selected job is still active.

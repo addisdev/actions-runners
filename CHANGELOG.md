@@ -10,6 +10,25 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Added
 
+- **Each job gives its disk back as it ends** (`hooks/work-trim.sh`, run last
+  by the job-completed hook). The checkout's ignored output (`build/`,
+  `node_modules`, test output) goes every time, since the next checkout's
+  `git clean -ffdx` would delete it anyway. Under the cleanup pressure line
+  (admission floor + 20 GB) the warm caches beside the checkout
+  (`DerivedData-*`, `venvs`, `venv-kit-*`, `duckdb-native-work`, …) go too.
+  Renamed into `.work-trash/` and deleted detached, so a job's completion waits
+  a second, not the deletion. On ultra (2026-11-05) a homelake runner's
+  `_work/homelake` was 11 GB for a 1.4 GB checkout, and a busy night went from
+  80 to 59 GB free in 40 minutes, faster than the 15-minute cleanup tick.
+  `FLEET_WORK_TRIM=0` turns it off; `FLEET_WORK_TRIM_KEEP` spares named caches.
+- **`cleanup.sh` trims every idle runner's work tree the same way.** Any cache
+  beside the checkout counts, not only `DerivedData*`, `spm*` and
+  `.build-cache*`, and the checkout's ignored output goes too.
+  `agent-shots-<runner>` simulators count as CI devices (erased past the size
+  limit, deleted with their runner). A CI device not booted for
+  `FLEET_CLEANUP_SIM_IDLE_DAYS` (2) is deleted rather than kept. Robolectric's
+  day-old native runtimes leave the temp folder, and `_diag` logs are kept
+  `FLEET_CLEANUP_DIAG_DAYS` (5, was 14).
 - **CI artifacts viewer: `~/ci-artifacts` at `/artifacts/`, read-only.**
   Self-hosted jobs keep their screenshots, reports and test bundles on the
   runner host (`~/ci-artifacts/<repo>/<run_id>-<run_attempt>/`) instead of
