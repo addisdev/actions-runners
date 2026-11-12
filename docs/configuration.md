@@ -143,9 +143,9 @@ that `fleetctl.sh install` writes. To change after install:
 | `FLEET_HOST_LABELS` | (empty) | Comma-separated capability labels for the coordinator host (e.g. `xcode-16,macos-15`). Used by placement to match jobs to eligible hosts. **Leaving it empty means the host advertises nothing, so placement refuses every scale-up that needs a label** — see the note below. | Yes |
 | `FLEET_READ_ONLY` | `0` | Set to `1` to disable the control plane entirely. | Yes |
 | `FLEET_HOLD_DRAINS` | `1` | Stop a drained runner that launchd started again (login, reboot) within a tick, keeping its drain owner. `0` leaves it running. Also read by the agent. | Yes |
-| `FLEET_FAST_MS` | `15000` | Fast-loop interval while busy, ms. | No |
-| `FLEET_IDLE_MS` | `45000` | Fast-loop interval at rest, ms. | No |
-| `FLEET_GITHUB_SHARE` | `0.5` | The share of the login's hourly GitHub allowance (5,000 calls) the daemon keeps to. Every session, agent and hook on the login spends the same allowance; past this share of it in GitHub's current window the fast loop slows to 30, 60 or 120 s. The dashboard shows the window as `collector.apiWindow`. `0` or `1` turns it off. | No |
+| `FLEET_FAST_MS` | `15000` | Fast-loop interval while busy, ms. Each busy poll spends about two counted calls per repo from the login's shared 5,000 an hour; ultra runs `45000`. Carried into the plist from `fleet.env` by `fleetctl.sh install`. | No |
+| `FLEET_IDLE_MS` | `45000` | Fast-loop interval at rest, ms. Carried into the plist from `fleet.env` by `fleetctl.sh install`. | No |
+| `FLEET_GITHUB_SHARE` | `0.5` | The share of the login's hourly GitHub allowance (5,000 calls) the daemon keeps to. Every session, agent and hook on the login spends the same allowance; past this share of it in GitHub's current window the fast loop slows to 30, 60 or 120 s. The dashboard shows the window as `collector.apiWindow`. `0` or `1` turns it off. Carried into the plist from `fleet.env` by `fleetctl.sh install`. | No |
 | `FLEET_SLOW_MS` | `900000` (15 min) | Slow-loop interval, ms. | No |
 | `FLEET_ALERTS` | `1` | Set to `0` to disable the alerts system. | No |
 | `FLEET_ALERT_CONFIG` | `dashboard/alerts.config.json` | Alert configuration file. | No |

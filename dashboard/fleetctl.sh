@@ -98,6 +98,11 @@ cmd_install() {
     <key>FLEET_ROOT</key><string>$ROOT</string>
     <key>FLEET_DB</key><string>${FLEET_DB:-$HERE/fleet.db}</string>
     <key>FLEET_COLLECTOR_STALE_MS</key><string>${FLEET_COLLECTOR_STALE_MS:-240000}</string>
+    <!-- Fast-loop cadence and GitHub share (fleetd.js CONFIG.fastMs / idleMs /
+         githubShare). Never an empty default: Number("") is 0. -->
+    <key>FLEET_FAST_MS</key><string>${FLEET_FAST_MS:-15000}</string>
+    <key>FLEET_IDLE_MS</key><string>${FLEET_IDLE_MS:-45000}</string>
+    <key>FLEET_GITHUB_SHARE</key><string>${FLEET_GITHUB_SHARE:-0.5}</string>
     <key>FLEET_ADMISSION_LOG</key><string>${FLEET_ADMISSION_LOG:-$HERE/logs/admission.ndjson}</string>
     <key>FLEET_SHM_LOG</key><string>${FLEET_SHM_LOG:-$HERE/logs/shm.ndjson}</string>
     <key>FLEET_SHM_LOW_FREE</key><string>${FLEET_SHM_LOW_FREE:-4}</string>

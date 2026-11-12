@@ -391,6 +391,21 @@ describe('fleetctl remote-access contracts', () => {
     assert.doesNotMatch(fleetctl, /print\(f"/);
   });
 
+  test('the LaunchAgent carries the fast-loop cadence and GitHub share, defaulting to what fleetd defaults to', () => {
+    // Without these keys a cadence set in fleet.env never reached fleetd, and one
+    // set by hand in the plist vanished on the next install (2026-11-12: the 15 s
+    // busy poll spent most of the login's 5,000 calls an hour). An EMPTY default
+    // would be worse than none: Number("") is 0, a fast loop that never pauses.
+    const fleetd = readFileSync(join(HERE, '..', 'fleetd.js'), 'utf8');
+    for (const key of ['FLEET_FAST_MS', 'FLEET_IDLE_MS', 'FLEET_GITHUB_SHARE']) {
+      const plist = fleetctl.match(new RegExp(`<key>${key}</key><string>\\$\\{${key}:-([\\d.]+)\\}</string>`));
+      assert.ok(plist, `${key} is not in the LaunchAgent template with a numeric default`);
+      const code = fleetd.match(new RegExp(`process\\.env\\.${key} \\?\\? ([\\d_.]+)`));
+      assert.ok(code, `fleetd.js no longer reads ${key} with a default`);
+      assert.equal(plist[1], code[1].replace(/_/g, ''), `${key}: the template's default differs from fleetd's`);
+    }
+  });
+
   test('remote lan regenerates the LaunchAgent, since FLEET_HOST is baked into it', () => {
     const lan = fleetctl.slice(fleetctl.indexOf('    lan)'), fleetctl.indexOf('    tailscale)'));
     assert.match(lan, /apply_env_change/);
