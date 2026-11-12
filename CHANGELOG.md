@@ -8,6 +8,15 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`fleetctl.sh install` carries `FLEET_FAST_MS`, `FLEET_IDLE_MS` and
+  `FLEET_GITHUB_SHARE`.** The plist template had none of them, so a cadence set in `fleet.env` never reached
+  fleetd, and one set by hand in the plist was lost on the next install. On
+  2026-11-12 the 15 s busy poll spent ~3,800 of the login's 5,000 calls an
+  hour and the allowance ran out three times; ultra now runs 45 s. Defaults
+  are unchanged (15000 / 45000 / 0.5) and never empty: `Number("")` is 0.
+
 ### Added
 
 - **The daemon keeps to half of the login's GitHub allowance.** With CI busy,
