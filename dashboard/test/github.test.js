@@ -124,6 +124,41 @@ describe('budgetCadenceMs', () => {
   test('a clock ahead of the window does not relax it', () => {
     assert.equal(budgetCadenceMs({ remaining: 2000, limit: 5000, resetAt: now + 2 * 3_600_000, now }), 60_000);
   });
+
+  describe('its own share of the allowance', () => {
+    const own = (ownSpent, minutesLeft, remaining = 5000 - ownSpent) => budgetCadenceMs({
+      remaining, limit: 5000, resetAt: now + minutesLeft * 60_000, now, ownSpent, share: 0.5,
+    });
+
+    test('has no opinion while its own spend keeps pace with its share', () => {
+      assert.equal(own(0, 60), 0);
+      assert.equal(own(1000, 30), 0); // 40% of 2,500 spent, half the window gone
+    });
+
+    test('slows before the shared allowance would notice', () => {
+      // 2026-11-12: about 95 counted calls a minute with CI busy. Six minutes in,
+      // ~570 spent: the login still looks fine (89% left), its own share does not.
+      assert.equal(budgetCadenceMs({ remaining: 4430, limit: 5000, resetAt: now + 54 * 60_000, now }), 0);
+      assert.equal(own(570, 54), 30_000);
+      assert.equal(own(1700, 40), 60_000);
+    });
+
+    test('its share spent waits the longest step', () => {
+      assert.equal(own(2500, 20), 120_000);
+      assert.equal(own(3000, 20), 120_000);
+    });
+
+    test('the shared allowance still wins when it is the tighter one', () => {
+      assert.equal(own(100, 30, 500), 120_000); // others spent the login down
+    });
+
+    test('a share of 0 or 1, or no count, turns it off', () => {
+      const base = { remaining: 4430, limit: 5000, resetAt: now + 54 * 60_000, now, ownSpent: 570 };
+      assert.equal(budgetCadenceMs({ ...base, share: 0 }), 0);
+      assert.equal(budgetCadenceMs({ ...base, share: 1 }), 0);
+      assert.equal(budgetCadenceMs({ ...base, ownSpent: undefined, share: 0.5 }), 0);
+    });
+  });
 });
 
 describe('endpointClass', () => {
@@ -220,6 +255,26 @@ describe('GitHub.get rate limiting', () => {
       await assert.rejects(gh.get('repos/a/b/actions/runners', { attempts: 1 }), (err) => err.status === 403 && !err.rateLimited);
     });
     assert.equal(gh.backoffUntil, 0);
+  });
+
+  test('counts its spend in GitHub\'s window: a 304 is free, a new reset starts over', async () => {
+    const gh = new GitHub({ log: () => {} });
+    gh.token = 't';
+    const next = String(Number(reset) + 3600);
+    await withFetch([
+      respond(200, { 'x-ratelimit-remaining': '4999', 'x-ratelimit-reset': reset, etag: '"a"' }, '{"n":1}'),
+      new Response(null, { status: 304, headers: { 'x-ratelimit-limit': '5000', 'x-ratelimit-remaining': '4999', 'x-ratelimit-reset': reset } }),
+      respond(200, { 'x-ratelimit-remaining': '4998', 'x-ratelimit-reset': reset }, '{"n":2}'),
+    ], async () => {
+      await gh.get('repos/a/b/actions/runs?status=queued', { attempts: 1 });
+      await gh.get('repos/a/b/actions/runs?status=queued', { attempts: 1 });
+      await gh.get('repos/a/b/actions/runners', { attempts: 1 });
+    });
+    assert.deepEqual(gh.window, { resetAt: Number(reset) * 1000, spent: 2 });
+    await withFetch([respond(200, { 'x-ratelimit-remaining': '4999', 'x-ratelimit-reset': next }, '{}')], async () => {
+      await gh.get('repos/a/b/actions/runners', { attempts: 1, etag: false });
+    });
+    assert.deepEqual(gh.window, { resetAt: Number(next) * 1000, spent: 1 });
   });
 
   test('a secondary-limit 403 backs off; a later success resets the strikes', async () => {
