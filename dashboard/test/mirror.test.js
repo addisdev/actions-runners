@@ -29,6 +29,41 @@ describe('planMirror', () => {
     assert.deepEqual(plan.register.map((x) => x.labels), [[]]);
   });
 
+  test('a host-only label is dropped from the copy, not a reason to skip', () => {
+    // The hand-off host's runners carry `handoff`; a joining host gets the
+    // same runners without it, so hand-off jobs keep landing on one disk.
+    const plan = planMirror({
+      runners: [r('web', 'web', ['ci', 'handoff'], 1), r('web-2', 'web', ['ui-web', 'handoff'], 2)],
+      hostLabels: ['ci', 'ui-web'],
+    });
+    assert.deepEqual(plan.register.map((x) => [x.dir, x.labels]), [['web', ['ci']], ['web-2', ['ui-web']]]);
+    assert.equal(plan.skipped.length, 0);
+  });
+
+  test('a set that differs only by the host-only label is copied once', () => {
+    const plan = planMirror({
+      runners: [r('web', 'web', ['ci', 'handoff'], 1), r('web-2', 'web', ['ci'], 2)],
+      hostLabels: ['ci'],
+    });
+    assert.deepEqual(plan.register.map((x) => [x.dir, x.labels]), [['web', ['ci']]]);
+  });
+
+  test('a host that advertises the host-only label copies it (it is taking the route over)', () => {
+    const plan = planMirror({
+      runners: [r('web', 'web', ['ci', 'handoff'])],
+      hostLabels: ['ci', 'handoff'],
+    });
+    assert.deepEqual(plan.register.map((x) => x.labels), [['ci', 'handoff']]);
+  });
+
+  test('hostOnlyLabels is configurable, and empty restores the plain skip', () => {
+    const runners = [r('web', 'web', ['ci', 'route-a'])];
+    assert.deepEqual(planMirror({ runners, hostLabels: ['ci'], hostOnlyLabels: ['route-a'] })
+      .register.map((x) => x.labels), [['ci']]);
+    assert.deepEqual(planMirror({ runners, hostLabels: ['ci'], hostOnlyLabels: [] })
+      .skipped.map((x) => x.reason), ['host lacks label route-a']);
+  });
+
   test('a label the host does not advertise is a skip with the reason', () => {
     const plan = planMirror({
       runners: [r('backend', 'backend', ['postgres']), r('map', 'map-web', ['hmap'])],

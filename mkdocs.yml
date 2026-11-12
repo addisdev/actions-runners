@@ -53,9 +53,13 @@ theme:
 # The directory is `figures/` and not `assets/` because Material writes its own
 # theme stylesheets to site/assets/, and excluding `assets/` takes those with it
 # — every page then links a stylesheet the build no longer ships.
+#
+# claude/ holds runbooks for the agent sessions that operate one deployment of
+# the fleet; they name its hosts and are not part of the handbook.
 exclude_docs: |
   figures/
   tools/
+  claude/
   README.md
 
 extra_css:

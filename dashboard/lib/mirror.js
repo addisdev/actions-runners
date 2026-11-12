@@ -22,6 +22,15 @@
 //     no label states: an iOS lane on a plain `ci` runner, a backend suite that
 //     expects a local PostgreSQL.
 //
+// One kind of label is neither copied nor a reason to skip: a HOST-ONLY label
+// (FLEET_HOST_ONLY_LABELS, default `handoff`). It routes jobs to the one host
+// that carries it, because those jobs hand files to each other through that
+// host's disk (~/ci-artifacts): a stitch or merge job reads what the jobs
+// before it kept there. Copying it would put a second host in the route and
+// break the hand-off; skipping the set would leave the joining host with no
+// runner for the repo at all. So it is dropped from the copy, and the runner
+// is registered with the rest of its labels.
+//
 // Pure: it takes the coordinator's runner list and this host's facts, and
 // returns a plan. scripts/mirror-runners.sh does the registering.
 
@@ -60,13 +69,17 @@ function bareName(runner) {
  * @param {string[]} [opts.skipRepos]    - FLEET_MIRROR_SKIP_REPOS (bare names or owner/repo)
  * @param {string[]} [opts.onlyRepos]    - limit the plan to these (a pilot)
  * @param {string[]} [opts.existing]     - runner dir names already on this host
+ * @param {string[]} [opts.hostOnlyLabels] - FLEET_HOST_ONLY_LABELS: dropped from the copy, never a skip
  * @returns {{ register: object[], skipped: object[], present: object[] }}
  */
 export function planMirror({
   runners = [], hostLabels = [], hasXcode = false, simulatorPatterns = [],
-  skipRepos = [], onlyRepos = [], existing = [],
+  skipRepos = [], onlyRepos = [], existing = [], hostOnlyLabels = ['handoff'],
 }) {
   const have = new Set(hostLabels.map((l) => String(l).toLowerCase()));
+  // A host that advertises a host-only label is the one it routes to (it
+  // carries it today, or is taking it over); it copies the label like any other.
+  const hostOnly = new Set(hostOnlyLabels.map((l) => String(l).toLowerCase()).filter((l) => !have.has(l)));
   const named = (list) => new Set(list.flatMap((r) => [r, String(r).split('/').pop()]));
   const skip = named(skipRepos);
   const only = onlyRepos.length ? named(onlyRepos) : null;
@@ -79,7 +92,7 @@ export function planMirror({
     .filter((r) => r.repo)
     .sort((a, b) => String(a.repo).localeCompare(String(b.repo)) || (a.instance ?? 1) - (b.instance ?? 1));
   for (const r of sorted) {
-    const labels = extraLabels(r.labels ?? []);
+    const labels = extraLabels(r.labels ?? []).filter((l) => !hostOnly.has(l.toLowerCase()));
     const key = labels.join(',');
     if (!sets.has(r.repo)) sets.set(r.repo, new Map());
     const bySet = sets.get(r.repo);

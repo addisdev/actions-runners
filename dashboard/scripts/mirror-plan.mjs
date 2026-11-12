@@ -11,7 +11,7 @@
 //     [--root ~/actions-runners] [--only repo,repo]
 //
 // Host facts come from fleet.env through the environment: FLEET_HOST_LABELS,
-// FLEET_SIMULATOR_RUNNERS, FLEET_MIRROR_SKIP_REPOS. Xcode is detected, not
+// FLEET_SIMULATOR_RUNNERS, FLEET_MIRROR_SKIP_REPOS, FLEET_HOST_ONLY_LABELS. Xcode is detected, not
 // configured, because a host that says it has Xcode and does not fails builds.
 import { readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -59,6 +59,7 @@ const plan = planMirror({
   hasXcode,
   simulatorPatterns: list(process.env.FLEET_SIMULATOR_RUNNERS),
   skipRepos: list(process.env.FLEET_MIRROR_SKIP_REPOS),
+  hostOnlyLabels: list(process.env.FLEET_HOST_ONLY_LABELS ?? 'handoff'),
   onlyRepos: list(arg('only')),
   existing,
 });

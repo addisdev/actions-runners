@@ -37,6 +37,11 @@ without `--repair` — have no `--apply` because there is nothing to guard.
 | `scripts/ephemeral-runner.sh` | One job in a fresh directory, then delete it | **yes** |
 | `scripts/reap-ephemeral.sh` | Remove ephemeral directories a crash left behind | **yes** |
 | `scripts/install-hooks.sh` | Point every runner at the job hooks | **yes** |
+| `scripts/bootstrap-host.sh` | Build a new runner host to a peer's toolchain (Brewfile, Xcode and SDK copies, runtimes, caches, `fleet.env`) | **yes** |
+| `scripts/bootstrap-host-root.sh` | The root half of a new host: Xcode licence, power, Spotlight, Rosetta, tailscaled (the owner runs it with sudo) | **yes** |
+| `scripts/host-manifest.sh` | Every version a job can see, as sorted lines; `--diff <peer>` is the parity test | read-only |
+| `scripts/handoff-label.sh` | Add or remove the hand-off routing label on one host's runners | **yes** |
+| `scripts/test-bootstrap.sh` | Shell tests for `bootstrap-host.sh` and `host-manifest.sh --compare` | a temporary folder |
 | `scripts/install-ps-shim.sh` | Put `shims/ps` first on the runners' PATH so the runner's orphan scan stops spawning `ps` per process | **yes** (one symlink; `--remove`) |
 | `scripts/release-check.sh` | Fail if anything host-specific reached a tracked file | read-only except `--install-hook` |
 | `scripts/check-docs.sh` | Verify the docs are internally consistent | read-only |
@@ -431,6 +436,84 @@ scripts/join-host.sh --apply --install-tools          # also brew-install what i
 `--install-tools` installs the missing tools that have a Homebrew formula
 (gh, jq, node, openjdk@21, and from `cli-tools.txt` shellcheck, deno). Tools
 macOS ships, such as make, are reported with their own fix instead.
+
+### `scripts/bootstrap-host.sh`
+
+Builds a new runner host to the same toolchain as a peer that already runs the
+fleet's jobs, before its first runner registers: `examples/Brewfile.ci`, every
+`/Applications/Xcode*.app` the peer has (copied over ssh into a temp folder,
+then renamed into place; no Apple ID), the Metal toolchain for each, the peer's
+simulator runtimes, the Android SDK and the warm Playwright cache, Gradle's
+worker and idle-daemon limits, PyYAML for both pythons, Colima as a small
+build-only VM, and `fleet.env` from `examples/fleet.env.build-box` with the
+peer's labels, lanes and Xcode version copied in (never over an existing one).
+Each step says when its result is already there. Dry run unless `--apply`.
+The root half is `scripts/bootstrap-host-root.sh`. Afterwards
+`scripts/host-manifest.sh --diff <peer>` must show hardware lines only.
+Source: [`scripts/bootstrap-host.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/bootstrap-host.sh).
+
+```bash
+scripts/bootstrap-host.sh --peer old-mac                       # what it would do
+scripts/bootstrap-host.sh --peer old-mac --apply --only xcode  # the long copy first
+scripts/bootstrap-host.sh --peer old-mac --coordinator http://old-mac:7878 --apply
+```
+
+### `scripts/bootstrap-host-root.sh`
+
+The settings only an administrator can change on a new runner host, run by its
+owner with sudo: the Xcode licence and first launch for every Xcode, never
+sleep and restart after a power cut, Spotlight off on every volume (indexing
+runner work trees has starved a host), Rosetta, and tailscaled as a system
+daemon. It never touches FileVault, auto-login, sharing or accounts. Dry run
+unless `--apply`; safe to run again once Xcode has been copied.
+Source: [`scripts/bootstrap-host-root.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/bootstrap-host-root.sh).
+
+```bash
+sudo scripts/bootstrap-host-root.sh            # what it would change
+sudo scripts/bootstrap-host-root.sh --apply
+```
+
+### `scripts/host-manifest.sh`
+
+Prints every version a job on this Mac can see, one sorted `key value` line
+each: macOS, every Xcode build and its Metal toolchain, simulator runtimes, the
+Brewfile's formulae, node, both pythons and PyYAML, Java, Android SDK packages,
+Gradle limits, Playwright browser builds, the runner version and the fleet's
+`FLEET_XCODE_VERSION`. `hw.*` lines (cores, memory, disk) may differ between
+hosts; any other difference is a parity gap, fixed in the bootstrap, not by
+hand. `--diff` runs it on a peer over ssh and exits 1 on a gap.
+Source: [`scripts/host-manifest.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/host-manifest.sh).
+
+```bash
+scripts/host-manifest.sh                  # this host
+scripts/host-manifest.sh --diff old-mac   # parity with a peer
+scripts/host-manifest.sh --compare a.txt b.txt
+```
+
+### `scripts/handoff-label.sh`
+
+Adds the hand-off routing label (`handoff`) to one host's runners, or removes
+it, through GitHub's runner labels API, with no re-registration. Jobs that hand
+files to each other through the host's `~/ci-artifacts` (a stitch or report
+merge reading what earlier jobs kept) ask for this label, so with two runner
+hosts the whole hand-off still lands on one disk; `mirror-runners.sh` drops the
+label when another host copies the runners (`FLEET_HOST_ONLY_LABELS`). Label the
+runners before merging a workflow that asks for it. Serial calls; stops under
+an API budget floor. Dry run unless `--apply`.
+Source: [`scripts/handoff-label.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/handoff-label.sh).
+
+```bash
+scripts/handoff-label.sh --host old-mac --repos owner/app,owner/site
+scripts/handoff-label.sh --host old-mac --repos owner/app --apply
+scripts/handoff-label.sh --host old-mac --repos owner/app --remove --apply
+```
+
+### `scripts/test-bootstrap.sh`
+
+Shell tests for the `fleet-env` step of `bootstrap-host.sh` (values copied from
+the peer verbatim, its own identity kept, never overwriting a `fleet.env`) and
+`host-manifest.sh --compare`. No ssh, no Homebrew: a temporary folder.
+Source: [`scripts/test-bootstrap.sh`](https://github.com/addisdev/actions-runners/blob/main/scripts/test-bootstrap.sh).
 
 ### `scripts/mirror-runners.sh`
 
@@ -847,6 +930,23 @@ Source: [`hooks/ci-artifacts-prune.sh`](https://github.com/addisdev/actions-runn
 bash hooks/ci-artifacts-prune.sh            # what it would remove
 bash hooks/ci-artifacts-prune.sh --apply    # remove it
 hooks/tests/ci-artifacts.sh                 # against a throwaway ~/ci-artifacts
+```
+
+### `hooks/ci-artifacts-push.sh`
+
+On a runner host that is not the coordinator, copies the finished job's run
+folder (`~/ci-artifacts/<repo>/<run_id>-<run_attempt>/`) to the coordinator,
+whose `/artifacts/` viewer and PR gallery links serve only its own disk. Off
+unless `FLEET_CI_ARTIFACTS_PUSH_TO` is set (`host:path` or an absolute path).
+The job-completed hook starts it detached; plain `rsync -a`, three tries, one
+log line per push in `logs/ci-artifacts-push.log`, and it never fails the job.
+It is not a hand-off between jobs: a push may land after the next job started,
+so those jobs share a host through the `handoff` label instead.
+Source: [`hooks/ci-artifacts-push.sh`](https://github.com/addisdev/actions-runners/blob/main/hooks/ci-artifacts-push.sh).
+
+```bash
+bash hooks/ci-artifacts-push.sh --dry-run    # with the job's GITHUB_* variables set
+hooks/tests/ci-artifacts-push.sh             # against a local destination folder
 ```
 
 ### `hooks/work-trim.sh`
