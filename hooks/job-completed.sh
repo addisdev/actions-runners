@@ -58,6 +58,14 @@ if [ "${FLEET_CI_ARTIFACTS_PRUNE:-1}" != "0" ] && [ -f "$HERE/ci-artifacts-prune
   RUNNER_TRACKING_ID="" nohup bash "$HERE/ci-artifacts-prune.sh" --apply --if-due >/dev/null 2>&1 &
 fi
 
+# On a host that is not the coordinator, copy this run's ~/ci-artifacts folder
+# to the coordinator, whose /artifacts/ viewer and gallery links serve only its
+# own disk (hooks/ci-artifacts-push.sh). Off unless FLEET_CI_ARTIFACTS_PUSH_TO
+# is set; detached, so a slow copy never holds the job open.
+if [ -f "$HERE/ci-artifacts-push.sh" ]; then
+  RUNNER_TRACKING_ID="" FLEET_ROOT="$ROOT" nohup bash "$HERE/ci-artifacts-push.sh" >/dev/null 2>&1 &
+fi
+
 # Drain, handled BEFORE the admission-mode check below, because a drain has
 # nothing to do with admission and must work on a fleet that never turned
 # admission on.

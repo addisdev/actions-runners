@@ -1,0 +1,41 @@
+# Homebrew formulae a CI runner host needs, and nothing else.
+#
+#   brew bundle --file examples/Brewfile.ci        # scripts/bootstrap-host.sh runs this
+#   scripts/host-manifest.sh                       # prints the installed version of each
+#
+# Built from what the fleet's jobs actually call on the current host (checked
+# 2026-11-12), not from everything installed there: a host's model, video and
+# tunnel tools are not CI's, and a tool a job needs that is missing here is a
+# parity gap to fix in this file, never on one box by hand.
+
+# Languages and runtimes jobs call by name.
+brew "node"                # dashboard, Playwright, web builds (Node 26)
+brew "node@22"             # repos pinned to the LTS line
+brew "openjdk@21"          # Gradle and the Android toolchain
+brew "kotlin"              # kotlin scripts in Android and backend lanes
+brew "python@3.14"         # Homebrew python3; PEP 668 managed, jobs use venvs
+brew "uv"                  # Python suites (uv run pytest)
+brew "deno"                # edge-function tests
+
+# Databases jobs start as throwaway clusters (initdb in a temp dir).
+brew "postgresql@14"
+brew "postgresql@17"
+
+# Build and lint tools.
+brew "xcodegen"            # iOS projects generated from a spec
+brew "shellcheck"          # make lint, CI shell checks
+brew "jq"
+brew "gh"                  # registration tokens, workflow steps
+# Not gnu-tar: the current host has none, and actions/cache switches to gtar
+# when it is on PATH. Add it to every host in the same change, or to none.
+
+# A build-only Docker daemon (image jobs). No stacks run on a CI host.
+brew "colima"
+brew "docker"
+brew "docker-compose"
+
+# Remote access to the host from away.
+brew "tailscale"
+
+# Browser jobs that drive the installed Chrome rather than Playwright's.
+cask "google-chrome"
