@@ -138,6 +138,10 @@ const CONFIG = {
   // pass on a loaded host is not mistaken for a stopped one.
   collectorStaleMs: Number(process.env.FLEET_COLLECTOR_STALE_MS ?? 240000),
   idleMs: Number(process.env.FLEET_IDLE_MS ?? 45000),
+  // The share of the login's hourly GitHub allowance this daemon keeps to. The
+  // allowance is shared with every session, agent and hook on the login; past its
+  // share the fast loop slows (lib/github.js budgetCadenceMs). 0 or 1 turns it off.
+  githubShare: Number(process.env.FLEET_GITHUB_SHARE ?? 0.5),
   slowMs: Number(process.env.FLEET_SLOW_MS ?? 15 * 60 * 1000),
   backfillMs: Number(process.env.FLEET_BACKFILL_MS ?? 10 * 60 * 1000),
   // Per pass. ~1,100 runs need ~1,100 job calls, so this deliberately takes
@@ -2406,6 +2410,7 @@ async function fastTick(progress = null) {
       failedRepos: failedRepos.length,
       transientRetries: gh.transientRetries,
       apiUsage: gh.usage,
+      apiWindow: { ...gh.window, share: CONFIG.githubShare, limit: gh.rate.limit },
       fastMs: currentCadence(active, runners),
       tokenSource: gh.tokenSource ?? null,
       backfill: { ...backfill.progress },
@@ -2782,7 +2787,8 @@ function holdLocalDrains(runners, now) {
 // building" with no API call at all.
 function currentCadence(active, runners) {
   const busy = active.length > 0 || runners.some((r) => r.workingLocally || r.ghBusy);
-  return Math.max(busy ? CONFIG.fastMs : CONFIG.idleMs, budgetCadenceMs(gh.rate));
+  const own = { ownSpent: gh.window.resetAt === gh.rate.resetAt ? gh.window.spent : 0, share: CONFIG.githubShare };
+  return Math.max(busy ? CONFIG.fastMs : CONFIG.idleMs, budgetCadenceMs({ ...gh.rate, ...own }));
 }
 
 // Records what an autoscaler WOULD do for each queued repo — purely for

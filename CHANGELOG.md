@@ -10,6 +10,17 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Added
 
+- **The daemon keeps to half of the login's GitHub allowance.** With CI busy,
+  every active-run list changes between 15-second polls, so ETags save little:
+  on 2026-11-12 fleetd alone spent 4,600 to 5,400 counted calls an hour (3,790
+  in the 19:00 hour despite 11 minutes of backoff, 2,345 of them active-run
+  lists) and ran the login's 5,000 out twice. Every session, agent and held hook
+  on the login stalled with it, and a held release job timed out. `GitHub`
+  now counts its spend in GitHub's own rate window (`x-ratelimit-reset`, shown
+  as `collector.apiWindow`), and `budgetCadenceMs` slows the fast loop to 30,
+  60 or 120 s as that spend outruns `FLEET_GITHUB_SHARE` (0.5) of the
+  allowance, on top of the existing give-way at half the login's allowance left.
+
 - **Stale CI simulators go after 24 hours, not 2 days.** `cleanup.sh`'s
   daily full pass (the cleanup LaunchAgent) deletes a `ci-<runner> …` or
   `agent-shots-<runner>` simulator that is shut down and untouched for

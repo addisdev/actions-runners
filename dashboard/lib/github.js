@@ -135,13 +135,30 @@ export function rateLimitBackoffUntil({ now, retryAfterS, remaining, resetAt, st
  * remaining share of the allowance falls well behind the remaining share of the
  * window. 0 means no opinion: use the normal cadence.
  */
-export function budgetCadenceMs({ remaining, limit, resetAt, now = Date.now() } = {}) {
+//
+// That alone was not enough. With CI busy, every active-run list changes between
+// 15-second polls, so ETags save little and this daemon alone spent 4,600 to
+// 5,400 counted calls an hour (2026-11-12: 3,790 in the 19:00 hour despite 11
+// minutes of backoff, 2,345 of them active-run lists), running the login out
+// twice in a day. Giving way at half the allowance left came too late: by then the
+// sessions and agents on the login had nothing. So it also keeps to its own
+// share (`share` of `limit`, FLEET_GITHUB_SHARE): `ownSpent` is what this daemon
+// spent in the current window (GitHub.window), paced the same way.
+export function budgetCadenceMs({ remaining, limit, resetAt, now = Date.now(), ownSpent, share } = {}) {
   if (remaining == null || !limit || !resetAt || resetAt <= now) return 0;
   const windowLeft = Math.min(1, (resetAt - now) / 3_600_000);
   const pace = (remaining / limit) / windowLeft;
-  if (pace < 0.25) return 120_000;
-  if (pace < 0.5) return 60_000;
-  return 0;
+  let ms = 0;
+  if (pace < 0.25) ms = 120_000;
+  else if (pace < 0.5) ms = 60_000;
+  if (Number.isFinite(ownSpent) && share > 0 && share < 1) {
+    const ownLeft = Math.max(0, 1 - ownSpent / (limit * share));
+    const ownPace = ownLeft / windowLeft;
+    if (ownLeft === 0) ms = Math.max(ms, 120_000);
+    else if (ownPace < 0.5) ms = Math.max(ms, 60_000);
+    else if (ownPace < 1) ms = Math.max(ms, 30_000);
+  }
+  return ms;
 }
 
 /** The endpoint family a request belongs to, for counting what a window spent. */
@@ -178,6 +195,16 @@ export class GitHub {
     // By hour of the clock, so "what did this daemon spend" needs no log. A 304
     // costs nothing, which is why it is counted apart from what does.
     this.usage = { hour: null, previous: null };
+    // Counted calls in GitHub's current rate window (x-ratelimit-reset), which is
+    // not the clock hour: what budgetCadenceMs paces this daemon's own share by.
+    this.window = { resetAt: null, spent: 0 };
+  }
+
+  countWindow(status) {
+    const resetAt = this.rate.resetAt;
+    if (!resetAt) return;
+    if (this.window.resetAt !== resetAt) this.window = { resetAt, spent: 0 };
+    if (status !== 304) this.window.spent++;
   }
 
   count(path, status) {
@@ -269,6 +296,7 @@ export class GitHub {
           limit: Number(res.headers.get('x-ratelimit-limit')),
           resetAt: Number(res.headers.get('x-ratelimit-reset')) * 1000,
         };
+        this.countWindow(res.status);
       }
 
       if (res.status === 304) {
