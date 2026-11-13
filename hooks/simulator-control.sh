@@ -6,6 +6,14 @@
 # job-completed hook releases it; a detached guardian does the same if the
 # worker dies before that hook runs. Simulators are shut down only after the
 # final selected job ends, so overlapping iOS jobs cannot kill each other.
+#
+# Only runners matching FLEET_SIMULATOR_RUNNERS take a lease, but other jobs
+# boot simulators too (a repo whose runner is named ultra-homelake-2 runs
+# iOS tests). A device a live host process still names (xcodebuild
+# -destination id=…, simctl, a test driver) is in use and is never shut down,
+# the rule cleanup.sh's stray pass uses. On ultra, 2026-11-12, each
+# greenfolio-ios job end shut down homelake's agent-shots simulator and Jerv's
+# mid-test, four times in 34 minutes.
 
 set -u
 
@@ -161,12 +169,24 @@ sim_shutdown() {
   fi
 }
 
+# A host process outside the device names its id: in use, whoever booted it.
+# The device's own processes (paths under /Devices/<id>/, its launchd_sim)
+# do not count.
+sim_in_use() {
+  local udid="$1" procs="$2"
+  printf '%s\n' "$procs" | grep -F -- "$udid" \
+    | grep -v -F -e "/Devices/$udid/" -e 'launchd_sim ' | grep -q .
+}
+
 sim_cleanup_new_devices() {
-  local udid
+  local udid procs
   [ -f "$BASELINE" ] || return 0
+  procs="$("${FLEET_PS:-/bin/ps}" -axo command= 2>/dev/null)"
   sim_booted | while read -r udid; do
     [ -n "$udid" ] || continue
-    grep -Fxq "$udid" "$BASELINE" 2>/dev/null || sim_shutdown "$udid"
+    grep -Fxq "$udid" "$BASELINE" 2>/dev/null && continue
+    sim_in_use "$udid" "$procs" && continue
+    sim_shutdown "$udid"
   done
 }
 

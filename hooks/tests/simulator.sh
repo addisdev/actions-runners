@@ -7,6 +7,7 @@ ROOT="${TMPDIR:-/tmp}/simulator-hook-test/root"
 BIN="$ROOT/bin"
 SIM_STATE="$ROOT/booted"
 SIM_LOG="$ROOT/shutdowns"
+PS_OUT="$ROOT/ps"
 PASS=0
 FAIL=0
 PIDS=()
@@ -63,6 +64,12 @@ case "$1 $2 $3" in
 esac
 EOF
   chmod +x "$BIN/simctl"
+  : > "$PS_OUT"
+  cat > "$BIN/ps" <<'EOF'
+#!/usr/bin/env bash
+cat "$FAKE_PS_OUT"
+EOF
+  chmod +x "$BIN/ps"
 }
 
 worker() {
@@ -75,12 +82,14 @@ sim() {
   local runner="$1"
   shift
   FLEET_ROOT="$ROOT" RUNNER_NAME="$runner" FLEET_SIMCTL="$BIN/simctl" \
+    FLEET_PS="$BIN/ps" FAKE_PS_OUT="$PS_OUT" \
     FAKE_SIM_STATE="$SIM_STATE" FAKE_SIM_LOG="$SIM_LOG" \
     bash "$HOOKS/simulator-control.sh" "$@"
 }
 
 hook() {
   FLEET_ROOT="$ROOT" RUNNER_NAME=test-ios FLEET_SIMCTL="$BIN/simctl" \
+    FLEET_PS="$BIN/ps" FAKE_PS_OUT="$PS_OUT" \
     FAKE_SIM_STATE="$SIM_STATE" FAKE_SIM_LOG="$SIM_LOG" \
     bash "$HOOKS/$1"
 }
@@ -136,6 +145,23 @@ echo "$CI_ONE" >> "$SIM_STATE"
 sim test-web complete
 ok "no shutdown for web job" "$(wc -l < "$SIM_LOG" | tr -d ' ')" "0"
 ok "no lease created for web job" "$([ -d "$ROOT/.simulator-cleanup" ] && echo yes || echo no)" "no"
+
+echo "== an unselected job's device in use survives a selected job's end =="
+# ultra, 2026-11-12: greenfolio-ios (selected) ended while homelake's
+# agent-shots (ultra-homelake-2, not selected) was mid-test on its own device.
+setup
+echo "$MANUAL" > "$SIM_STATE"
+worker
+sim test-ios start "$WORKER_PID"
+printf '%s\n%s\n' "$CI_ONE" "$CI_TWO" >> "$SIM_STATE"
+cat > "$PS_OUT" <<EOF
+/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test-without-building -scheme App -destination id=$CI_TWO
+/Library/Developer/CoreSimulator/launchd_sim /Users/x/Library/Developer/CoreSimulator/Devices/$CI_ONE/data/var/run/launchd_bootstrap.plist
+/Users/x/Library/Developer/CoreSimulator/Devices/$CI_ONE/data/Containers/Bundle/Application/A/App.app/App
+EOF
+sim test-ios complete
+ok "device an xcodebuild names stays booted" "$(grep -c "$CI_TWO" "$SIM_STATE")" "1"
+ok "device only its own processes name is shut down" "$(cat "$SIM_LOG")" "$CI_ONE"
 
 echo "== job hooks invoke simulator lifecycle with admission off =="
 setup
