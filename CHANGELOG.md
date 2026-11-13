@@ -10,6 +10,16 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Fixed
 
+- **Simulator cleanup never shuts down a simulator a job is still using.** When
+  the last runner matching `FLEET_SIMULATOR_RUNNERS` finished, the hook shut down
+  every simulator booted since its baseline, including ones that runners outside
+  the patterns were testing on. On ultra on 2026-11-12, each of four
+  `greenfolio-ios` job ends (21:09:44, 21:14:52, 21:29:21, 21:43:29 UTC) shut
+  down homelake's agent-shots simulator mid-test within a second ("Test crashed
+  with signal term"), and Jerv's UI suite twice. A device a live host process
+  outside it still names (`xcodebuild -destination id=…`) is now kept: the rule
+  `cleanup.sh`'s stray pass already used.
+
 - **`fleetctl.sh install` carries `FLEET_FAST_MS`, `FLEET_IDLE_MS` and
   `FLEET_GITHUB_SHARE`.** The plist template had none of them, so a cadence set in `fleet.env` never reached
   fleetd, and one set by hand in the plist was lost on the next install. On

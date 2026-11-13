@@ -722,9 +722,12 @@ crash cannot leave the host muted indefinitely.
 When `FLEET_SIMULATOR_CLEANUP=1`, runners named in
 `FLEET_SIMULATOR_RUNNERS` also acquire a simulator lease. The first overlapping
 job records every already-booted device as a baseline. After the final job ends,
-only devices absent from that baseline are shut down. A detached guardian
-releases the lease and performs the same cleanup if `Runner.Worker` exits
-without reaching the completion hook.
+only devices absent from that baseline are shut down, and never one a live
+host process outside the device still names (`xcodebuild -destination id=…`,
+`simctl`, a test driver): a runner outside `FLEET_SIMULATOR_RUNNERS` takes no
+lease but may be mid-test on its own simulator. A detached guardian releases the
+lease and performs the same cleanup if `Runner.Worker` exits without reaching
+the completion hook.
 
 Nothing in the fleet throttles execution — there is no scheduler, every
 registered runner listens independently, and if 27 of them are offered work in
@@ -793,7 +796,8 @@ Source: [`hooks/audio-control.sh`](https://github.com/addisdev/actions-runners/b
 
 Internal helper used by both job hooks when simulator cleanup is enabled. It
 records the devices booted before the first overlapping selected job, then
-shuts down only newly booted devices after the final selected job ends. Each
+shuts down only newly booted devices that no host process names after the
+final selected job ends. Each
 lease has a detached `Runner.Worker` guardian, so cancellation and abrupt worker
 failure follow the same cleanup path.
 Source: [`hooks/simulator-control.sh`](https://github.com/addisdev/actions-runners/blob/main/hooks/simulator-control.sh).
