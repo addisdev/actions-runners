@@ -29,6 +29,9 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Added
 
+- **A Team use issue form** and a README line that links to it, for teams
+  running this fleet to say what they would need (#135).
+
 - **The daemon keeps to half of the login's GitHub allowance.** With CI busy,
   every active-run list changes between 15-second polls, so ETags save little:
   on 2026-11-12 fleetd alone spent 4,600 to 5,400 counted calls an hour (3,790
