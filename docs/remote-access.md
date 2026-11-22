@@ -326,7 +326,7 @@ If you access the dashboard through a custom DNS name or a reverse proxy that
 adds its own hostname, add the name to `fleet.env`:
 
 ```sh
-FLEET_ALLOWED_HOSTS=my-mac.example.com,192.168.1.50
+FLEET_ALLOWED_HOSTS=my-mac.example.com,192.168.1.33
 ```
 
 ## Mobile layout
