@@ -1,0 +1,52 @@
+name: Team use
+description: Running Actions Runners or Fleet Cockpit for a team, or thinking about it? Say what you would need.
+title: "[team] "
+labels: ["team-interest"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Short on purpose. Nothing here commits either of us to anything; it
+        tells me what a team would need that the project does not have yet.
+
+  - type: dropdown
+    id: team-size
+    attributes:
+      label: Team size
+      description: People whose CI runs on these runners, or who watch the fleet.
+      options:
+        - Just me, for now
+        - 2 to 5
+        - 6 to 20
+        - 21 to 100
+        - More than 100
+    validations:
+      required: true
+
+  - type: input
+    id: hosts
+    attributes:
+      label: How many runner hosts
+      description: Macs running runners, and roughly how many runners and repositories.
+      placeholder: "3 Mac minis, about 40 runners across 25 repos"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: needs
+    attributes:
+      label: What would you need that it lacks?
+      options:
+        - label: Sign-in for the dashboard and API, per person
+        - label: Several users, each with their own access
+        - label: A shared queue across people or teams
+        - label: Support, with someone to ask and a response time
+        - label: Other (say below)
+
+  - type: textarea
+    id: anything-else
+    attributes:
+      label: Anything else
+      description: >
+        What you use now and what it costs, what would make you switch, or
+        what would stop you.
