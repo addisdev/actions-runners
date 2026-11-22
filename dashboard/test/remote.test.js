@@ -117,7 +117,7 @@ describe('isProxied', () => {
   });
 
   test('not proxied: LAN address without forwarding headers', () => {
-    const req = fakeReq({ host: '192.168.1.5', remoteAddress: '192.168.1.99' });
+    const req = fakeReq({ host: '192.168.1.31', remoteAddress: '192.168.1.30' });
     assert.equal(isProxied(req), false);
   });
 });
@@ -138,7 +138,7 @@ describe('isLocalRequest', () => {
   });
 
   test('not local: LAN address', () => {
-    const req = fakeReq({ host: '192.168.1.5', remoteAddress: '192.168.1.99' });
+    const req = fakeReq({ host: '192.168.1.31', remoteAddress: '192.168.1.30' });
     assert.equal(isLocalRequest(req), false);
   });
 
@@ -154,7 +154,7 @@ describe('isLocalRequest', () => {
 
 describe('requestOrigin', () => {
   test('returns http://host:port for direct LAN request', () => {
-    const req = fakeReq({ host: 'mac.local:7878', remoteAddress: '192.168.1.99' });
+    const req = fakeReq({ host: 'mac.local:7878', remoteAddress: '192.168.1.30' });
     assert.equal(requestOrigin(req, { port: 7878 }), 'http://mac.local:7878');
   });
 
@@ -186,7 +186,7 @@ describe('sameOrigin', () => {
   test('passes when Origin matches derived origin', () => {
     const req = fakeReq({
       host: 'localhost:7878',
-      remoteAddress: '192.168.1.99',
+      remoteAddress: '192.168.1.30',
       headers: { origin: 'http://localhost:7878' },
     });
     const result = sameOrigin(req, { port: 7878, host: '0.0.0.0' });
@@ -196,7 +196,7 @@ describe('sameOrigin', () => {
   test('rejects unknown Origin', () => {
     const req = fakeReq({
       host: 'localhost:7878',
-      remoteAddress: '192.168.1.99',
+      remoteAddress: '192.168.1.30',
       headers: { origin: 'http://evil.example.com:7878' },
     });
     const result = sameOrigin(req, { port: 7878, host: '0.0.0.0' });
@@ -225,7 +225,7 @@ describe('sameOrigin', () => {
     // spoofed https origin accepted.
     const req = fakeReq({
       host: 'localhost:7878',
-      remoteAddress: '192.168.1.99',
+      remoteAddress: '192.168.1.30',
       headers: { 'x-forwarded-proto': 'https', origin: 'https://localhost' },
     });
     assert.equal(sameOrigin(req, { port: 7878 }).ok, false);
@@ -259,7 +259,7 @@ describe('isTailnetAddress', () => {
   test('rejects neighbours of the range and ordinary LAN addresses', () => {
     assert.equal(isTailnetAddress('100.63.255.255'), false);
     assert.equal(isTailnetAddress('100.128.0.1'), false);
-    assert.equal(isTailnetAddress('192.168.1.10'), false);
+    assert.equal(isTailnetAddress('192.168.1.32'), false);
     assert.equal(isTailnetAddress(''), false);
     assert.equal(isTailnetAddress(undefined), false);
   });
@@ -281,8 +281,8 @@ describe('viewerContext', () => {
 
   test('a LAN client cannot claim a Tailscale identity by header', () => {
     const ctx = viewerContext(fakeReq({
-      host: '192.168.1.5',
-      remoteAddress: '192.168.1.99',
+      host: '192.168.1.31',
+      remoteAddress: '192.168.1.30',
       headers: { 'tailscale-user-login': 'boss@example.com' },
     }));
     assert.equal(ctx.via, 'lan');
