@@ -582,6 +582,9 @@ function settingsPanel() {
     group(['autoscale', 'autoscaleDryRun', 'scaleDown', 'minQueuedMs', 'scaleCooldownMs',
       'idleTtlMs']).map(field),
 
+    h('h4', { text: 'Closed-PR sweep' }),
+    group(['sweepClosedPr', 'sweepClosedPrDryRun', 'sweepClosedPrRepos']).map(field),
+
     h('h4', { text: 'Grouping' }),
     group(['groupsEnabled', 'groupMin', 'groupIgnore', 'projects']).map(field),
 

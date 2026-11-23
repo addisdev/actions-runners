@@ -49,7 +49,7 @@ function localMidnight(now) {
 
 export function timeline(db, { days = 7, now = Date.now(), cores = null } = {}) {
   const since = now - days * DAY;
-  const out = { days, generatedAt: now, incidents: [], today: null, week: null, flaky: [], samples: [] };
+  const out = { days, generatedAt: now, incidents: [], today: null, week: null, flaky: [], sweeps: [], samples: [] };
 
   try {
     out.incidents = db.prepare(`
@@ -97,6 +97,23 @@ export function timeline(db, { days = 7, now = Date.now(), cores = null } = {}) 
       WHERE failure_class = 'runner-lost' AND completed_at >= ? AND runner_name IS NOT NULL
       GROUP BY runner_name ORDER BY lost DESC LIMIT 8`).all(new Date(now - 7 * DAY).toISOString())
       .map((r) => ({ runner: r.runner, lost: r.lost }));
+  } catch { /* pre-migration */ }
+
+  // Runs the closed-PR sweep cancelled, or in dry run would cancel
+  // (lib/pr-sweep.js). Newest first, at most 200.
+  try {
+    out.sweeps = db.prepare(`
+      SELECT ts, action, args, ok, output FROM action_log
+      WHERE action LIKE 'sweep.closedPrRun%' AND ts >= ? ORDER BY ts DESC LIMIT 200`).all(since)
+      .map((r) => {
+        let a = {};
+        try { a = JSON.parse(r.args ?? '{}') ?? {}; } catch { /* kept as empty */ }
+        return {
+          at: r.ts, repo: a.repo ?? null, runId: a.runId ?? null, pr: a.pr ?? null,
+          merged: Boolean(a.merged), workflow: a.workflow ?? null,
+          dryRun: r.action.endsWith('(dry run)'), ok: r.ok === 1, outcome: r.output ?? null,
+        };
+      });
   } catch { /* pre-migration */ }
 
   // Two hours of host samples, at most 60 points, for sparklines.

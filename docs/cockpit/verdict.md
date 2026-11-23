@@ -66,6 +66,53 @@ Such a run shows *won't start on its own* instead of an ETA, and `cockpit wait`
 on it exits `2` at once. The full list of causes is in
 [Concepts](../concepts.md).
 
+### Queued runs of merged or closed PRs
+
+GitHub does not cancel a PR's runs when the PR closes, and `concurrency:` only
+supersedes a run when a later run of the same workflow starts. A later push
+that misses the workflow's `paths:` filter starts nothing, so the old run waits
+for a slot that nobody needs. On 2026-11-23 `homelake` had six queued `Public
+mirror (dry run)` runs for PRs that had merged hours earlier.
+
+Sessions never cancel other sessions' runs, so the daemon does it, with the
+**closed-PR sweep** (`dashboard/lib/pr-sweep.js`). Every five minutes, from the
+runs the fast loop already fetched, it cancels a run only when all of these
+hold:
+
+- its status is `queued`: never `in_progress`, never `waiting` (an environment
+  approval). The run is fetched again just before the cancel, and left if it
+  has started;
+- its event is `pull_request` (not `push`, not `pull_request_target`);
+- its repo is on the allow-list;
+- every PR GitHub has for the run's head branch is closed or merged. One open
+  PR on that branch and the run is left;
+- this attempt was triggered before the PR closed. A workflow listening for
+  `pull_request: types: [closed]`, or a person re-running a job after the
+  merge, starts a run after the close on purpose, and that run is left;
+- it has been queued for at least ten minutes.
+
+Anything GitHub cannot answer (a failed lookup, no PR found) leaves the run.
+The sweep pauses while fewer than 500 API calls are left in the hour, and looks
+up at most 20 branches per pass, oldest runs first.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `sweepClosedPr` | off | Run the sweep at all |
+| `sweepClosedPrDryRun` | on | List what it would cancel, cancel nothing. Always on for a read-only daemon |
+| `sweepClosedPrRepos` | empty | Repos it may touch, by name (`homelake`) or `owner/name`. Empty touches nothing |
+
+Change them on the dashboard's Settings panel (**Closed-PR sweep**) or with
+`PUT /api/settings`; they apply on the next pass, without a restart.
+
+Each cancel, and each run a dry run would cancel (once per run, not every
+pass), is a row in the action log (`sweep.closedPrRun`, or
+`sweep.closedPrRun (dry run)`) with the run id, repo and PR number, and comes
+back in `/api/timeline` as `sweeps`. `GET /api/sweeps/closed-prs` shows the
+switches and what the last pass found.
+
+To turn it on: set `sweepClosedPrRepos`, turn `sweepClosedPr` on, read what the
+dry run lists, then turn `sweepClosedPrDryRun` off.
+
 ## Collector stalled
 
 The daemon can be reachable and still not current: when its fast loop stops

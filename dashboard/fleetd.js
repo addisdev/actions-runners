@@ -34,6 +34,7 @@ import { buildRunners, deriveDrift, shapeRun, shapeJob } from './lib/state.js';
 import { deriveGroups } from './lib/groups.js';
 import { Backfill } from './lib/backfill.js';
 import { RunSettler } from './lib/settle.js';
+import { createPrSweep, SWEEP_ACTION, SWEEP_DRY_ACTION } from './lib/pr-sweep.js';
 import { RunStatus } from './lib/run-status.js';
 import { JobPriority } from './lib/priority.js';
 import { createJobClass } from './lib/job-class.js';
@@ -423,6 +424,33 @@ const logAction = db.prepare(
 const logCallerAction = db.prepare(
   'INSERT INTO action_log (ts, action, args, command, exit_code, ok, output, caller) VALUES (?,?,?,?,?,?,?,?)'
 );
+
+// Queued pull_request runs whose PR already merged or closed (lib/pr-sweep.js).
+// Runs on the fast loop's own run list, at most every five minutes; off and dry
+// run by default. Each cancel, and each run a dry run would cancel, is one
+// action_log row, which /api/timeline reads back as `sweeps`.
+const prSweep = createPrSweep({
+  gh,
+  config: () => ({
+    enabled: settings.get('sweepClosedPr'),
+    // A read-only daemon never mutates: it can still say what it would do.
+    dryRun: CONFIG.readOnly || settings.get('sweepClosedPrDryRun'),
+    repos: settings.get('sweepClosedPrRepos'),
+  }),
+  record: (item) => logCallerAction.run(
+    Date.now(),
+    item.dryRun ? SWEEP_DRY_ACTION : SWEEP_ACTION,
+    JSON.stringify({ repo: item.repo, runId: item.runId, pr: item.pr, merged: item.merged,
+      workflow: item.workflow, branch: item.branch, queuedSince: item.queuedSince }),
+    `POST repos/${item.repo}/actions/runs/${item.runId}/cancel`,
+    null,
+    item.ok ? 1 : 0,
+    `${item.outcome}: ${item.reason}`.slice(0, 4000),
+    'fleetd',
+  ),
+  log,
+  warn,
+});
 
 // Read fresh on every rebuild rather than captured once, so changing a grouping
 // setting regroups the fleet on the next tick instead of on the next restart.
@@ -2056,6 +2084,11 @@ async function fastTick(progress = null) {
 
   const allRuns = [...rawRunsByKey.values()].map(({ repo, run }) => shapeRun(repo, run, groups));
 
+  // Not awaited: its PR lookups and cancels must not stretch the tick. It
+  // never overlaps itself and runs at most every five minutes.
+  prSweep.maybeRun([...rawRunsByKey.values()], started)
+    ?.catch((err) => warn('closed-PR sweep:', err.message));
+
   // Only worth showing when it survived the retries inside gh.get().
   //
   // Counted by distinct REPO, not by failed call. Each repo contributes two
@@ -3283,6 +3316,10 @@ const server = http.createServer(async (req, res) => {
     if (!postureCache || url.searchParams.get('refresh') === '1') await refreshPosture();
     return json(res, postureCache ?? { items: [], open: 0 });
   }
+
+  // The closed-PR sweep's switches and what its last pass found (or, in dry
+  // run, would cancel). Readable without a token, like /api/settings.
+  if (url.pathname === '/api/sweeps/closed-prs') return json(res, prSweep.status());
 
   if (url.pathname === '/api/timeline') {
     const days = Math.min(Math.max(Number(url.searchParams.get('days') ?? 7) || 7, 1), 30);
