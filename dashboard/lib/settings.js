@@ -111,6 +111,17 @@ export const SCHEMA = {
   provisionUnserved: { type: 'bool', default: false,
     label: 'Register a first runner when a repo has queued work and none' },
 
+  // ---- closed-PR sweep (lib/pr-sweep.js) ----------------------------------
+  // Cancels QUEUED pull_request runs whose PR has already merged or closed,
+  // in the allow-listed repos only. Off by default; once on it is a dry run
+  // (logs what it would cancel) until sweepClosedPrDryRun is turned off.
+  sweepClosedPr: { type: 'bool', default: false,
+    label: 'Cancel queued runs of merged or closed PRs' },
+  sweepClosedPrDryRun: { type: 'bool', default: true,
+    label: 'List what the closed-PR sweep would cancel, but cancel nothing' },
+  sweepClosedPrRepos: { type: 'list', default: [],
+    label: 'Repos the closed-PR sweep may touch (names, e.g. homelake)' },
+
   // ---- pre-warming (forecast-driven) --------------------------------------
   // Off by default. Shadow evaluation must pass before fleetd may call
   // planPrewarm with enabled=true; the planner itself also refuses when the

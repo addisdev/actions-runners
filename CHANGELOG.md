@@ -42,6 +42,20 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Added
 
+- **fleetd can cancel queued runs of merged or closed PRs.** GitHub leaves a
+  PR's queued runs in place when the PR closes, and a later push that misses
+  the workflow's `paths:` filter never supersedes them: on 2026-11-23 homelake
+  had six `Public mirror (dry run)` runs queued for PRs merged hours before. The
+  closed-PR sweep (`lib/pr-sweep.js`) runs on the fast loop every five minutes
+  and cancels a run only if it is `queued`, from a `pull_request` event, in an
+  allow-listed repo, every PR on its head branch is closed, and it was
+  triggered before the PR closed. A cancel that leaves the run still `queued`
+  20 s later (as seven homelake runs waiting on a self-hosted runner did) is
+  followed by force-cancel, never for a run that has started. Each cancel is logged to the action log and
+  `/api/timeline` (`sweeps`); `/api/sweeps/closed-prs` shows the last pass.
+  Off by default (`sweepClosedPr`), a dry run once on (`sweepClosedPrDryRun`),
+  and empty `sweepClosedPrRepos` touches nothing.
+
 - **A Team use issue form** and a README line that links to it, for teams
   running this fleet to say what they would need (#135).
 

@@ -418,7 +418,17 @@ time, admission-held time and jobs lost to the host (`today`), the week's
 incident count, per-rung counts, mean time to clear and longest-waiting repos
 (`week`), runners that lost jobs (`flaky`), and two hours of host samples
 downsampled for sparklines (`samples`: `[ts, load per core, swap-ins/s, disk
-free GB, busy runners]`). `days` is 1–30.
+free GB, busy runners]`), and the runs the closed-PR sweep cancelled or, in dry
+run, would cancel (`sweeps`: `at`, `repo`, `runId`, `pr`, `merged`, `workflow`,
+`dryRun`, `ok`, `outcome`). `days` is 1–30.
+
+### `GET /api/sweeps/closed-prs`
+
+The closed-PR sweep's switches (`enabled`, `dryRun`, `repos`, `intervalMs`,
+`minQueuedMs`, `recheckMs`) and its last pass (`last`: `at`, `considered`, `skipped`, and
+`items`, one per run it cancelled, would cancel, or left because it had started
+since). `last` is null until a pass has run. See
+[Queued runs of merged or closed PRs](cockpit/verdict.md#queued-runs-of-merged-or-closed-prs).
 
 ### `GET /api/runner?name=<runner-name>`
 
