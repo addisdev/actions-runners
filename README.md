@@ -18,6 +18,8 @@ The dashboard exists because GitHub has no cross-repo Actions view, and half of
 the question — *is that runner even alive* — is not answerable from GitHub at
 all.
 
+Running this for a team? [Tell me what you need](https://github.com/addisdev/actions-runners/issues/new?template=team-use.yml).
+
 ## At a glance
 
 | | |
