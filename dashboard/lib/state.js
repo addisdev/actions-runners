@@ -345,8 +345,11 @@ export function shapeRun(repo, run, groups = FLAT) {
 // relies on, createdAt + queuedMs = startedAt (the forecast and the simulator
 // rebuild arrival times from it) and startedAt + durationMs = completedAt.
 // Nothing is lost: GitHub's started_at for these jobs is createdAt, which is kept.
+// Skipped jobs are left as GitHub sends them: they never counted as build time,
+// and thousands carry a completed_at before their started_at.
 function unrunJob(job) {
-  return !job.runner_name && job.status === 'completed' && Boolean(job.completed_at);
+  return !job.runner_name && job.status === 'completed' && Boolean(job.completed_at)
+    && job.conclusion !== 'skipped';
 }
 
 export function shapeJob(repo, job) {

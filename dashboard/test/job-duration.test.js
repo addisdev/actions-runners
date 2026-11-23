@@ -63,6 +63,13 @@ describe('shapeJob — build time is runner time', () => {
     assert.equal(j.startedAt, '2026-11-22T10:00:00Z');
   });
 
+  test('a skipped job is read as GitHub sends it', () => {
+    const j = shapeJob('o/r', raw({ conclusion: 'skipped', runner_name: '', created_at: '2026-11-22T10:00:00Z',
+      started_at: '2026-11-22T10:00:05Z', completed_at: '2026-11-22T10:00:01Z' }));
+    assert.equal(j.startedAt, '2026-11-22T10:00:05Z');
+    assert.equal(j.durationMs, null);
+  });
+
   test('a skipped job stays at zero', () => {
     const t = '2026-11-22T10:00:00Z';
     const j = shapeJob('o/r', raw({ conclusion: 'skipped', runner_name: '', created_at: t, started_at: t, completed_at: t }));
@@ -91,6 +98,9 @@ describe('correctUnrunJobs — rows stored before the fix', () => {
     // Normal success: untouched.
     ins.run(4, 1, 'o/r', 'stitch', 'completed', 'success', '2026-11-22T10:00:00Z', '2026-11-22T10:01:00Z',
       '2026-11-22T10:04:00Z', 'homelake-3', 60_000, 180_000);
+    // Skipped with completed_at before started_at (8k such rows on ultra): untouched.
+    ins.run(6, 1, 'o/r', 'lint', 'completed', 'skipped', '2026-11-22T10:00:00Z', '2026-11-22T10:00:05Z',
+      '2026-11-22T10:00:01Z', null, 5_000, null);
     // Still queued: untouched.
     ins.run(5, 1, 'o/r', 'stitch', 'queued', null, '2026-11-22T10:00:00Z', '2026-11-22T10:00:00Z',
       null, null, 0, null);
@@ -117,6 +127,7 @@ describe('correctUnrunJobs — rows stored before the fix', () => {
     assert.deepEqual([row(4).queued_ms, row(4).duration_ms], [60_000, 180_000]);
     assert.equal(row(5).duration_ms, null);
     assert.equal(row(5).started_at, '2026-11-22T10:00:00Z');
+    assert.deepEqual([row(6).started_at, row(6).queued_ms, row(6).duration_ms], ['2026-11-22T10:00:05Z', 5_000, null]);
   });
 
   test('is a no-op the second time, so it can run on every start', () => {

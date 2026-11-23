@@ -627,7 +627,7 @@ export function correctUnrunJobs(db) {
       queued_ms   = MAX(0, CAST(ROUND((julianday(completed_at) - julianday(created_at)) * 86400000) AS INTEGER)),
       duration_ms = 0
     WHERE runner_name IS NULL AND status = 'completed' AND completed_at IS NOT NULL
-      AND created_at IS NOT NULL
+      AND created_at IS NOT NULL AND conclusion IS NOT 'skipped'
       AND (COALESCE(duration_ms, -1) <> 0 OR started_at IS NOT completed_at)`).run();
   const n = Number(res.changes ?? 0);
   if (n > 0) setMeta(db, 'migration.unrun_job_duration', `${n} rows corrected at ${new Date().toISOString()}`);
