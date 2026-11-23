@@ -91,6 +91,14 @@ hold:
   merge, starts a run after the close on purpose, and that run is left;
 - it has been queued for at least ten minutes.
 
+A plain cancel is not always enough. GitHub accepts it, but a run waiting for
+a self-hosted runner can still be `queued` long afterwards: on 2026-11-23 seven
+homelake runs were all still queued 20 seconds after `gh run cancel`, and
+`force-cancel` cleared them in 15 seconds. So 20 seconds after its cancels the
+sweep looks at each run once more, and force-cancels any that is **still
+`queued`**. A run that has started by then is never forced, because
+force-cancel skips `if: always()` steps.
+
 Anything GitHub cannot answer (a failed lookup, no PR found) leaves the run.
 The sweep pauses while fewer than 500 API calls are left in the hour, and looks
 up at most 20 branches per pass, oldest runs first.
@@ -106,7 +114,8 @@ Change them on the dashboard's Settings panel (**Closed-PR sweep**) or with
 
 Each cancel, and each run a dry run would cancel (once per run, not every
 pass), is a row in the action log (`sweep.closedPrRun`, or
-`sweep.closedPrRun (dry run)`) with the run id, repo and PR number, and comes
+`sweep.closedPrRun (dry run)`) with the run id, repo and PR number, and an
+outcome of `cancelled`, `force-cancelled` or why the run was left. It comes
 back in `/api/timeline` as `sweeps`. `GET /api/sweeps/closed-prs` shows the
 switches and what the last pass found.
 

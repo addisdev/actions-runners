@@ -13,6 +13,8 @@
 //   - status exactly `queued`. Never in_progress, never `waiting` (an
 //     environment approval is a person's decision), and the run is fetched again
 //     just before the cancel so one that started since the snapshot is left.
+//     A cancel GitHub accepted but that left the run `queued` 20 s later is
+//     followed by force-cancel, again only while the run is still `queued`.
 //   - event exactly `pull_request`.
 //   - a repo on the allow-list.
 //   - every PR GitHub knows for the run's head branch is closed. One open PR on
@@ -33,6 +35,9 @@ export const SWEEP_ACTION = 'sweep.closedPrRun';
 export const SWEEP_DRY_ACTION = 'sweep.closedPrRun (dry run)';
 export const DEFAULT_MIN_QUEUED_MS = 10 * 60 * 1000;
 export const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
+// How long after a cancel to look again before force-cancelling a run that is
+// still queued.
+export const DEFAULT_RECHECK_MS = 20 * 1000;
 // Below this many API calls left in the hour the sweep waits: the fast loop's
 // reads matter more than tidying.
 export const MIN_RATE_REMAINING = 500;
@@ -118,13 +123,15 @@ export function judgeRun(run, pulls) {
  *
  * @param {object} o
  * @param {object} o.gh GitHub client: get(), post(), run(), rate
+ * @param {number} [o.recheckMs] wait after cancelling before the force-cancel check
  * @param {() => {enabled: boolean, dryRun: boolean, repos: string[]}} o.config read on every pass
  * @param {(entry: object) => void} o.record writes one action_log row
  */
 export function createPrSweep({
   gh, config, record = () => {}, log = () => {}, warn = () => {},
   intervalMs = DEFAULT_INTERVAL_MS, minQueuedMs = DEFAULT_MIN_QUEUED_MS,
-  maxLookups = MAX_LOOKUPS_PER_PASS,
+  maxLookups = MAX_LOOKUPS_PER_PASS, recheckMs = DEFAULT_RECHECK_MS,
+  sleep = (t) => new Promise((resolve) => setTimeout(resolve, t)),
 }) {
   let lastPassAt = 0;
   let inFlight = null;
@@ -167,6 +174,7 @@ export function createPrSweep({
       .sort((a, b) => triggeredAt(a.run) - triggeredAt(b.run));
     result.considered = candidates.length;
     const cache = new Map();
+    const sent = [];
     for (const { repo, run } of candidates) {
       // Counted by head branch looked up, not by run: runs sharing a branch
       // share one answer.
@@ -209,16 +217,46 @@ export function createPrSweep({
           continue;
         }
         await gh.post(`repos/${repo}/actions/runs/${run.id}/cancel`);
-        item.outcome = 'cancelled';
+        item.outcome = 'cancel sent';
         item.ok = true;
-        log(`closed-PR sweep: cancelled ${repo} run ${run.id} (PR #${judged.pr}, ${run.name ?? 'workflow'})`);
+        sent.push(item);
       } catch (err) {
         item.outcome = `cancel failed: ${err.message}`;
         item.ok = false;
         warn(`closed-PR sweep: ${repo} run ${run.id}: ${err.message}`);
       }
       result.items.push(item);
-      record(item);
+      if (!item.ok) record(item);
+    }
+
+    // A plain cancel is accepted ("submitted") but does not always land: on
+    // 2026-11-23 seven homelake runs waiting for a self-hosted runner were all
+    // still `queued` 20 s after it, and force-cancel cleared them in 15 s. So
+    // every cancel is checked once after recheckMs, and a run STILL `queued`
+    // is force-cancelled. Only queued: force-cancel skips `if: always()` steps,
+    // so a run that has started in the meantime is never forced.
+    if (sent.length) {
+      await sleep(recheckMs);
+      for (const item of sent) {
+        try {
+          const after = await gh.run(item.repo, item.runId);
+          if (after?.status === 'completed') {
+            item.outcome = `cancelled (${after.conclusion ?? 'completed'})`;
+          } else if (after?.status === 'queued') {
+            await gh.post(`repos/${item.repo}/actions/runs/${item.runId}/force-cancel`);
+            item.outcome = 'force-cancelled (still queued after cancel)';
+          } else {
+            item.outcome = `cancel sent; now ${after?.status ?? 'unknown'}, not forced`;
+          }
+          item.ok = true;
+          log(`closed-PR sweep: ${item.outcome}: ${item.repo} run ${item.runId} (PR #${item.pr}, ${item.workflow ?? 'workflow'})`);
+        } catch (err) {
+          item.outcome = `cancel sent; re-check or force-cancel failed: ${err.message}`;
+          item.ok = false;
+          warn(`closed-PR sweep: ${item.repo} run ${item.runId}: ${err.message}`);
+        }
+        record(item);
+      }
     }
     // Forget dry-run reports for runs no longer queued, so the set stays small.
     const live = new Set((runs ?? []).map(({ repo, run }) => `${repo}:${run?.id}:${run?.run_attempt ?? 1}`));
@@ -247,7 +285,7 @@ export function createPrSweep({
       const cfg = config();
       return {
         enabled: Boolean(cfg.enabled), dryRun: Boolean(cfg.dryRun), repos: cfg.repos ?? [],
-        intervalMs, minQueuedMs, last,
+        intervalMs, minQueuedMs, recheckMs, last,
       };
     },
   };

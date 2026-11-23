@@ -36,9 +36,13 @@ function pr({ number, state = 'closed', merged = true, sha, closedAt = NOW - 2 *
 }
 
 // A fake GitHub: PRs by head ("owner:branch"), runs by id (what a fresh fetch
-// answers), and a record of every cancel posted.
-function fakeGh({ pulls = {}, runs = {}, remaining = 5000, failHeads = [] } = {}) {
+// answers; default queued), and a record of every POST. A cancel completes the
+// run unless the run is in `sticky` (GitHub accepted the cancel and left it
+// queued, as it did for runs waiting on a self-hosted runner); a force-cancel
+// always completes it.
+function fakeGh({ pulls = {}, runs = {}, remaining = 5000, failHeads = [], sticky = [] } = {}) {
   const calls = { gets: [], posts: [] };
+  const state = new Map(Object.entries(runs).map(([id, r]) => [Number(id), r]));
   return {
     calls,
     rate: { remaining },
@@ -57,8 +61,18 @@ function fakeGh({ pulls = {}, runs = {}, remaining = 5000, failHeads = [] } = {}
       }
       throw new Error(`unexpected GET ${path}`);
     },
-    async run(repo, id) { return runs[id] ?? { id, status: 'queued' }; },
-    async post(path) { calls.posts.push(path); return null; },
+    async run(repo, id) { return state.get(id) ?? { id, status: 'queued' }; },
+    async post(path) {
+      calls.posts.push(path);
+      const m = path.match(/runs\/(\d+)\/(cancel|force-cancel)$/);
+      if (m) {
+        const id = Number(m[1]);
+        if (m[2] === 'force-cancel' || !sticky.includes(id)) {
+          state.set(id, { id, status: 'completed', conclusion: 'cancelled' });
+        }
+      }
+      return null;
+    },
   };
 }
 
@@ -68,6 +82,7 @@ function sweepWith(gh, cfg = {}) {
     gh,
     config: () => ({ enabled: true, dryRun: false, repos: ['homelake'], ...cfg }),
     record: (item) => records.push(item),
+    sleep: async () => {},
   });
   return { sweep, records };
 }
@@ -165,9 +180,63 @@ describe('createPrSweep', () => {
     ].sort());
     assert.equal(res.considered, 3);
     assert.deepEqual(records.map((r) => [r.runId, r.pr, r.repo, r.outcome]).sort(), [
-      [merged.id, 714, REPO, 'cancelled'],
-      [closed.id, 715, REPO, 'cancelled'],
+      [merged.id, 714, REPO, 'cancelled (cancelled)'],
+      [closed.id, 715, REPO, 'cancelled (cancelled)'],
     ].sort());
+  });
+
+  test('a cancel that leaves the run queued is followed by force-cancel', async () => {
+    const r = run({ sha: 'abc' });
+    const gh = fakeGh({ pulls: { 'addisdev:feat/x': [pr({ number: 720, sha: 'abc' })] }, sticky: [r.id] });
+    const { sweep, records } = sweepWith(gh);
+    await sweep.maybeRun([{ repo: REPO, run: r }], NOW);
+    assert.deepEqual(gh.calls.posts, [
+      `repos/${REPO}/actions/runs/${r.id}/cancel`,
+      `repos/${REPO}/actions/runs/${r.id}/force-cancel`,
+    ]);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].ok, true);
+    assert.match(records[0].outcome, /^force-cancelled/);
+  });
+
+  test('a cancel that landed needs no force-cancel', async () => {
+    const r = run({ sha: 'abc' });
+    const gh = fakeGh({ pulls: { 'addisdev:feat/x': [pr({ number: 722, sha: 'abc' })] } });
+    const { sweep } = sweepWith(gh);
+    await sweep.maybeRun([{ repo: REPO, run: r }], NOW);
+    assert.deepEqual(gh.calls.posts, [`repos/${REPO}/actions/runs/${r.id}/cancel`]);
+  });
+
+  test('a run that started between the cancel and the re-check is never forced', async () => {
+    const r = run({ sha: 'abc' });
+    const gh = fakeGh({ pulls: { 'addisdev:feat/x': [pr({ number: 723, sha: 'abc' })] }, sticky: [r.id] });
+    const post = gh.post;
+    gh.post = async (path) => {
+      await post(path);
+      // GitHub handed the run to a runner just as the cancel was accepted.
+      if (path.endsWith('/cancel')) gh.run = async (repo, id) => ({ id, status: 'in_progress' });
+    };
+    const { sweep, records } = sweepWith(gh);
+    await sweep.maybeRun([{ repo: REPO, run: r }], NOW);
+    assert.equal(gh.calls.posts.filter((p) => p.endsWith('/force-cancel')).length, 0);
+    assert.match(records[0].outcome, /now in_progress, not forced/);
+  });
+
+  test('the re-check waits once for the whole pass, not once per run', async () => {
+    const a = run({ branch: 'feat/a', sha: 'a1' });
+    const b = run({ branch: 'feat/b', sha: 'b1' });
+    const gh = fakeGh({ pulls: {
+      'addisdev:feat/a': [pr({ number: 1, sha: 'a1' })],
+      'addisdev:feat/b': [pr({ number: 2, sha: 'b1' })],
+    }, sticky: [a.id, b.id] });
+    const waits = [];
+    const sweep = createPrSweep({
+      gh, config: () => ({ enabled: true, dryRun: false, repos: ['homelake'] }),
+      sleep: async (t) => { waits.push(t); },
+    });
+    await sweep.maybeRun([a, b].map((r) => ({ repo: REPO, run: r })), NOW);
+    assert.deepEqual(waits, [20_000]);
+    assert.equal(gh.calls.posts.filter((p) => p.endsWith('/force-cancel')).length, 2);
   });
 
   test('a run that started since the snapshot is not cancelled', async () => {

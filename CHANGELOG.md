@@ -49,7 +49,9 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
   closed-PR sweep (`lib/pr-sweep.js`) runs on the fast loop every five minutes
   and cancels a run only if it is `queued`, from a `pull_request` event, in an
   allow-listed repo, every PR on its head branch is closed, and it was
-  triggered before the PR closed. Each cancel is logged to the action log and
+  triggered before the PR closed. A cancel that leaves the run still `queued`
+  20 s later (as seven homelake runs waiting on a self-hosted runner did) is
+  followed by force-cancel, never for a run that has started. Each cancel is logged to the action log and
   `/api/timeline` (`sweeps`); `/api/sweeps/closed-prs` shows the last pass.
   Off by default (`sweepClosedPr`), a dry run once on (`sweepClosedPrDryRun`),
   and empty `sweepClosedPrRepos` touches nothing.

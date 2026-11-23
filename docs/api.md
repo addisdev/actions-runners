@@ -425,7 +425,7 @@ run, would cancel (`sweeps`: `at`, `repo`, `runId`, `pr`, `merged`, `workflow`,
 ### `GET /api/sweeps/closed-prs`
 
 The closed-PR sweep's switches (`enabled`, `dryRun`, `repos`, `intervalMs`,
-`minQueuedMs`) and its last pass (`last`: `at`, `considered`, `skipped`, and
+`minQueuedMs`, `recheckMs`) and its last pass (`last`: `at`, `considered`, `skipped`, and
 `items`, one per run it cancelled, would cancel, or left because it had started
 since). `last` is null until a pass has run. See
 [Queued runs of merged or closed PRs](cockpit/verdict.md#queued-runs-of-merged-or-closed-prs).
