@@ -10,6 +10,19 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Fixed
 
+- **A job no runner ever claimed records no build time.** GitHub fills in
+  `started_at` (a copy of `created_at`) and `completed_at` for a job cancelled
+  while still queued, so fleetd stored the whole queue wait as `duration_ms`. On
+  ultra that was 3,655 rows and 4,740 "build hours" of pure waiting; homelake's
+  `stitch` showed 131 build-hours in 14 days of which 129.8 were jobs cancelled
+  in the queue by a newer run. A completed job with no runner now leaves the
+  queue when it completes: the wait is `queued_ms`, `duration_ms` is 0, and
+  `started_at` moves to `completed_at`, so `created_at + queued_ms = started_at`
+  still holds for the forecast and the simulator. Stored rows are corrected in
+  place on start (`correctUnrunJobs`, idempotent, count kept in `meta`):
+  nothing is lost because GitHub's `started_at` for these jobs equals
+  `created_at`, and every reader (the dashboard, the HomeLake lake's
+  `fct_ci_job`, ad-hoc build-hour queries) gets the right number without a flag.
 - **Simulator cleanup never shuts down a simulator a job is still using.** When
   the last runner matching `FLEET_SIMULATOR_RUNNERS` finished, the hook shut down
   every simulator booted since its baseline, including ones that runners outside
