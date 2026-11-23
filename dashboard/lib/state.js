@@ -333,7 +333,25 @@ export function shapeRun(repo, run, groups = FLAT) {
   };
 }
 
+// A job no runner ever claimed has not been built, however long it waited.
+// GitHub still fills in started_at for it, as a copy of created_at, and stamps
+// completed_at when a newer run cancels it out of the queue. Read naively those
+// two make the whole queue wait look like build time: homelake's `stitch` showed
+// 131 build-hours in 14 days of which 129.8 were jobs cancelled in the queue.
+//
+// So a completed job with no runner is read as having left the queue when it
+// completed: the wait goes to queuedMs, durationMs is zero, and startedAt moves
+// to completedAt. Moving startedAt keeps the two identities every consumer
+// relies on, createdAt + queuedMs = startedAt (the forecast and the simulator
+// rebuild arrival times from it) and startedAt + durationMs = completedAt.
+// Nothing is lost: GitHub's started_at for these jobs is createdAt, which is kept.
+function unrunJob(job) {
+  return !job.runner_name && job.status === 'completed' && Boolean(job.completed_at);
+}
+
 export function shapeJob(repo, job) {
+  const unrun = unrunJob(job);
+  const startedAt = unrun ? job.completed_at : job.started_at;
   return {
     id: job.id,
     runId: job.run_id,
@@ -342,7 +360,7 @@ export function shapeJob(repo, job) {
     status: job.status,
     conclusion: job.conclusion,
     createdAt: job.created_at,
-    startedAt: job.started_at,
+    startedAt,
     completedAt: job.completed_at,
     // GitHub sends "" — not null — for a job no runner ever claimed. Left as an
     // empty string it is a value that looks present in SQL and reads as absent
@@ -350,8 +368,8 @@ export function shapeJob(repo, job) {
     runnerName: job.runner_name || null,
     runnerId: job.runner_id || null,
     labels: job.labels ?? [],
-    queuedMs: ms(job.created_at, job.started_at),
-    durationMs: ms(job.started_at, job.completed_at),
+    queuedMs: ms(job.created_at, startedAt),
+    durationMs: unrun ? 0 : ms(job.started_at, job.completed_at),
     url: job.html_url,
   };
 }

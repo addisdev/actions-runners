@@ -606,7 +606,32 @@ export function openDb(path) {
   `);
   addColumn(db, 'host_commands', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
 
+  correctUnrunJobs(db);
+
   return db;
+}
+
+// Rows stored before shapeJob learned that a job no runner claimed has no build
+// time (see unrunJob in state.js) carry the whole queue wait as duration_ms.
+// Corrected in place rather than flagged: the right values follow from columns
+// every row already has (GitHub's started_at for these jobs is a copy of
+// created_at), so nothing is lost, and every reader — the dashboard, the lake's
+// fct_ci_job, ad-hoc build-hour queries — gets the true number without having to
+// know about a flag. Idempotent: a corrected row no longer matches, so this is a
+// no-op on every start after the first.
+export function correctUnrunJobs(db) {
+  db.exec(`UPDATE jobs SET runner_name = NULL WHERE runner_name = ''`);
+  const res = db.prepare(`
+    UPDATE jobs SET
+      started_at  = completed_at,
+      queued_ms   = MAX(0, CAST(ROUND((julianday(completed_at) - julianday(created_at)) * 86400000) AS INTEGER)),
+      duration_ms = 0
+    WHERE runner_name IS NULL AND status = 'completed' AND completed_at IS NOT NULL
+      AND created_at IS NOT NULL
+      AND (COALESCE(duration_ms, -1) <> 0 OR started_at IS NOT completed_at)`).run();
+  const n = Number(res.changes ?? 0);
+  if (n > 0) setMeta(db, 'migration.unrun_job_duration', `${n} rows corrected at ${new Date().toISOString()}`);
+  return n;
 }
 
 export function getMeta(db, key, fallback = null) {
