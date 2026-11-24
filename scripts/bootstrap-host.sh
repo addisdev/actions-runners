@@ -22,6 +22,10 @@
 #               ~/.gradle/gradle.properties (idle daemons held 40 GB on a 96 GB host)
 #   playwright  copy the peer's warm ~/Library/Caches/ms-playwright (a cold cache
 #               failed Firefox jobs while it filled)
+#   python3     /opt/homebrew/bin/python3 (and pip3, python3-config, pydoc3, idle3,
+#               wheel3) linked to the Python the peer's python3 is, when Homebrew no
+#               longer links it: since python@3.15 became Homebrew's python3, a
+#               versioned python@3.14 installs only python3.14 (forge, 2026-11-24)
 #   pyyaml      PyYAML (pip --user) for Homebrew's python3 and /usr/bin/python3
 #   toolcache   ~/hostedtoolcache, where setup-* actions expect a tool cache
 #   colima      a small build-only Docker VM (4 CPU, 6 GB), started at login
@@ -38,7 +42,7 @@ ROOT="${FLEET_BOOTSTRAP_ROOT:-$HERE}"
 BREWFILE="$HERE/examples/Brewfile.ci"
 TEMPLATE="$HERE/examples/fleet.env.build-box"
 APPS="${FLEET_BOOTSTRAP_APPS:-/Applications}"
-ALL_STEPS="brew xcode metal runtimes android gradle playwright pyyaml toolcache colima fleet-env"
+ALL_STEPS="brew xcode metal runtimes android gradle playwright python3 pyyaml toolcache colima fleet-env"
 
 PEER=""; APPLY=0; ONLY=""; COORD=""
 while [ $# -gt 0 ]; do
@@ -223,6 +227,25 @@ step_playwright() {
     peer "cd ~/Library/Caches/ms-playwright && tar -cf - $missing" | tar -C "$cache" -xpf - \
       && ok "copied" || bad "Playwright cache copy failed"
   fi
+}
+
+step_python3() {
+  header "Unversioned python3 (the peer's python3, as Homebrew linked it there)"
+  local bin="${FLEET_BOOTSTRAP_BREW_BIN:-/opt/homebrew/bin}" ver keg n
+  if [ -e "$bin/python3" ]; then ok "$bin/python3 is $("$bin/python3" -V 2>&1)"; return; fi
+  if [ -n "${FLEET_BOOTSTRAP_PEER_PY:-}" ]; then ver="$FLEET_BOOTSTRAP_PEER_PY"; else
+    need_peer || return 0
+    ver="$(peer '/opt/homebrew/bin/python3 -c "import sys; print(\"%d.%d\" % sys.version_info[:2])"' 2>/dev/null)"
+  fi
+  [ -n "$ver" ] || { bad "cannot read the peer's python3 version"; return; }
+  keg="$(dirname "$bin")/opt/python@$ver/libexec/bin"
+  [ -x "$keg/python3" ] || { bad "the peer's python3 is $ver but python@$ver is not installed here (examples/Brewfile.ci)"; return; }
+  todo "link python3 pip3 python3-config pydoc3 idle3 wheel3 in $bin to python@$ver"
+  [ "$APPLY" -eq 1 ] || return 0
+  for n in python3 pip3 python3-config pydoc3 idle3 wheel3; do
+    [ -e "$keg/$n" ] && [ ! -e "$bin/$n" ] && ln -s "../opt/python@$ver/libexec/bin/$n" "$bin/$n"
+  done
+  [ -x "$bin/python3" ] && ok "$bin/python3 is $("$bin/python3" -V 2>&1)" || bad "linking python3 failed"
 }
 
 step_pyyaml() {
