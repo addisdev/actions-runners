@@ -67,38 +67,83 @@ WT_KB=0
 WT_LINES=""
 WT_RUN=""
 WT_PREFIX=""
+# Set by cleanup.sh, which trims other runners' work trees and so has to ask
+# whether each one is still idle while it works (see "Busy right now" there):
+#   WT_GUARD     a command asked before each move; when it fails nothing more
+#                moves and WT_HALTED is 1.
+#   WT_DEFER_DU  1: measure what moved only afterwards (wt_measure_deferred),
+#                so the moves under its lock are renames and nothing slower.
+WT_GUARD=""
+WT_HALTED=0
+WT_DEFER_DU="${WT_DEFER_DU:-0}"
+WT_DEFERRED=""
 
 wt_say() {
   WT_LINES="${WT_LINES}${WT_PREFIX}$*
 "
 }
 
+wt_kb() {
+  local kb
+  kb="$(du -sk "$1" 2>/dev/null | cut -f1)"
+  case "$kb" in '' | *[!0-9]*) kb=0 ;; esac
+  printf '%s' "$kb"
+}
+
 # wt_trash PATH WHY: move PATH into this run's trash folder (or say it would).
 wt_trash() {
-  local p="$1" why="$2" kb rel
+  local p="$1" why="$2" kb=0 rel dst=""
   [ -e "$p" ] || [ -L "$p" ] || return 0
-  kb="$(du -sk "$p" 2>/dev/null | cut -f1)"
-  case "$kb" in '' | *[!0-9]*) kb=0 ;; esac
+  if [ -n "$WT_GUARD" ] && ! "$WT_GUARD"; then
+    # shellcheck disable=SC2034 # read by cleanup.sh
+    WT_HALTED=1
+    return 0
+  fi
   rel="${p#"$ROOT"/}"
-  if [ "$WT_APPLY" = 1 ]; then
-    if [ -z "$WT_RUN" ]; then
-      mkdir -p "$WT_TRASH" 2>/dev/null && WT_RUN="$(mktemp -d "$WT_TRASH/run.XXXXXX" 2>/dev/null)" || WT_RUN=""
-    fi
-    # A rename on the same volume, or, when that fails, the slow way.
-    if [ -z "$WT_RUN" ] || ! mv -- "$p" "$WT_RUN/$WT_N" 2>/dev/null; then
-      rm -rf -- "$p" 2>/dev/null
-      if [ -e "$p" ] || [ -L "$p" ]; then
-        chmod -R u+w -- "$p" 2>/dev/null
-        rm -rf -- "$p" 2>/dev/null
-      fi
-      { [ -e "$p" ] || [ -L "$p" ]; } && return 0
-    fi
-    wt_say "$((kb / 1024)) MB  $rel ($why)"
-  else
+  if [ "$WT_APPLY" != 1 ]; then
+    kb="$(wt_kb "$p")"
     wt_say "[dry-run] $((kb / 1024)) MB  $rel ($why)"
+    WT_N=$((WT_N + 1))
+    WT_KB=$((WT_KB + kb))
+    return 0
+  fi
+  [ "$WT_DEFER_DU" = 1 ] || kb="$(wt_kb "$p")"
+  if [ -z "$WT_RUN" ]; then
+    mkdir -p "$WT_TRASH" 2>/dev/null && WT_RUN="$(mktemp -d "$WT_TRASH/run.XXXXXX" 2>/dev/null)" || WT_RUN=""
+  fi
+  # A rename on the same volume, or, when that fails, the slow way.
+  if [ -n "$WT_RUN" ] && mv -- "$p" "$WT_RUN/$WT_N" 2>/dev/null; then
+    dst="$WT_RUN/$WT_N"
+  else
+    [ "$WT_DEFER_DU" = 1 ] && kb="$(wt_kb "$p")"
+    rm -rf -- "$p" 2>/dev/null
+    if [ -e "$p" ] || [ -L "$p" ]; then
+      chmod -R u+w -- "$p" 2>/dev/null
+      rm -rf -- "$p" 2>/dev/null
+    fi
+    { [ -e "$p" ] || [ -L "$p" ]; } && return 0
+  fi
+  if [ "$WT_DEFER_DU" = 1 ] && [ -n "$dst" ]; then
+    WT_DEFERRED="${WT_DEFERRED}${dst}|${why}|${rel}
+"
+  else
+    wt_say "$((kb / 1024)) MB  $rel ($why)"
+    WT_KB=$((WT_KB + kb))
   fi
   WT_N=$((WT_N + 1))
-  WT_KB=$((WT_KB + kb))
+}
+
+# The sizes of what WT_DEFER_DU moved, measured in the trash. An emptier that
+# got there first makes one read 0 MB; only the report is short.
+wt_measure_deferred() {
+  local dst why rel kb
+  while IFS='|' read -r dst why rel; do
+    [ -n "$dst" ] || continue
+    kb="$(wt_kb "$dst")"
+    wt_say "$((kb / 1024)) MB  $rel ($why)"
+    WT_KB=$((WT_KB + kb))
+  done <<< "$WT_DEFERRED"
+  WT_DEFERRED=""
 }
 
 # wt_checkout_trim CHECKOUT: its ignored and untracked files, which the next

@@ -57,6 +57,15 @@ once a day otherwise:
   `ci-<runner> …` simulator is erased while shut down once it passes
   `FLEET_CLEANUP_SIM_MAX_GB` (3 GB, or 1 GB under pressure); no other simulator
   is touched. Under pressure, idle runners' Playwright browsers go too.
+- **Anything under a runner's `_work`** (its work tree, warm caches, leftover
+  self-update, Playwright browsers) is asked about again just before it goes,
+  because the busy list is read once at the start of a pass that takes
+  minutes. A runner is left alone if admission was holding its job when the
+  pass began, if a `Runner.Worker` is running from its directory, or if a live
+  admission slot or waiter names it. The question and the renames into the
+  trash happen holding the admission mutex, so with `FLEET_ADMIT_MODE=enforce`
+  no job is admitted in between; sizes and deletes come after. Skipped runners
+  are logged as `skipped <runner>: <why>`.
 
 A weekly run is not enough. On runner-host free disk swung by 20–40 GB within a
 day while a weekly run reclaimed 1–2 GB, and it refused to run whenever any job

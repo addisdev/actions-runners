@@ -10,6 +10,21 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Fixed
 
+- **`cleanup.sh` no longer trims a runner whose job started during the pass.**
+  The busy list was read once, at the start of a pass that takes minutes, and a
+  runner held by admission counts as idle there. On 2026-11-23 ultra's
+  aliquant-4 was held when the 19:51 pass began; the hold lifted at 00:51:37Z,
+  `npm ci` started, and the work-tree trim moved `web/app/node_modules`
+  (295 MB) out from under it: 2,136 `TAR_ENTRY_ERROR ENOENT` lines, npm still
+  exited 0, `node_modules/.bin/playwright` was missing and the e2e job failed
+  with 127. Every step that deletes under a runner's `_work` (work tree and
+  caches, leftover self-update, Playwright browsers) now asks again just before
+  it, from local state: held when the pass began, a `Runner.Worker` running
+  from the runner's directory, or a live admission slot or waiter naming it.
+  It asks holding the admission mutex the job-started hook needs to admit a
+  job, and holds it only for the renames into the trash (sizes are measured
+  afterwards), at most `FLEET_CLEANUP_LOCK_BUDGET_S` (40 s) per runner.
+
 - **A runner listed under its repo's old and new names keeps this host's
   state.** A renamed repo answers GitHub's runner list under its old name too, so
   a runner whose `.runner` still names the old repo is listed under both. On
