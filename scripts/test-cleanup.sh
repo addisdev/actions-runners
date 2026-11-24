@@ -27,7 +27,8 @@ setup() {
   mkdir -p "$T/bin" "$T/home/Library/Developer/Xcode/DerivedData"
   mkdir -p "$T/hooks"
   cp "$HERE/cleanup.sh" "$T/"
-  cp "$HERE/hooks/free-disk.sh" "$HERE/hooks/emulator-control.sh" "$HERE/hooks/work-trim.sh" "$T/hooks/"
+  cp "$HERE/hooks/free-disk.sh" "$HERE/hooks/emulator-control.sh" "$HERE/hooks/work-trim.sh" \
+    "$HERE/hooks/common.sh" "$T/hooks/"
   mkdir -p "$T/tmp"
   for r in web android ios; do
     mkdir -p "$T/$r/_work/_tool/ms-playwright/chromium" "$T/$r/_diag"
@@ -81,6 +82,7 @@ EOF
   cat > "$T/bin/fakeps" <<EOF
 #!/usr/bin/env bash
 /bin/ps "\$@" | grep -F "$T/"
+exit 0
 EOF
   # adb's \`emu kill\` stops the stand-in on that port, when it listens.
   cat > "$T/bin/adb" <<EOF
@@ -694,6 +696,94 @@ clean --apply > "$T/out"
 ok "removed the day-old runtime" "$(gone "$T/tmp/robolectric-nativeruntime111")" "removed"
 ok "kept one a test may be using" "$(gone "$T/tmp/robolectric-nativeruntime222")" "kept"
 ok "never touched anything else in the temp folder" "$(gone "$T/tmp/other-old")" "kept"
+
+echo "== a runner whose job starts after the busy list is read keeps its work tree =="
+# ultra, 2026-11-23: aliquant-4 was held by admission when the pass began, so
+# it counted as idle; the hold lifted, `npm ci` ran, and the trim took its
+# node_modules mid-install. Each runner here is idle by GitHub's list.
+# repo CO: a checkout whose node_modules is ignored.
+repo() {
+  mkdir -p "$1"
+  git -C "$1" init -q
+  printf 'node_modules/\nbuild/\n' > "$1/.gitignore"
+  git -C "$1" add .gitignore && git -C "$1" -c user.email=t@t -c user.name=t commit -qm init
+}
+setup 93
+echo 45 > "$T/free"
+for r in ios web android; do
+  co="$T/$r/_work/$r/$r"
+  repo "$co"
+  mkdir -p "$T/$r/bin" "$co/node_modules/.bin" "$T/$r/_work/_update/bin"
+  echo x > "$co/node_modules/.bin/playwright"
+  touch -t 202601010000 "$T/$r/_work/_update"
+done
+# ios: its job starts while the busy list is being read (a Runner.Worker under
+# its directory, as the runner starts one per job).
+ln -s /bin/sleep "$T/ios/bin/Runner.Worker"
+cat > "$T/bin/gh" <<EOF
+#!/usr/bin/env bash
+cat "$T/busy"
+if mkdir "$T/started" 2>/dev/null; then ( "$T/ios/bin/Runner.Worker" 300 >/dev/null 2>&1 & ); fi
+EOF
+# android: held by admission when the pass begins; the hold has lifted (no
+# waiter, no worker) by the time anything is trimmed.
+mkdir -p "$T/.admission/waiters"
+# Not a job of this shell: it is killed from the stub, and bash would say so.
+HOLD="$(sleep 300 >/dev/null 2>&1 & echo $!)"
+W="$T/.admission/waiters/00000000000000000001-RL-android"
+printf 'pid=%s\nrunner=RL-android\n' "$HOLD" > "$W"
+cat > "$T/bin/fakeps" <<EOF
+#!/usr/bin/env bash
+if [ "\$*" = "-axo command=" ] && [ -f "$W" ]; then
+  rm -f "$W"
+  kill $HOLD 2>/dev/null
+fi
+/bin/ps "\$@" | grep -F "$T/"
+exit 0
+EOF
+clean --apply > "$T/out"
+ok "kept node_modules of a runner whose job started mid-pass" "$(gone "$T/ios/_work/ios/ios/node_modules/.bin/playwright")" "kept"
+ok "and said why" "$(grep -c 'skipped ios: a job started since this pass began' "$T/out")" "1"
+ok "kept its self-update" "$(gone "$T/ios/_work/_update")" "kept"
+ok "kept its Playwright browsers" "$(gone "$T/ios/_work/_tool/ms-playwright")" "kept"
+ok "kept node_modules of a runner held when the pass began" "$(gone "$T/android/_work/android/android/node_modules")" "kept"
+ok "and said why" "$(grep -c 'skipped android: held by admission when this pass began' "$T/out")" "1"
+ok "kept its Playwright browsers" "$(gone "$T/android/_work/_tool/ms-playwright")" "kept"
+ok "trimmed the runner that stayed idle" "$(gone "$T/web/_work/web/web/node_modules")" "removed"
+ok "with its size measured after the move" "$(grep -c 'MB  web/_work/web/web/node_modules (ignored in the checkout)' "$T/out")" "1"
+ok "removed its self-update" "$(gone "$T/web/_work/_update")" "removed"
+ok "removed its Playwright browsers" "$(gone "$T/web/_work/_tool/ms-playwright")" "removed"
+ok "released admission's mutex" "$(gone "$T/.admission/mutex")" "removed"
+ok "the trash is emptied" "$(find "$T/.work-trash" -mindepth 1 -maxdepth 1 -name 'run.*' 2>/dev/null | wc -l | tr -d ' ')" "0"
+pkill -f -- "$T/" 2>/dev/null
+kill "$HOLD" 2>/dev/null
+
+echo "== a work tree is trimmed only holding admission's mutex, and briefly =="
+setup 94
+echo 120 > "$T/free"
+co="$T/web/_work/web/web"
+repo "$co"
+mkdir -p "$co/node_modules/x"
+# A job-started hook holds the mutex (deciding whether to admit a job).
+mkdir -p "$T/.admission/mutex"
+sleep 300 >/dev/null 2>&1 &
+HOLDER=$!
+printf '%s' "$HOLDER" > "$T/.admission/mutex/pid"
+FLEET_ADMIT_MUTEX_TRIES=1 clean --apply > "$T/out"
+ok "left the work tree while the mutex was busy" "$(gone "$co/node_modules")" "kept"
+ok "and said why" "$(grep -c "skipped web: admission's mutex stayed busy" "$T/out")" "1"
+ok "never took a mutex it did not own" "$(cat "$T/.admission/mutex/pid")" "$HOLDER"
+{ kill "$HOLDER"; wait "$HOLDER"; } 2>/dev/null
+rm -rf "$T/.admission/mutex"
+clean > "$T/out"
+ok "a dry run asks too, without the mutex" "$(grep -c '\[dry-run\] 0 MB  web/_work/web/web/node_modules' "$T/out")" "1"
+ok "and takes no mutex" "$(gone "$T/.admission/mutex")" "removed"
+FLEET_CLEANUP_LOCK_BUDGET_S=0 clean --apply > "$T/out"
+ok "past the mutex budget nothing more moves" "$(gone "$co/node_modules")" "kept"
+ok "and it says it stopped" "$(grep -c 'stopped web part way' "$T/out")" "1"
+clean --apply > "$T/out"
+ok "the next pass trims it" "$(gone "$co/node_modules")" "removed"
+ok "and releases the mutex" "$(gone "$T/.admission/mutex")" "removed"
 
 echo
 echo "passed $PASS, failed $FAIL"

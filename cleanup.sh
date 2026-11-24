@@ -132,6 +132,12 @@ if [ -f "$HERE/hooks/work-trim.sh" ]; then
   WT_APPLY="$APPLY"
   WT_PREFIX="    "
 fi
+# admit_lock / admit_unlock: the admission mutex the job-started hook holds to
+# admit a job. The per-runner _work steps take it (see "Busy right now").
+if [ -f "$HERE/hooks/common.sh" ]; then
+  # shellcheck source=hooks/common.sh
+  . "$HERE/hooks/common.sh"
+fi
 PLAIN_HARD_GB="${FLEET_ADMIT_MIN_PLAIN_FREE_GB:-15}"
 # The admission floor itself: below it every job is held, so the snapshots go
 # first (see the AVD step).
@@ -349,6 +355,7 @@ for w in "$ROOT"/.admission/waiters/*; do
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
   held="$held $(sed -n 's/^runner=//p' "$w" | head -1)"
 done
+HELD_AT_START="$held "
 : > /tmp/.cleanup-building
 elsewhere=0
 waiting=0
@@ -403,6 +410,110 @@ host_idle() {
   [ "$HOST_IDLE" = 1 ] && return 0
   say "    (skipped: a job is running)"
   return 1
+}
+
+# ---------------------------------------------------------------------------
+# Busy right now, not when the pass began. The list above is read once and a
+# pass takes minutes. On 2026-11-23 the admission hook held ultra-aliquant-4's
+# job when the 19:51 pass began, so it counted as idle (as it should for the
+# host-wide steps, see above). The hold lifted at 00:51:37Z, the job ran
+# `npm ci`, and the work-tree trim moved web/app/node_modules (295 MB) out from
+# under npm: 2,136 ENOENT lines, npm still exited 0, node_modules/.bin/
+# playwright was missing and the e2e step failed with 127. So every step that
+# deletes under a runner's _work asks again, from local state, just before it:
+#   - held by admission when the pass began: its job starts when the hold
+#     lifts, whenever that is;
+#   - a Runner.Worker running from the runner's directory: the runner starts
+#     one per job before the job-started hook runs, so this sees a job that is
+#     held, admitted, or running with admission off;
+#   - a live admission slot or waiter naming the runner.
+# It asks holding admission's own mutex (hooks/common.sh), which the
+# job-started hook must hold to admit a job, so with admission enforced no job
+# here starts between the answer and the moves. A hold that reaches
+# FLEET_ADMIT_MAX_WAIT is admitted without the mutex, and observe/off take no
+# hold at all: for those the worker check right before the renames is what is
+# left. The mutex is held only for the answer and the renames into the trash
+# (WT_DEFER_DU); sizes and deletes come after it is released. admit_lock
+# takes a mutex older than 60 s for wreckage, so a trim stops moving things
+# after FLEET_CLEANUP_LOCK_BUDGET_S (40) and finishes on the next pass.
+# A dry run asks without the mutex.
+# ---------------------------------------------------------------------------
+LOCK_BUDGET_S="${FLEET_CLEANUP_LOCK_BUDGET_S:-40}"
+case "$LOCK_BUDGET_S" in '' | *[!0-9]*) LOCK_BUDGET_S=40 ;; esac
+[ "$LOCK_BUDGET_S" -gt 50 ] && LOCK_BUDGET_S=50
+NOW_WHY=""
+WORK_LOCKED=0
+WORK_LOCK_AT=0
+busy_now() {
+  local dir="$1" name="$2" procs f pid
+  NOW_WHY=""
+  case "$HELD_AT_START" in
+    *" $name "*) NOW_WHY="held by admission when this pass began"; return 0 ;;
+  esac
+  if ! procs="$("${FLEET_PS:-/bin/ps}" -axo command= 2>/dev/null)"; then
+    NOW_WHY="ps failed, so it cannot tell"
+    return 0
+  fi
+  if printf '%s\n' "$procs" \
+    | awk -v d="$dir/bin" 'index($0, d) == 1 && /Runner\.Worker/ { f = 1 } END { exit !f }'; then
+    NOW_WHY="a job started since this pass began (its Runner.Worker is running)"
+    return 0
+  fi
+  for f in "$ROOT"/.admission/slots/* "$ROOT"/.admission/waiters/*; do
+    [ -f "$f" ] || continue
+    [ "$(sed -n 's/^runner=//p' "$f" | head -1)" = "$name" ] || continue
+    pid="$(sed -n 's/^pid=//p' "$f" | head -1)"
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
+    case "$f" in
+      */slots/*) NOW_WHY="admitted since this pass began (admission slot)" ;;
+      *) NOW_WHY="held by admission now" ;;
+    esac
+    return 0
+  done
+  return 1
+}
+work_unlock() {
+  [ "$WORK_LOCKED" = 1 ] || return 0
+  admit_unlock
+  WORK_LOCKED=0
+}
+trap 'work_unlock; rm -rf "$LOCK"' EXIT
+# idle_now DIR NAME: 0 = idle now, and (applying) admission's mutex is held
+# until work_unlock; 1 = leave this runner alone, NOW_WHY says why.
+idle_now() {
+  if [ "$APPLY" = 1 ] && command -v admit_lock >/dev/null 2>&1; then
+    if ! admit_lock; then
+      NOW_WHY="admission's mutex stayed busy"
+      return 1
+    fi
+    WORK_LOCKED=1
+    WORK_LOCK_AT="$(date +%s)"
+  fi
+  if busy_now "$1" "$2"; then
+    work_unlock
+    return 1
+  fi
+  return 0
+}
+# WT_GUARD while a runner's work tree is trimmed: inside the budget, and the
+# mutex is still this run's.
+work_lock_ok() {
+  [ "$WORK_LOCKED" = 1 ] || return 0
+  [ $(( $(date +%s) - WORK_LOCK_AT )) -lt "$LOCK_BUDGET_S" ] || return 1
+  [ "$(cat "$ADMIT_MUTEX/pid" 2>/dev/null)" = "$$" ]
+}
+# One rename into the work-trim trash, so the delete runs after the mutex is
+# released; the slow way when there is no trash to rename into.
+set_aside() {
+  local dst=""
+  if [ -n "${WT_TRASH:-}" ] && mkdir -p "$WT_TRASH" 2>/dev/null; then
+    dst="$(mktemp -d "$WT_TRASH/run.XXXXXX" 2>/dev/null)" || dst=""
+  fi
+  if [ -n "$dst" ]; then
+    mv -- "$1" "$dst/0" 2>/dev/null && return 0
+    rmdir "$dst" 2>/dev/null
+  fi
+  rm -rf -- "$1"
 }
 before=$(free_gb)
 say "==> free before: ${before} GB"
@@ -770,10 +881,17 @@ for d in "$ROOT"/*/; do
   up="$d/_work/_update"
   [ -f "$d/.runner" ] && [ -d "$up" ] || continue
   [ -n "$(find "$up" -maxdepth 0 -mmin +360 2>/dev/null)" ] || continue
-  building "$(runner_name "$d")" && continue
+  name="$(runner_name "$d")"
+  building "$name" && continue
   pgrep -f "$up/" >/dev/null 2>&1 && continue
-  say "    $(du -sh "$up" 2>/dev/null | cut -f1)  $(basename "$d")/_work/_update"
-  run rm -rf "$up"
+  sz="$(du -sh "$up" 2>/dev/null | cut -f1)"
+  if ! idle_now "$d" "$name"; then
+    say "    skipped $(basename "$d")/_work/_update: $NOW_WHY"
+    continue
+  fi
+  say "    $sz  $(basename "$d")/_work/_update"
+  if [ "$APPLY" = 1 ]; then set_aside "$up"; else say "    [dry-run] rm -rf $up"; fi
+  work_unlock
   n=$((n + 1))
 done
 say "    ${n} directories"
@@ -798,17 +916,29 @@ if command -v wt_cache_trim >/dev/null 2>&1; then
   WT_N=0
   WT_KB=0
   WT_LINES=""
+  WT_DEFER_DU=1
   for d in "$ROOT"/*/; do
     d="${d%/}"
     [ -f "$d/.runner" ] && [ -d "$d/_work" ] || continue
-    building "$(runner_name "$d")" && continue
+    name="$(runner_name "$d")"
+    building "$name" && continue
+    if ! idle_now "$d" "$name"; then
+      wt_say "skipped ${d##*/}: $NOW_WHY"
+      continue
+    fi
+    WT_GUARD=work_lock_ok
+    WT_HALTED=0
     for ws in "$d"/_work/*/; do
       ws="${ws%/}"
       case "${ws##*/}" in _*) continue ;; esac
       wt_checkout_trim "$ws/${ws##*/}"
       wt_cache_trim "$ws" "$PRESSURE"
     done
+    WT_GUARD=""
+    work_unlock
+    [ "$WT_HALTED" = 1 ] && wt_say "stopped ${d##*/} part way (${LOCK_BUDGET_S}s on admission's mutex, or it was taken); the rest waits for the next pass"
   done
+  wt_measure_deferred
   printf '%s' "$WT_LINES"
   say "    ${WT_N} entries, $((WT_KB / 1024)) MB"
   [ "$APPLY" = "1" ] && wt_empty_trash
@@ -842,12 +972,20 @@ if [ "$PRESSURE" = 1 ]; then
   for d in "$ROOT"/*/; do
     tc="${d}_work/_tool/ms-playwright"
     [ -d "$tc" ] && [ -f "$d/.runner" ] || continue
-    building "$(runner_name "$d")" && continue
-    say "    $(du -sh "$tc" 2>/dev/null | cut -f1)  $tc"
-    run rm -rf "$tc"
+    name="$(runner_name "$d")"
+    building "$name" && continue
+    sz="$(du -sh "$tc" 2>/dev/null | cut -f1)"
+    if ! idle_now "${d%/}" "$name"; then
+      say "    skipped $tc: $NOW_WHY"
+      continue
+    fi
+    say "    $sz  $tc"
+    if [ "$APPLY" = 1 ]; then set_aside "$tc"; else say "    [dry-run] rm -rf $tc"; fi
+    work_unlock
     n=$((n + 1))
   done
   say "    ${n} directories"
+  [ "$APPLY" = 1 ] && command -v wt_empty_trash >/dev/null 2>&1 && wt_empty_trash
 fi
 
 # ---------------------------------------------------------------------------

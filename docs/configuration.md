@@ -74,6 +74,7 @@ Used by `cleanup.sh` and `cleanupctl.sh`. See
 |---|---|---|
 | `FLEET_CLEANUP_PRESSURE_GB` | `FLEET_ADMIT_MIN_FREE_DISK_GB` + 20 | Below this much usable disk, `--auto` acts on every tick and takes the pressure steps too. |
 | `FLEET_CLEANUP_RUNNER_CACHE_DAYS` | `7` | Remove a runner's warm build caches (everything beside the checkout in `_work/<repo>/` that is not a git checkout: `DerivedData-*`, `spm-*`, `venvs`, `venv-kit-*`, `duckdb-native-work`, …) unused this long; under pressure, all of them. `cleanup.sh` does it to idle runners, the job-completed hook to the job's own workspace ([`hooks/work-trim.sh`](reference/scripts.md#hookswork-trimsh)). |
+| `FLEET_CLEANUP_LOCK_BUDGET_S` | `40` | How long `cleanup.sh` may hold the admission mutex while it trims one idle runner's `_work` (at most 50: the hooks take a mutex older than 60 s for wreckage). Past it the trim stops and the rest waits for the next pass. |
 | `FLEET_WORK_TRIM` | `1` | `0` stops the job-completed hook from trimming the job's workspace; `cleanup.sh` still trims idle runners. |
 | `FLEET_WORK_TRIM_KEEP` | (none) | Space-separated shell patterns of cache names in `_work/<repo>/` that the pressure rule leaves alone (for example `venvs DerivedData-*`). The unused rule still applies. |
 | `FLEET_WORK_TRIM_LOG` | `logs/work-trim.log` | Where the hook writes what it gave back, one block per job. |
