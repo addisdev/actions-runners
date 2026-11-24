@@ -10,6 +10,17 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Fixed
 
+- **A runner listed under its repo's old and new names keeps this host's
+  state.** A renamed repo answers GitHub's runner list under its old name too, so
+  a runner whose `.runner` still names the old repo is listed under both. On
+  2026-11-24 ultra's social runners (`.runner`: `addisdev/social`, repo now
+  `addisdev/taylab-social`) were parked by the night cap, but the copies listed
+  under the new name came through as "elsewhere" runners with no drain state and
+  a launchd state guessed from `offline`: `queue_events` has 87 runner-down rows
+  for taylab-social 03:01–03:50Z while the same runs read night-cap under
+  `addisdev/social`. An elsewhere entry with the same GitHub runner id as a local
+  runner now carries `sameAs` and the local runner's host-side state (launchd,
+  drain, Worker), which `buildFleetRunners` uses in place of the guess.
 - **Runner-down needs the host to agree with GitHub.** On 2026-11-24 from ~02:30Z
   GitHub's runner list called ultra-homelake-2..-5 `offline busy=false` while
   homelake-2's `_diag` logged "Successfully renew job" every minute and five

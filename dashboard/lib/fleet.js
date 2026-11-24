@@ -114,7 +114,9 @@ export function buildFleetRunners(localRunners, elsewhere, hostState, now = Date
     // in sizing inflates the runner count and makes repos look better served
     // than they are.
     if (r.ephemeral) continue;
-    fleet.push(adaptRemoteRunner(r, agentByName.get(r.name) ?? null));
+    // A runner this host serves under another repo name (lib/state.js
+    // buildRunners `sameAs`) takes its state from this host, not a guess.
+    fleet.push(adaptRemoteRunner(r, agentByName.get(r.name) ?? r.local ?? null));
     included.add(r.name);
   }
   // Keep directly observed remote listeners visible during a GitHub API outage

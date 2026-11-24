@@ -16,7 +16,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { classifyQueueCause, CAUSES } from '../lib/queue-cause.js';
-import { markGitHubDisagreement, ownLifeEvidence, deriveDrift } from '../lib/state.js';
+import { markGitHubDisagreement, ownLifeEvidence, deriveDrift, buildRunners } from '../lib/state.js';
+import { buildFleetRunners } from '../lib/fleet.js';
 import { computeVerdict, createVerdictTracker } from '../lib/verdict.js';
 import { estimateQueue } from '../lib/eta.js';
 import { decide } from '../lib/checks.js';
@@ -319,5 +320,75 @@ describe('wait_for_checks', () => {
     const g = glance([], [{ ...nightRow, cause: 'runner-down', etaBasis: 'runner-down: will not start on its own' }]);
     g.nightCap = null;
     assert.equal(decide(g, { repo: REPO, pr: 7 }).state, 'pointless');
+  });
+});
+
+// The same night, live after the first fix: ultra's social runners still say
+// addisdev/social in .runner, the repo is now addisdev/taylab-social, and GitHub
+// answers the runner list under both names. The night cap parked them (.drain
+// by=night-cap), but taylab-social's queued runs saw only the copies listed
+// under the new name: no drain state, launchd "dead" guessed from `offline`.
+// queue_events: 87 runner-down rows for taylab-social 03:01–03:50Z while the
+// same runs read night-cap under addisdev/social.
+describe('a runner listed under its repo\'s old and new names', () => {
+  const NEW = 'addisdev/taylab-social';
+  const OLD = 'addisdev/social';
+  const gh = (name, id) => ({ id, name, status: 'offline', busy: false, labels: ciLabels.map((n) => ({ name: n })) });
+  const dir = (name, dirName, patch = {}) => ({
+    name, repo: OLD, dir: `/fleet/${dirName}`, dirName, launchdLabel: `actions.runner.addisdev-social.${name}`,
+    drainState: 'drained', drainBy: 'night-cap', ...patch,
+  });
+  const build = (dirs, launchd = new Map(), workers = new Map()) => {
+    const list = [gh('ultra-social', 11), gh('ultra-social-2', 12)];
+    const { runners, elsewhere } = buildRunners({
+      dirs,
+      ghRunnersByRepo: new Map([[OLD, list], [NEW, list]]),
+      launchd,
+      processes: { listeners: new Map(), workers },
+    });
+    const fleet = buildFleetRunners(runners, elsewhere, new Map()).map((r) => (r.hostId ? r : { ...r, hostId: ULTRA }));
+    return { runners, elsewhere, fleet };
+  };
+  const run = () => makeActiveRun({ id: 5, repo: NEW, workflowName: 'ci', status: 'queued', jobs: [{ status: 'queued', labels: ciLabels }] });
+
+  test('the copy under the new name carries the parked state, so it reads night-cap', () => {
+    const { elsewhere, fleet } = build([dir('ultra-social', 'social'), dir('ultra-social-2', 'social-2')]);
+    assert.equal(elsewhere.length, 2);
+    assert.equal(elsewhere[0].sameAs, 'ultra-social');
+    const copy = fleet.find((r) => r.repo === NEW && r.name === 'ultra-social');
+    assert.equal(copy.drainState, 'drained');
+    assert.equal(copy.drainBy, 'night-cap');
+    assert.equal(copy.launchdState, 'not-loaded');
+    const r = classifyQueueCause({ run: run(), runners: fleet, capacity: goodCapacity, runLabels: ciLabels, nightCap });
+    assert.equal(r.cause, CAUSES.NIGHT_CAP);
+    assert.match(r.evidence.join('\n'), /ultra-social is parked by the night cap until 06:00/);
+  });
+
+  test('a working copy is busy, not runner-down', () => {
+    const { fleet } = build(
+      [dir('ultra-social', 'social', { drainState: null, drainBy: null }), dir('ultra-social-2', 'social-2', { drainState: null, drainBy: null })],
+      new Map([['actions.runner.addisdev-social.ultra-social', { pid: 10 }], ['actions.runner.addisdev-social.ultra-social-2', { pid: 11 }]]),
+      new Map([['/fleet/social', { pid: 20 }], ['/fleet/social-2', { pid: 21 }]]),
+    );
+    const r = classifyQueueCause({ run: run(), runners: fleet, capacity: goodCapacity, runLabels: ciLabels });
+    assert.equal(r.cause, CAUSES.REPO_CAPACITY);
+  });
+
+  test('un-parked and not loaded is still runner-down under either name', () => {
+    const { fleet } = build([dir('ultra-social', 'social', { drainState: null, drainBy: null }), dir('ultra-social-2', 'social-2', { drainState: null, drainBy: null })]);
+    const r = classifyQueueCause({ run: run(), runners: fleet, capacity: goodCapacity, runLabels: ciLabels, nightCap });
+    assert.equal(r.cause, CAUSES.RUNNER_DOWN);
+  });
+
+  test('a runner of the same name on another machine (different id) keeps GitHub\'s word', () => {
+    const { runners, elsewhere } = buildRunners({
+      dirs: [dir('ultra-social', 'social')],
+      ghRunnersByRepo: new Map([[OLD, [gh('ultra-social', 11)]], [NEW, [gh('ultra-social', 99)]]]),
+      launchd: new Map(),
+      processes: { listeners: new Map(), workers: new Map() },
+    });
+    assert.equal(runners.length, 1);
+    assert.equal(elsewhere[0].sameAs, undefined);
+    assert.equal(elsewhere[0].local, undefined);
   });
 });
