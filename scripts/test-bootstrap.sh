@@ -58,6 +58,19 @@ printf '%s\n' "$out" | grep -q 'left out: FLEET_OWNER' && pass "missing peer key
 grep -q '^FLEET_OWNER=' "$f" && fail "missing key invented" || pass "missing key not invented"
 
 # 5. Unknown step and missing coordinator are refused.
+# python3 step: links the peer's unversioned python3 into a brew bin when Homebrew did not.
+B="$T/brew"; mkdir -p "$B/bin" "$B/opt/python@3.14/libexec/bin"
+printf '#!/bin/sh\necho "Python 3.14.10"\n' > "$B/opt/python@3.14/libexec/bin/python3"; chmod +x "$B/opt/python@3.14/libexec/bin/python3"
+touch "$B/opt/python@3.14/libexec/bin/pip3"
+run_py() { FLEET_BOOTSTRAP_BREW_BIN="$B/bin" FLEET_BOOTSTRAP_PEER_PY=3.14 bash "$HERE/scripts/bootstrap-host.sh" --only python3 "$@"; }
+run_py >/dev/null; [ ! -e "$B/bin/python3" ] && pass "python3 dry run links nothing" || fail "python3 dry run linked"
+run_py --apply >/dev/null
+[ "$(readlink "$B/bin/python3")" = "../opt/python@3.14/libexec/bin/python3" ] && pass "python3 linked to the peer's version" || fail "python3 link: $(readlink "$B/bin/python3")"
+[ -L "$B/bin/pip3" ] && pass "pip3 linked too" || fail "pip3 not linked"
+out="$(run_py --apply)"; printf '%s\n' "$out" | grep -q "is Python 3.14.10" && pass "second run leaves it" || fail "second run: $out"
+FLEET_BOOTSTRAP_BREW_BIN="$T/brew2/bin" FLEET_BOOTSTRAP_PEER_PY=3.13 bash "$HERE/scripts/bootstrap-host.sh" --only python3 --apply >/dev/null 2>&1
+[ $? -ne 0 ] && pass "missing python@3.13 keg is a problem" || fail "missing keg not reported"
+
 bash "$HERE/scripts/bootstrap-host.sh" --only nope >/dev/null 2>&1; [ $? -eq 2 ] && pass "unknown step refused" || fail "unknown step accepted"
 rm -f "$f"
 FLEET_BOOTSTRAP_ROOT="$T/root" FLEET_BOOTSTRAP_PEER_ENV="$T/peer.env" bash "$HERE/scripts/bootstrap-host.sh" --only fleet-env --apply >/dev/null
