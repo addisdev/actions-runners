@@ -10,6 +10,17 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Fixed
 
+- **A fleetd restart no longer re-downloads everything from GitHub.** The ETag
+  cache lived only in memory, so every restart paid full price once: 531
+  workflow files plus every repo's runs, runners and jobs, about 800 counted
+  calls. Four restarts during the coordinator move (2026-11-24) ran the login's
+  5,000 out on their own. fleetd now keeps the cache in
+  `state/github-etags.json`, saved from the slow loop and on SIGTERM.
+- **`health.sh` on an agent host reads its runners from the coordinator.** It
+  read only `.runners`, which is the coordinator's own host, so after the
+  coordinator moved to forge ultra asked GitHub about its 80 runners every
+  minute (~250 calls an hour). It now reads `.fleetRunners` too.
+
 - **`cleanup.sh` no longer trims a runner whose job started during the pass.**
   The busy list was read once, at the start of a pass that takes minutes, and a
   runner held by admission counts as idle there. On 2026-11-23 ultra's

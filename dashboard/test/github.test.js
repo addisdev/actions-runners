@@ -293,3 +293,45 @@ describe('GitHub.get rate limiting', () => {
     assert.equal(gh.rateStrikes, 0);
   });
 });
+
+describe('GitHub ETag cache across a restart', () => {
+  test('an exported cache lets a new process send If-None-Match and serve the kept body on a 304', async () => {
+    const reset = String(Math.floor(Date.now() / 1000) + 3000);
+    const real = globalThis.fetch;
+    const seen = [];
+    const queue = [
+      new Response('{"workflows":[1]}', { status: 200, headers: { 'x-ratelimit-limit': '5000', 'x-ratelimit-remaining': '4999', 'x-ratelimit-reset': reset, etag: '"w1"' } }),
+      new Response(null, { status: 304, headers: { 'x-ratelimit-limit': '5000', 'x-ratelimit-remaining': '4999', 'x-ratelimit-reset': reset } }),
+    ];
+    globalThis.fetch = async (url, init) => { seen.push(init.headers['If-None-Match'] ?? null); return queue.shift(); };
+    try {
+      const before = new GitHub({ log: () => {} });
+      before.token = 't';
+      await before.get('repos/a/b/actions/workflows?per_page=100', { attempts: 1 });
+      // What fleetd writes to state/github-etags.json and reads back after a restart.
+      const saved = JSON.parse(JSON.stringify(before.exportCache()));
+
+      const after = new GitHub({ log: () => {} });
+      after.token = 't';
+      assert.equal(after.importCache(saved), 1);
+      const res = await after.get('repos/a/b/actions/workflows?per_page=100', { attempts: 1 });
+      assert.equal(res.notModified, true);
+      assert.deepEqual(res.data, { workflows: [1] });
+      assert.deepEqual(seen, [null, '"w1"']);
+      assert.equal(after.window.spent, 0);
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
+  test('a broken or foreign file imports nothing, and what the process fetched itself wins', () => {
+    const gh = new GitHub({ log: () => {} });
+    assert.equal(gh.importCache(null), 0);
+    assert.equal(gh.importCache({ version: 2, entries: [] }), 0);
+    assert.equal(gh.importCache({ version: 1, entries: [['u', 5, {}], 'x'] }), 0);
+    gh.etags.set('https://api.github.com/x', '"new"');
+    gh.cache.set('https://api.github.com/x', { fresh: true });
+    assert.equal(gh.importCache({ version: 1, entries: [['https://api.github.com/x', '"old"', { fresh: false }]] }), 0);
+    assert.equal(gh.etags.get('https://api.github.com/x'), '"new"');
+  });
+});

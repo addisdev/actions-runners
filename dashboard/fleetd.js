@@ -238,6 +238,25 @@ const db = openDb(CONFIG.db);
 const settings = createSettings(db);
 const gh = new GitHub({ log });
 
+// The ETag cache outlives a restart (GitHub.exportCache says why). Saved from the
+// slow loop and on SIGTERM, read once here. A missing or broken file only means
+// the first tick pays full price, as it always did.
+const GH_CACHE_FILE = join(CONFIG.stateDir, 'github-etags.json');
+try {
+  const kept = gh.importCache(JSON.parse(readFileSync(GH_CACHE_FILE, 'utf8')));
+  if (kept) log(`github: ${kept} cached responses kept from before the restart`);
+} catch { /* first start, or an unreadable file: start cold */ }
+function saveGithubCache() {
+  try {
+    mkdirSync(CONFIG.stateDir, { recursive: true });
+    const tmp = `${GH_CACHE_FILE}.tmp-${process.pid}`;
+    writeFileSync(tmp, JSON.stringify(gh.exportCache()));
+    renameSync(tmp, GH_CACHE_FILE);
+  } catch (err) {
+    warn('github cache save:', err.message);
+  }
+}
+
 // ------------------------------------------------------------ billing guard
 // Once a day, from the slow loop: is anything running or kept at GitHub
 // (lib/billing-guard.js)? The result is kept in memory, published in the
@@ -4595,6 +4614,7 @@ async function main() {
       try {
         if (ha.isLeader) await slowTick();
       } catch (e) { warn('slow tick:', e.message); }
+      saveGithubCache();
       scheduleSlow();
     }, CONFIG.slowMs).unref?.();
   };
@@ -4661,6 +4681,7 @@ async function main() {
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, async () => {
     log(`${sig} — closing`);
+    saveGithubCache();
     try { await ha.close(); } catch {}
     try { db.close(); } catch {}
     process.exit(0);

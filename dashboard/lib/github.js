@@ -217,6 +217,35 @@ export class GitHub {
     if (status === 304) { u.free++; row.free++; } else { u.spent++; row.spent++; }
   }
 
+  // The ETag cache, for keeping across a restart. A conditional request is free
+  // only while this process remembers the ETag and the body it stands for, so a
+  // restart used to re-download everything once: 531 workflow files plus every
+  // repo's runs, runners and jobs, about 800 counted calls. Four restarts in an
+  // afternoon (2026-11-24, the coordinator move) ran the login out on their own.
+  // A kept entry can never be wrong: GitHub still checks the ETag, and a changed
+  // resource comes back 200 with the new body.
+  exportCache() {
+    const entries = [];
+    for (const [url, etag] of this.etags) {
+      if (this.cache.has(url)) entries.push([url, etag, this.cache.get(url)]);
+    }
+    return { version: 1, savedAt: Date.now(), entries };
+  }
+
+  importCache(saved) {
+    if (saved?.version !== 1 || !Array.isArray(saved.entries)) return 0;
+    let n = 0;
+    for (const e of saved.entries) {
+      if (!Array.isArray(e) || typeof e[0] !== 'string' || typeof e[1] !== 'string') continue;
+      // What this process fetched itself is newer than anything on disk.
+      if (this.etags.has(e[0])) continue;
+      this.etags.set(e[0], e[1]);
+      this.cache.set(e[0], e[2]);
+      n++;
+    }
+    return n;
+  }
+
   async resolveToken() {
     const fromEnv = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
     if (fromEnv) {
