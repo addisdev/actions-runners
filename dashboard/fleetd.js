@@ -102,6 +102,9 @@ import { nightCapConfig, nightWindow, decideNightCap, queuedJobs, NIGHT_CAP_OWNE
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(HERE, 'public');
 
+// Most runners one agent host may report in a heartbeat (and name in one drain).
+const MAX_HOST_RUNNERS = 256;
+
 const CONFIG = {
   port: Number(process.env.FLEET_PORT ?? 7878),
   // Loopback by default. The control plane in phase 3 executes shell commands as
@@ -3859,8 +3862,11 @@ const server = http.createServer(async (req, res) => {
     }
     const auth = authorizeHost(req, hostId);
     if (!auth.ok) return json(res, { error: auth.error }, auth.status);
-    if (!Array.isArray(body.runners) || body.runners.length > 64) {
-      return json(res, { error: 'runners must be an array of at most 64' }, 400);
+    // 256, not 64: an agent host reports every runner it has, and a former
+    // coordinator (ultra, 80 runners when forge took over on 2026-11-24) is far
+    // past 64. The body cap above still bounds the request.
+    if (!Array.isArray(body.runners) || body.runners.length > MAX_HOST_RUNNERS) {
+      return json(res, { error: `runners must be an array of at most ${MAX_HOST_RUNNERS}` }, 400);
     }
 
     const now = Date.now();

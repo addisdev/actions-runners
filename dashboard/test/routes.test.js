@@ -622,6 +622,19 @@ describe('federation: heartbeat and host registration', () => {
     assert.ok(Array.isArray(body.commands));
   });
 
+  test('a heartbeat from a host with 80 runners is accepted; over 256 is refused', async () => {
+    // ultra reported 80 when it became forge's standby (2026-11-24); the old cap was 64.
+    const body = (n) => ({
+      name: 'big-host', id: 'big-host-id', version: 1, reportedAt: Date.now(),
+      runners: Array.from({ length: n }, (_, i) => ({ name: `big-host-r${i}`, repo: 'o/r', status: 'running' })),
+      repos: [], host: {}, capacity: { ok: true, reasons: [], busy: 0, ceiling: 3, maxTotalRunners: 300 }, labels: [],
+    });
+    assert.equal((await beat(body(80))).status, 200);
+    const over = await beat(body(257));
+    assert.equal(over.status, 400);
+    assert.match((await over.json()).error, /at most 256/);
+  });
+
   test('/api/hosts shows the registered agent after a heartbeat', async () => {
     // Send a heartbeat to register the agent
     await beat({
