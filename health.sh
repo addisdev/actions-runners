@@ -38,6 +38,11 @@ DIRECT=0
 # loop with ETags, so a quiet repo costs nothing. Ask it first, and ask GitHub
 # only when it has no answer or the answer would call a runner faulty.
 #
+# On an agent host 127.0.0.1:7878 is the coordinator's (a tunnel), whose
+# `.runners` are its own host's only; `.fleetRunners` carries every host's, with
+# the same GitHub fields. Reading only `.runners` sent ultra's 80 runners to
+# GitHub every minute after the coordinator moved to forge (2026-11-24).
+#
 # Empty when the dashboard is not running, is not this host's, or stopped
 # collecting; health.sh must keep working then, because it is what notices.
 DASHBOARD_URL="${FLEET_HEALTH_STATE_URL-http://127.0.0.1:${FLEET_PORT:-7878}/api/state}"
@@ -46,7 +51,7 @@ DASHBOARD_STATES=""
 if [ -n "$DASHBOARD_URL" ] && command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
   DASHBOARD_STATES="$(curl -fsS --max-time 5 "$DASHBOARD_URL" 2>/dev/null | jq -r --argjson max "$DASHBOARD_MAX_AGE_S" '
     select(((now * 1000) - (.collector.lastFast // 0)) < ($max * 1000))
-    | .runners[]
+    | (.runners[], (.fleetRunners // [])[])
     | [.name, (if .ghUnknown then "unknown"
                elif (.registered | not) then "not-registered"
                elif .ghBusy then "busy"
