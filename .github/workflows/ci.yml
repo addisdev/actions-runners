@@ -137,6 +137,8 @@ jobs:
 
       - name: CI artifacts prune tests
         run: bash hooks/tests/ci-artifacts.sh
+      - name: CI artifacts push to the coordinator (two-host hand-off)
+        run: bash hooks/tests/ci-artifacts-push.sh
 
       - name: Work tree trim tests
         run: bash hooks/tests/work-trim.sh
@@ -156,6 +158,8 @@ jobs:
         run: bash scripts/test-runner-path.sh
       - name: shims/ps — the runner's orphan scan without a ps per process
         run: bash scripts/test-ps-shim.sh
+      - name: Build box bootstrap (dry run)
+        run: bash scripts/test-bootstrap.sh
 
   # ---------------------------------------------------------------------------
   # Offline release check (no network, checks tracked files for private data)
