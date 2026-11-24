@@ -26,6 +26,9 @@ brew "xcodegen"            # iOS projects generated from a spec
 brew "shellcheck"          # make lint, CI shell checks
 brew "jq"
 brew "gh"                  # registration tokens, workflow steps
+brew "age"                 # aliquant "Fixture verdict and deploy scripts": backup encryption tests (2026-11-24, forge)
+brew "rclone"              # same job: off-site copy tests
+brew "ffmpeg"              # kit screenshots.yml frames; test suites that probe media
 # Not gnu-tar: the current host has none, and actions/cache switches to gtar
 # when it is on PATH. Add it to every host in the same change, or to none.
 
