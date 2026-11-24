@@ -46,6 +46,10 @@ import { drainsToReassert, reassertArgs, markerStillHeld } from './lib/host-swit
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
+// A tiers drain or resume names every overflow runner on the host at once;
+// ultra had 80 when it became a standby (2026-11-24), so 64 was too few.
+const MAX_COMMAND_NAMES = 256;
+
 const CONFIG = {
   // `||`, not `??`: agentctl.sh writes both keys into the plist and leaves the
   // unused one as an empty string, which `??` treats as set. A host configured
@@ -499,7 +503,7 @@ async function runTiersCommand(cmd) {
     return { id: cmd.id, ok: false, error: 'this agent is report-only (set FLEET_AGENT_ALLOW_COMMANDS=1 to enable)' };
   }
   const names = Array.isArray(cmd.args?.names) ? cmd.args.names.map(String) : [];
-  if (!names.length || names.length > 64) return { id: cmd.id, ok: false, error: 'names must list 1 to 64 runners' };
+  if (!names.length || names.length > MAX_COMMAND_NAMES) return { id: cmd.id, ok: false, error: `names must list 1 to ${MAX_COMMAND_NAMES} runners` };
   const dirs = discoverRunnerDirs(CONFIG.root);
   const flag = TIERS_COMMANDS[cmd.action];
   const lines = [];
