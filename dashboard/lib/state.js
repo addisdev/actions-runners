@@ -115,13 +115,33 @@ export function buildRunners({ dirs, ghRunnersByRepo, launchd, processes, runner
     });
   }
 
+  // A runner GitHub lists under a second repo name is one of ours: a renamed
+  // repo answers under its old name too, so a runner whose .runner still names
+  // the old repo is listed under both. On 2026-11-24 ultra's social runners
+  // (.runner: addisdev/social, repo now addisdev/taylab-social) were parked by
+  // the night cap with their .drain markers, while the copies listed under the
+  // new name came through as "elsewhere" runners with no drain state and a
+  // launchd state guessed from GitHub's `offline`, so every taylab-social run
+  // read runner-down ("launchd state: dead") for the whole night window. The
+  // copy carries this host's state for that runner (lib/fleet.js uses it).
+  const localById = new Map(runners.filter((r) => r.ghId != null).map((r) => [r.ghId, r]));
+  const hostSide = (r) => ({
+    dirName: r.dirName, dir: r.dir, instance: r.instance, launchdLabel: r.launchdLabel,
+    launchdState: r.launchdState, drainState: r.drainState, drainBy: r.drainBy,
+    workingLocally: r.workingLocally, lastExit: r.lastExit, pid: r.pid, rssMb: r.rssMb,
+    uptime: r.uptime, version: r.version,
+  });
+
   // Runners GitHub knows about that have no directory here. Either they live on
   // another machine, or they are a registration nobody cleaned up.
   const elsewhere = [];
   for (const [repo, list] of ghRunnersByRepo) {
     for (const r of list) {
       if (seenGh.has(`${repo}::${r.name}`)) continue;
+      const same = r.id != null ? localById.get(r.id) ?? null : null;
       elsewhere.push({
+        // The same GitHub runner as a local one, listed under another repo name.
+        ...(same ? { sameAs: same.name, local: hostSide(same) } : {}),
         name: r.name,
         repo,
         project: groups.of(repo),
