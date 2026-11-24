@@ -24,6 +24,7 @@
 // /api/glance, push and the macOS cockpit all read it; nothing re-derives it.
 
 import { shmPressure } from './shm.js';
+import { gitHubDisagreement, runnersWithJobs } from './state.js';
 
 // The rungs this daemon can see. The cockpit adds two above these that no
 // process on the host can ever report — its own absence ("host down" for the
@@ -197,8 +198,9 @@ export function createVerdictTracker(opts = {}) {
   return {
     observe(snapshot, facts = {}, now = Date.now()) {
       const offline = new Set();
+      const withJob = runnersWithJobs(snapshot.active);
       for (const r of allRunners(snapshot)) {
-        if (isOffline(r)) {
+        if (isOffline(r, withJob.has(r.name))) {
           offline.add(r.name);
           if (!offlineSince.has(r.name)) offlineSince.set(r.name, now);
         }
@@ -220,8 +222,11 @@ function allRunners(snapshot) {
   return out;
 }
 
-const isOffline = (r) =>
-  !r.drainState && r.registered !== false && !r.ghUnknown && r.ghStatus === 'offline';
+// Offline only when the host agrees: GitHub's list called busy runners offline
+// while they renewed their jobs every minute (2026-11-24, lib/state.js).
+const isOffline = (r, hasJob = false) =>
+  !r.drainState && r.registered !== false && !r.ghUnknown && r.ghStatus === 'offline'
+  && !gitHubDisagreement(r, hasJob);
 
 /**
  * @returns {{ verdict, runners: Map<string, object>, counts }}
@@ -326,7 +331,7 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
     } else if (r.ghUnknown) {
       state = 'unknown';
       detail = 'GitHub state not read this tick';
-    } else if (isOffline(r)) {
+    } else if (isOffline(r, Boolean(job))) {
       since = offlineSince.get(r.name) ?? now;
       state = now - since < o.settleMs ? 'settling' : 'offline';
       detail = state === 'settling'
@@ -352,6 +357,10 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
       state = 'idle';
       detail = 'idle';
     }
+    // GitHub calls it offline and the host shows it alive: say so, without
+    // calling it down.
+    const disagrees = !r.drainState && !r.ghUnknown && r.ghStatus === 'offline' ? gitHubDisagreement(r, Boolean(job)) : null;
+    if (disagrees && ['busy', 'overdue', 'idle', 'lost'].includes(state)) detail = `${detail} · ${disagrees.reason}`;
     runners.set(r.name, {
       name: r.name,
       repo: r.repo ?? null,

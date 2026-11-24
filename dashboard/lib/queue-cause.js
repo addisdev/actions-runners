@@ -21,7 +21,9 @@
 // 3. unserved               — no runner registered for this repo at all
 // 4. role-unserved          — repo has runners, but not for this known job role
 // 5. label-mismatch         — no runner matches the job's runs-on labels
-// 6. runner-down            — the repo's runner exists but is offline/dead/draining
+// 6. runner-down            — the repo's runner exists but is offline/dead/draining, and the
+//                             host agrees: GitHub's "offline" alone, for a runner the host
+//                             shows working, is not enough (lib/state.js ownLifeEvidence)
 // 7. concurrency-block      — workflow concurrency group limit reached, or account blocked
 //    night-cap              — the night cap (lib/night-cap.js) parked the runner, or every
 //                             runner for it is busy while the cap holds the host at its limit
@@ -38,7 +40,7 @@
 // medium — corroborated but not definitive (busy + no capacity issues)
 // low    — indirect evidence only (everything looks fine, still queued)
 
-import { roleLabel } from './state.js';
+import { roleLabel, gitHubDisagreement } from './state.js';
 
 export const CAUSES = {
   TELEMETRY_UNAVAILABLE: 'telemetry-unavailable',
@@ -195,8 +197,20 @@ export function classifyQueueCause({ run, runners, capacity, api = {}, collector
   // read "an idle runner exists, GitHub is holding this run" (concurrency-block),
   // which also dropped it from the tiers controller's queue.
   const serving = needsLabels.length > 0 && repoRunners.some(fits) ? repoRunners.filter(fits) : repoRunners;
-  const onlineRunners = serving.filter((r) => r.registered && r.ghStatus === 'online' && r.launchdState === 'running' && !r.drainState);
-  const downRunners = serving.filter((r) => r.registered && (r.ghStatus !== 'online' || r.launchdState !== 'running' || r.drainState));
+  // "Online" needs GitHub OR the host: a runner GitHub lists as offline while
+  // the host shows it working is up, and GitHub's list is behind
+  // (lib/state.js markGitHubDisagreement; 2026-11-24 homelake). Only a runner
+  // both sides call down can make this run runner-down.
+  const disagree = new Map(serving.map((r) => [r.name, r.registered ? gitHubDisagreement(r) : null]));
+  const up = (r) => r.ghStatus === 'online' || Boolean(disagree.get(r.name));
+  const onlineRunners = serving.filter((r) => r.registered && up(r) && r.launchdState === 'running' && !r.drainState);
+  const downRunners = serving.filter((r) => r.registered && !onlineRunners.includes(r));
+  // Busy by GitHub, by the host's Runner.Worker, or by the disagreement's own
+  // evidence (a job in progress on it).
+  const busyNow = (r) => r.ghBusy || r.workingLocally || Boolean(disagree.get(r.name)?.working);
+  const disagreeing = onlineRunners.filter((r) => disagree.get(r.name));
+  for (const r of disagreeing.slice(0, 3)) evidence.push(disagree.get(r.name).reason);
+  if (disagreeing.length > 3) evidence.push(`and ${disagreeing.length - 3} more runner(s) GitHub calls offline that the host shows alive`);
 
   if (onlineRunners.length === 0 && downRunners.length > 0) {
     for (const r of downRunners) {
@@ -239,7 +253,7 @@ export function classifyQueueCause({ run, runners, capacity, api = {}, collector
   // If an online idle runner exists but is not accepting work, the likely cause
   // is GitHub's workflow concurrency mechanism rather than anything on this host.
   // We have no API access to concurrency slot state, so this is inferential.
-  const idleOnline = onlineRunners.filter((r) => !r.ghBusy && !r.workingLocally);
+  const idleOnline = onlineRunners.filter((r) => !busyNow(r));
   if (idleOnline.length > 0) {
     // This is GitHub-delay if the wait is short, concurrency-block if it is not.
     // We'll distinguish by wait time: >3 min with an idle runner is a strong
@@ -287,7 +301,7 @@ export function classifyQueueCause({ run, runners, capacity, api = {}, collector
   const capped = nightCap?.active
     && serving.some((r) => nightCap.hostId == null || r.hostId == null || r.hostId === nightCap.hostId);
   if (capped) {
-    const busyHere = onlineRunners.filter((r) => r.ghBusy || r.workingLocally);
+    const busyHere = onlineRunners.filter(busyNow);
     if (busyHere.length) evidence.push(`All ${busyHere.length} runner(s) for this repo are executing a job`);
     return nightCapResult(nightCap, evidence);
   }
@@ -302,7 +316,7 @@ export function classifyQueueCause({ run, runners, capacity, api = {}, collector
   }
 
   // ---- repo capacity (all runners busy) ------------------------------------
-  const busyRunners = onlineRunners.filter((r) => r.ghBusy || r.workingLocally);
+  const busyRunners = onlineRunners.filter(busyNow);
   if (busyRunners.length > 0) {
     evidence.push(`All ${busyRunners.length} runner(s) for this repo are executing a job`);
     if (capacity?.ok) evidence.push('Host has headroom to accept a new runner');

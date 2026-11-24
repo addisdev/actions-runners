@@ -134,7 +134,7 @@ level.
 | `unserved` | No runner exists for the repo at all | Register one |
 | `role-unserved` | The repo has runners, but none for a known role such as `ci` or `ui-web` | Register that role with the queued job's labels |
 | `label-mismatch` | The job's `runs-on:` matches no runner's labels | **No** — a copy has the same labels |
-| `runner-down` | Every runner for the repo is offline, dead or draining | No — repair it |
+| `runner-down` | Every runner for the repo is offline, dead or drained by hand, and the host agrees: a runner GitHub lists as offline while the host shows it working (its `Runner.Worker` is up, or a job is in progress on it with its listener up) counts as online, and the disagreement is listed as evidence | No — repair it |
 | `concurrency-block` | An idle runner exists and the run is still not dispatched; a workflow `concurrency:` group is holding it | No |
 | `host-saturation` | No runner is free and the headroom gate is refusing additions, or the tiers controller parked the runner until a lane slot frees | No — it would be refused |
 | `repo-capacity` | Every runner for the repo is busy, and there is headroom | **Yes** |

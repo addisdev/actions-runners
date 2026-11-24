@@ -146,6 +146,98 @@ export function buildRunners({ dirs, ghRunnersByRepo, launchd, processes, runner
   return { runners, elsewhere };
 }
 
+// ---- GitHub says offline, the host shows it working -------------------------
+//
+// GitHub's runner list is not the runner. On 2026-11-24 from ~02:30Z it listed
+// ultra-homelake-2..-5 as `offline busy=false` while homelake-2's _diag logged
+// "Successfully renew job" every minute and five homelake runs were building;
+// in the tick the night cap opened (03:00:36Z) every busy homelake runner read
+// offline at once. Trusting the list alone, the queue classifier called every
+// queued homelake run runner-down ("Run health.sh --repair"), `cockpit wait`
+// gave up as pointless, and a repair would have restarted runners in the
+// middle of other sessions' jobs. The fleet's own runner_events show the same
+// runners flipping busy → offline idle → online busy every few minutes.
+//
+// So "offline" needs the host to agree. A runner GitHub calls offline whose
+// launchd job is running is NOT down when the host has evidence of life:
+//   - its Runner.Worker is running (workingLocally), or
+//   - GitHub's own jobs API has a job in progress on it and its listener is up, or
+//   - its listener is up and a sibling for the same repo on the same host is
+//     working despite GitHub calling it offline too: the list is behind for
+//     the whole repo, not for one runner.
+// Such a runner is counted as online (busy when it is working), and the
+// disagreement is carried as evidence, the way ghUnknown abstains.
+//
+// A dead listener, a launchd job that is not running, a drained runner and a
+// runner the host also shows idle with no sibling evidence keep GitHub's word.
+
+// The listener process was found (buildRunners sets rssMb only then; an agent
+// heartbeat carries the same field).
+const listenerUp = (r) => r.launchdState === 'running' && r.rssMb != null;
+
+const offlineCandidate = (r) =>
+  Boolean(r) && !r.ghUnknown && r.registered !== false && r.ghStatus === 'offline'
+  && !r.drainState && r.launchdState === 'running';
+
+/**
+ * The runner's own evidence of life against GitHub's "offline", or null.
+ * @param {object} r
+ * @param {boolean} [hasJob] - GitHub's jobs API has an in-progress job on it
+ * @returns {{ reason: string, working: boolean }|null}
+ */
+export function ownLifeEvidence(r, hasJob = false) {
+  if (!offlineCandidate(r)) return null;
+  const says = `GitHub says ${r.name} is offline; `;
+  if (r.workingLocally) return { reason: `${says}the host shows it running a job (Runner.Worker is up)`, working: true };
+  if (hasJob && listenerUp(r)) return { reason: `${says}GitHub has a job in progress on it and its listener is up`, working: true };
+  return null;
+}
+
+/** Names of runners GitHub's jobs API shows a job in progress on. */
+export function runnersWithJobs(active = []) {
+  const names = new Set();
+  for (const run of active ?? []) {
+    for (const j of run.jobs ?? []) if (j.status === 'in_progress' && j.runnerName) names.add(j.runnerName);
+  }
+  return names;
+}
+
+/**
+ * Marks, in place, every runner GitHub calls offline that the host shows
+ * alive: `ghDisagrees = { reason, working }` (absent otherwise). Call once per
+ * runner list per tick, after the active runs' jobs are known.
+ *
+ * @param {object[]} runners
+ * @param {object[]} [active] - snapshot.active runs, with jobs
+ * @returns {number} how many runners disagree with GitHub
+ */
+export function markGitHubDisagreement(runners = [], active = []) {
+  const withJob = runnersWithJobs(active);
+  const key = (r) => `${r.hostId ?? 'local'}|${r.repo}`;
+  const working = new Map();
+  for (const r of runners) {
+    delete r.ghDisagrees;
+    const own = ownLifeEvidence(r, withJob.has(r.name));
+    if (!own) continue;
+    r.ghDisagrees = own;
+    if (!working.has(key(r))) working.set(key(r), r.name);
+  }
+  for (const r of runners) {
+    const sibling = working.get(key(r));
+    if (r.ghDisagrees || !sibling || !offlineCandidate(r) || !listenerUp(r)) continue;
+    r.ghDisagrees = {
+      reason: `GitHub says ${r.name} is offline; its listener is up and ${sibling} (same repo, same host) is working while GitHub calls it offline too, so GitHub's runner list is behind`,
+      working: false,
+    };
+  }
+  return runners.filter((r) => r.ghDisagrees).length;
+}
+
+/** The disagreement on a runner: the tick's mark, else its own evidence. */
+export function gitHubDisagreement(r, hasJob = false) {
+  return r?.ghDisagrees ?? ownLifeEvidence(r, hasJob);
+}
+
 export function deriveDrift({ runners, elsewhere, active, repos, now = Date.now(), classify = null }) {
   const drift = [];
   const add = (severity, kind, subject, detail, hint, extra = null) =>
@@ -166,7 +258,10 @@ export function deriveDrift({ runners, elsewhere, active, repos, now = Date.now(
         'no runner plist sets KeepAlive, so launchd will not revive it — health.sh --repair');
     }
 
-    if (!intentionallyStopped && r.launchdState === 'running' && r.registered && !r.ghUnknown && r.ghStatus === 'offline') {
+    // Not when the host shows the runner alive: GitHub's list is behind, and an
+    // `offline` here is a critical alert (or, three at once, `offline-host`).
+    if (!intentionallyStopped && r.launchdState === 'running' && r.registered && !r.ghUnknown && r.ghStatus === 'offline'
+      && !gitHubDisagreement(r)) {
       add('critical', 'offline', r.name,
         'listener is running locally but GitHub reports it offline',
         'the listener is alive but not talking to GitHub — check network and _diag');

@@ -10,6 +10,27 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Fixed
 
+- **Runner-down needs the host to agree with GitHub.** On 2026-11-24 from ~02:30Z
+  GitHub's runner list called ultra-homelake-2..-5 `offline busy=false` while
+  homelake-2's `_diag` logged "Successfully renew job" every minute and five
+  homelake runs were building; fleetd's own `runner_events` show the same runners
+  flipping busy → offline idle → online busy every few minutes. In the tick the
+  night cap opened (03:00:36Z) every queued homelake run read runner-down (high),
+  "will not start on its own → Run health.sh --repair", and `wait_for_checks`
+  returned `pointless`. A runner GitHub calls offline whose launchd job is
+  running now counts as online when the host shows it alive: its `Runner.Worker`
+  is up, GitHub's jobs API has a job in progress on it with its listener up, or
+  (for an idle one) its listener is up and a same-repo sibling on the same host is
+  working while GitHub calls it offline too (`markGitHubDisagreement` in
+  `lib/state.js`). The disagreement is carried as evidence on the queue row and the
+  runner's verdict detail, and such a runner raises no `offline` drift, so no
+  per-runner or `offline-host` critical alert. A dead listener, a launchd job that
+  is not running, a hand drain, or a runner both sides see as down still reads
+  runner-down. Parked runners already carry their `.drain` marker
+  (`drain-runner.sh` writes it before it stops the service, and fleetd rereads
+  markers every tick), so they read night-cap / host-saturation; `wait_for_checks`
+  now asks the night cap before the "no other runner serves it" test, which used to
+  give up when every runner was parked but one GitHub listed offline.
 - **A job no runner ever claimed records no build time.** GitHub fills in
   `started_at` (a copy of `created_at`) and `completed_at` for a job cancelled
   while still queued, so fleetd stored the whole queue wait as `duration_ms`. On

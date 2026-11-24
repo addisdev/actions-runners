@@ -30,7 +30,7 @@ import {
   sh,
 } from './lib/local.js';
 import { buildBundle, redact } from './lib/bundle.js';
-import { buildRunners, deriveDrift, shapeRun, shapeJob } from './lib/state.js';
+import { buildRunners, deriveDrift, shapeRun, shapeJob, markGitHubDisagreement } from './lib/state.js';
 import { deriveGroups } from './lib/groups.js';
 import { Backfill } from './lib/backfill.js';
 import { RunSettler } from './lib/settle.js';
@@ -570,6 +570,8 @@ let lastFacts = null;
 // Its settings are reread from fleet.env on every tick, so FLEET_NIGHT_CAP_MODE=off
 // there takes effect within a tick, with no restart.
 let nightCapState = null;
+// How many runners GitHub listed offline that the host showed alive, last tick.
+let lastDisagreeing = 0;
 let nightCapSignature = '';
 const nightCapHistory = [];
 
@@ -2305,6 +2307,17 @@ async function fastTick(progress = null) {
     }
   })();
 
+  // GitHub's runner list sometimes calls a working runner offline. Mark the
+  // runners the host shows alive before anything reasons about "offline":
+  // the classifier, drift and the verdict all read the mark (lib/state.js).
+  markGitHubDisagreement(runners, active);
+  const disagreeing = markGitHubDisagreement(fleetRunners, active);
+  if (disagreeing !== lastDisagreeing) {
+    if (disagreeing) log(`github: ${disagreeing} runner(s) listed offline that the host shows alive: ${fleetRunners.filter((r) => r.ghDisagrees).map((r) => r.name).slice(0, 8).join(', ')}`);
+    else if (lastDisagreeing) log('github: runner list agrees with the host again');
+    lastDisagreeing = disagreeing;
+  }
+
   const classifyRun = (run) => {
     const runLabels = queuedJobLabels(run);
     return classifyQueueCause({
@@ -3799,6 +3812,7 @@ const server = http.createServer(async (req, res) => {
     const fleetRunners = buildFleetRunners(
       snapshot.runners ?? [], snapshot.elsewhere ?? [], hostState
     );
+    markGitHubDisagreement(fleetRunners, snapshot.active ?? []);
     const lintFindings = (() => {
       try {
         const runnersByRepo = new Map();

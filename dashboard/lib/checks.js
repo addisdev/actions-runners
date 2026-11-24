@@ -221,13 +221,18 @@ export function decide(g, target) {
       set,
     };
   }
+  // Before the dead-runner test: the night cap parks every idle runner it can
+  // (`draining` on the glance) and leaves alone one GitHub lists offline, so a
+  // repo whose runners are all parked but one offline read "no other runner
+  // serves it" and gave up, while the parked ones come back at a free slot or
+  // the end of the window.
+  const night = nightCapHold(g, set, queue);
+  if (night) return { state: 'pending', reason: night, heldBy: 'night-cap', set };
   const mine = (g.runners ?? []).filter((r) => sameRepo(r.repo, target.repo));
   const dead = mine.find((r) => r.state === 'dead' || r.state === 'offline');
   if (dead && !mine.some((r) => ['idle', 'busy', 'overdue'].includes(r.state))) {
     return { state: 'pointless', reason: `${dead.name} is ${dead.state} and no other runner serves ${target.repo}`, set };
   }
-  const night = nightCapHold(g, set, queue);
-  if (night) return { state: 'pending', reason: night, heldBy: 'night-cap', set };
   return { state: 'pending', reason: null, set };
 }
 
