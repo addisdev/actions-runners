@@ -20,6 +20,13 @@
 # an hour, one per runner per sweep. The cases at the end pin what replaced that:
 # the dashboard's answer costs no call, and only GitHub itself can convict a runner.
 #
+# On 2026-11-25 it was found killing jobs. GitHub listed every live runner on
+# forge and ultra offline near 03:00 UTC, busy ones too, and each sweep
+# restarted all of them; the restarts kept them offline, so it went on for half
+# an hour and 16 jobs lost contact mid-step. The cases after "GitHub says
+# offline" pin what stopped it: a runner running a job here is never restarted,
+# a restarted one gets time to reconnect, and many at once restarts none.
+#
 # Nothing here touches the live fleet: FLEET_ROOT points at the temp directory.
 set -uo pipefail
 
@@ -78,6 +85,13 @@ for line in (open(f).read().splitlines() if os.path.exists(f) else []):
     if name == want:
         print(state)
 PY
+# ps -axo command=: the process table, from stub/ps (empty: no job running).
+cat > "$BIN/ps" <<SH
+#!/usr/bin/env bash
+[ -f "$STUB/ps-fails" ] && exit 1
+cat "$STUB/ps" 2>/dev/null
+exit 0
+SH
 # curl <url>: the dashboard's /api/state, from stub/state.json, or refused.
 cat > "$BIN/curl" <<SH
 #!/usr/bin/env bash
@@ -95,7 +109,7 @@ echo "$1" >> "$(dirname "$0")/svc.log"
 SVC
   chmod +x "$FLEET/$1/svc.sh"
 }
-run_health() { PATH="$BIN:$PATH" FLEET_ROOT="$FLEET" FLEET_HEALTH_STATE_URL="${STATE_URL:-}" bash "$ROOT/health.sh" "$@" > "$TMP/out" 2>&1; echo $?; }
+run_health() { PATH="$BIN:$PATH" FLEET_PS="$BIN/ps" FLEET_ROOT="$FLEET" FLEET_HEALTH_STATE_URL="${STATE_URL:-}" bash "$ROOT/health.sh" "$@" > "$TMP/out" 2>&1; echo $?; }
 gh_calls() { if [ -f "$STUB/gh-calls" ]; then wc -l < "$STUB/gh-calls" | tr -d ' '; else echo 0; fi; }
 # dashboard_says <age seconds> <name:state[:unknown|:unregistered]>...
 dashboard_says() {
@@ -138,7 +152,51 @@ printf 'host-app-ios offline\n' > "$STUB/runners-me-app-ios"
 check "exits 1" "$(run_health)" "1"
 check "--repair restarts it" "$(run_health --repair >/dev/null; tr '\n' ',' < "$FLEET/app-ios/svc.log")" "stop,start,"
 rm -f "$FLEET/app-ios/svc.log"
+
+echo
+echo "health.sh — GitHub says offline again right after a restart"
+check "--repair waits for it to reconnect" "$(run_health --repair >/dev/null; cat "$FLEET/app-ios/svc.log" 2>/dev/null | wc -l | tr -d ' ')" "0"
+check "says so" "$(grep -c 'giving it until 600s to reconnect' "$TMP/out")" "1"
+check "after the cooldown restarts it" "$(FLEET_HEALTH_RESTART_COOLDOWN_S=0 run_health --repair >/dev/null; tr '\n' ',' < "$FLEET/app-ios/svc.log")" "stop,start,"
+rm -rf "$FLEET/app-ios/svc.log" "$FLEET/logs"
+
+echo
+echo "health.sh — GitHub says offline about a runner running a job here"
+printf '%s\n' "$FLEET/app-ios/bin.2.338.2/Runner.Worker spawnclient 117 120" > "$STUB/ps"
+check "exits 1: GitHub's view is still reported" "$(run_health --repair)" "1"
+check "--repair does not stop it" "$(cat "$FLEET/app-ios/svc.log" 2>/dev/null | wc -l | tr -d ' ')" "0"
+check "says it is running a job" "$(grep -c 'running a job here' "$TMP/out")" "2"
+printf '%s\n' "$FLEET/app-ios-2/bin/Runner.Worker spawnclient 117 120" > "$STUB/ps"
+check "a worker under another runner's directory is not this one's" "$(run_health --repair >/dev/null; tr '\n' ',' < "$FLEET/app-ios/svc.log")" "stop,start,"
+rm -rf "$FLEET/app-ios/svc.log" "$FLEET/logs"
+touch "$STUB/ps-fails"
+check "when ps fails, nothing is stopped" "$(run_health --repair >/dev/null; cat "$FLEET/app-ios/svc.log" 2>/dev/null | wc -l | tr -d ' ')" "0"
+rm -f "$STUB/ps-fails" "$STUB/ps"
+
+echo
+echo "health.sh — GitHub says many runners running here are offline at once"
+make_runner app-cli me/app-cli host-app-cli
+printf 'host-app-web offline\n' > "$STUB/runners-me-app-web"
+printf 'host-app-cli offline\n' > "$STUB/runners-me-app-cli"
+check "exits 1" "$(run_health --repair)" "1"
+check "--repair restarts none of them" "$(cat "$FLEET"/*/svc.log 2>/dev/null | wc -l | tr -d ' ')" "0"
+check "says it is GitHub or the network" "$(grep -c 'GitHub lists 3 runner(s) offline' "$TMP/out")" "1"
+check "busy ones count toward it" "$(printf '%s\n' "$FLEET/app-cli/bin/Runner.Worker" > "$STUB/ps"; FLEET_HEALTH_MASS_OFFLINE=3 run_health --repair >/dev/null; cat "$FLEET"/*/svc.log 2>/dev/null | wc -l | tr -d ' ')" "0"
+rm -f "$STUB/ps"
+touch "$STUB/dead-actions.runner.me-app-cli.host-app-cli"
+check "a dead launchd job is still restarted" "$(run_health --repair >/dev/null; tr '\n' ',' < "$FLEET/app-cli/svc.log" 2>/dev/null)" "stop,start,"
+rm -rf "$FLEET"/*/svc.log "$FLEET/logs" "$STUB/dead-actions.runner.me-app-cli.host-app-cli"
+check "FLEET_HEALTH_MASS_OFFLINE=0 turns the hold off" "$(FLEET_HEALTH_MASS_OFFLINE=0 run_health --repair >/dev/null; cat "$FLEET"/*/svc.log | wc -l | tr -d ' ')" "6"
+rm -rf "$FLEET"/*/svc.log "$FLEET/logs" "$FLEET/app-cli" "$STUB/runners-me-app-cli"
+printf 'host-app-web online\n' > "$STUB/runners-me-app-web"
 printf 'host-app-ios online\n' > "$STUB/runners-me-app-ios"
+
+echo
+echo "health.sh — launchd job dead while its runner is running a job"
+touch "$STUB/dead-actions.runner.me-app-ios.host-app-ios"
+printf '%s\n' "$FLEET/app-ios/bin/Runner.Worker spawnclient 117 120" > "$STUB/ps"
+check "--repair does not stop it" "$(run_health --repair >/dev/null; cat "$FLEET/app-ios/svc.log" 2>/dev/null | wc -l | tr -d ' ')" "0"
+rm -f "$STUB/dead-actions.runner.me-app-ios.host-app-ios" "$STUB/ps"
 
 echo
 echo "health.sh — launchd job dead while GitHub cannot be asked"
@@ -186,6 +244,7 @@ else
 
   echo
   echo "health.sh — the dashboard and GitHub both say offline"
+  rm -rf "$FLEET/logs"
   printf 'host-app-ios offline\n' > "$STUB/runners-me-app-ios"
   check "exits 1" "$(run_health)" "1"
   check "--repair restarts it" "$(run_health --repair >/dev/null; tr '\n' ',' < "$FLEET/app-ios/svc.log")" "stop,start,"

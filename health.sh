@@ -27,6 +27,68 @@ rc=0
 DRAINED=0
 UNANSWERED=0
 DIRECT=0
+BUSY_HERE=0
+COOLING=0
+
+# WHAT A REPAIR MAY STOP. `svc.sh stop` on a runner that is running a job kills
+# the job ("The self-hosted runner lost communication with the server"). So a
+# repair never stops a runner with a Runner.Worker under its directory, whatever
+# GitHub says: the process table is a fact about this host, GitHub's "offline" is
+# a report about it.
+#
+# GitHub's runner list is wrong at once for a whole host every night near 03:00
+# UTC: every live listener, busy ones included, listed offline while it was
+# long-polling the broker without an error. Seen on ultra on most nights since
+# 2026-10-12 and on forge on its first night as coordinator. On 2026-11-25 this
+# job restarted all 60 forge runners and all 80 ultra runners every sweep from
+# 03:01Z to 03:29Z: a restarted listener meets "A session for this runner
+# already exists" and stays offline for a minute or two, so the next sweep
+# found them offline again, and the jobs they had taken in between were killed
+# (16 of them, aliquant PR #158 among them). So:
+#   - one restart per runner per FLEET_HEALTH_RESTART_COOLDOWN_S, for GitHub's
+#     word alone, so a listener gets time to win its session back;
+#   - when FLEET_HEALTH_MASS_OFFLINE or more listeners that are running here are
+#     listed offline in one sweep, that is GitHub or the network, not that many
+#     listeners, and none of them is restarted. The listener reconnects on its
+#     own once GitHub does; a launchd job that is dead or unloaded is still
+#     restarted, since that is a fact about this host.
+#   - FLEET_HEALTH_MASS_OFFLINE=0 turns the hold off.
+COOLDOWN_S="${FLEET_HEALTH_RESTART_COOLDOWN_S:-600}"
+MASS_OFFLINE="${FLEET_HEALTH_MASS_OFFLINE:-3}"
+STAMPS="${FLEET_HEALTH_STAMP_DIR:-$ROOT/logs/health-restarts}"
+OFFLINE_CANDIDATES=""
+
+# busy_here <runner dir>: a job is running on this runner, or ps cannot tell
+# (which counts as busy: a repair that cannot see must not stop anything).
+# Same test as cleanup.sh's busy_now: a Runner.Worker whose path starts with
+# the runner's bin (bin/ or a self-updated bin.<version>/).
+busy_here() {
+  local dir="${1%/}" procs
+  procs="$("${FLEET_PS:-/bin/ps}" -axo command= 2>/dev/null)" || return 0
+  printf '%s\n' "$procs" \
+    | awk -v d="$dir/bin" 'index($0, d) == 1 && /Runner\.Worker/ { f = 1 } END { exit !f }'
+}
+
+# restarted_ago <name>: seconds since this job last restarted it, or empty.
+restarted_ago() {
+  local t
+  t="$(cat "$STAMPS/$1" 2>/dev/null)" || return 0
+  case "$t" in ''|*[!0-9]*) return 0 ;; esac
+  echo $(( $(date +%s) - t ))
+}
+
+# restart_runner <runner dir> <label> <name>: stop and start, unless a job has
+# started on it since it was judged. Checked again here, right before the stop.
+restart_runner() {
+  local d="$1" label="$2" name="$3"
+  if busy_here "$d"; then
+    echo "    -> $label is running a job here; not restarted"
+    return 0
+  fi
+  echo "    -> restarting $label"
+  mkdir -p "$STAMPS" 2>/dev/null && date +%s > "$STAMPS/$name" 2>/dev/null
+  (cd "$d" && ./svc.sh stop >/dev/null 2>&1; ./svc.sh start >/dev/null 2>&1)
+}
 
 # GitHub's view of the runners, without spending GitHub's allowance on it.
 #
@@ -163,15 +225,56 @@ for d in "$ROOT"/*/; do
 
   printf "%-42s %-10s %s\n" "$name" "$lstate" "$gstate"
 
-  # A listener can remain alive locally while GitHub has dropped its session.
-  # Restarting that idle listener is the only way to establish a fresh session;
-  # drained runners were already excluded above, and a busy runner is never
-  # reported as offline.
-  if [ "$REPAIR" = "1" ] && { [ "$lstate" != "running" ] || [ "$gstate" = "offline" ]; }; then
-    echo "    -> restarting $label"
-    (cd "$d" && ./svc.sh stop >/dev/null 2>&1; ./svc.sh start >/dev/null 2>&1)
+  [ "$REPAIR" = "1" ] || continue
+
+  # launchd says the service is dead or unloaded: a fact about this host.
+  if [ "$lstate" != "running" ]; then
+    restart_runner "$d" "$label" "$name"
+    continue
+  fi
+
+  # A listener can remain alive locally while GitHub has dropped its session,
+  # and restarting it is the only way to get a fresh one. But GitHub lists busy
+  # runners offline too (see WHAT A REPAIR MAY STOP above), so its word alone
+  # never stops a runner that is running a job, and is acted on only after the
+  # sweep has seen how many runners it says it about.
+  if [ "$gstate" = "offline" ]; then
+    if busy_here "$d"; then
+      echo "    -> running a job here; GitHub's offline is not acted on"
+      BUSY_HERE=$((BUSY_HERE + 1))
+      continue
+    fi
+    ago="$(restarted_ago "$name")"
+    if [ -n "$ago" ] && [ "$ago" -ge 0 ] && [ "$ago" -lt "$COOLDOWN_S" ]; then
+      echo "    -> restarted ${ago}s ago; giving it until ${COOLDOWN_S}s to reconnect"
+      COOLING=$((COOLING + 1))
+      continue
+    fi
+    OFFLINE_CANDIDATES="$OFFLINE_CANDIDATES$d	$label	$name
+"
   fi
 done
+
+if [ -n "$OFFLINE_CANDIDATES" ]; then
+  n_offline=$(printf '%s' "$OFFLINE_CANDIDATES" | grep -c .)
+  total_offline=$((n_offline + BUSY_HERE + COOLING))
+  if [ "$MASS_OFFLINE" -gt 0 ] 2>/dev/null && [ "$total_offline" -ge "$MASS_OFFLINE" ]; then
+    echo
+    echo "GitHub lists $total_offline runner(s) offline whose listeners are running here."
+    echo "That many at once is GitHub or the network, not the listeners: none restarted"
+    echo "(threshold FLEET_HEALTH_MASS_OFFLINE=$MASS_OFFLINE). They reconnect on their own."
+  else
+    while IFS='	' read -r d label name; do
+      [ -n "$d" ] || continue
+      restart_runner "$d" "$label" "$name"
+    done <<< "$OFFLINE_CANDIDATES"
+  fi
+fi
+
+if [ "$BUSY_HERE" != "0" ]; then
+  echo
+  echo "$BUSY_HERE runner(s) GitHub lists offline are running a job here; left alone."
+fi
 
 if [ "$DRAINED" != "0" ]; then
   echo

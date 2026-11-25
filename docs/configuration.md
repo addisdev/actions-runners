@@ -59,6 +59,9 @@ Used by `healthctl.sh` and `scripts/health-repair-launchd.sh`. See
 | `FLEET_HEALTH_STATE_URL` | `http://127.0.0.1:$FLEET_PORT/api/state` | Where a sweep reads GitHub's view of the runners, at no GitHub cost. Empty means always ask GitHub. |
 | `FLEET_HEALTH_STATE_MAX_AGE_S` | `180` | A dashboard whose last tick is older than this is not trusted, and the sweep asks GitHub. |
 | `FLEET_HEALTH_GH_CACHE` | `600s` | How long `gh` may reuse a repo's runner list when the dashboard cannot answer. |
+| `FLEET_HEALTH_RESTART_COOLDOWN_S` | `600` | A runner `--repair` restarted for GitHub's "offline" alone is not restarted again for this long, so the new listener can win its session back. |
+| `FLEET_HEALTH_MASS_OFFLINE` | `3` | When this many listeners running on the host are listed offline in one sweep, `--repair` restarts none of them: that is GitHub or the network. `0` turns the hold off. A dead or unloaded launchd job is still restarted. |
+| `FLEET_HEALTH_STAMP_DIR` | `logs/health-restarts` under `FLEET_ROOT` | Where `--repair` records when it last restarted each runner. |
 
 The LaunchAgent label is `<FLEET_LABEL_PREFIX>.fleet-health` (default
 `com.runner-fleet.fleet-health`). Set `FLEET_LABEL_PREFIX` before

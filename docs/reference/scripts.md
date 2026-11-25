@@ -192,6 +192,13 @@ What it refuses to do:
   `register.sh` are untouched.
 - **It will not revive drained runners.** Repair behaviour is delegated entirely
   to `health.sh --repair`, which skips any runner with a `.drain` file.
+- **It will not stop a runner that is running a job.** `health.sh --repair`
+  checks for a `Runner.Worker` under the runner's directory before every stop,
+  whatever GitHub says. GitHub lists live runners offline, busy ones too, for a
+  whole host at a time (nightly near 03:00 UTC); a sweep that sees
+  `FLEET_HEALTH_MASS_OFFLINE` or more such runners restarts none of them, and a
+  runner restarted for "offline" is left `FLEET_HEALTH_RESTART_COOLDOWN_S` to
+  reconnect before it can be restarted again.
 
 Logs default to `logs/fleet-health-repair.log` under `FLEET_ROOT`. The wrapper
 resolves `gh` once at install time into the plist's `PATH`, because launchd gets

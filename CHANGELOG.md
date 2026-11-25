@@ -10,6 +10,21 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ### Fixed
 
+- **`health.sh --repair` no longer stops runners that are running a job.**
+  GitHub's runner list showed every live runner on forge and ultra offline at
+  03:01Z on 2026-11-25, busy ones too, while their listeners were polling the
+  broker without an error (it does this most nights near 03:00 UTC). Each
+  sweep restarted all 60 forge and 80 ultra runners; a restarted listener meets
+  "A session for this runner already exists" and stays offline a minute or
+  two, so the next sweep restarted them again, until 03:29Z. 16 jobs lost
+  contact mid-step, aliquant PR #158 among them. Now a runner with a
+  `Runner.Worker` under its directory is never stopped (checked again right
+  before the stop), a runner restarted for "offline" gets
+  `FLEET_HEALTH_RESTART_COOLDOWN_S` (600) to reconnect, and when
+  `FLEET_HEALTH_MASS_OFFLINE` (3) or more listeners running here are listed
+  offline in one sweep none is restarted. A dead or unloaded launchd job is
+  still restarted.
+
 - **A fleetd restart no longer re-downloads everything from GitHub.** The ETag
   cache lived only in memory, so every restart paid full price once: 531
   workflow files plus every repo's runs, runners and jobs, about 800 counted
