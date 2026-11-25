@@ -76,7 +76,7 @@ export const AGENT_GUIDE = {
     do: 'not the code; tell the user',
   },
   'config-drift': {
-    meaning: 'a workflow\'s labels match no runner, or a repo has none',
+    meaning: 'a workflow\'s labels match no runner, a repo has none, or a runner\'s xcode-* label names an Xcode its host does not give jobs',
     do: 'fix `runs-on:` or ask the user for a runner',
   },
   waiting: {
@@ -560,7 +560,10 @@ export function computeVerdict(snapshot, facts = {}, opts = {}) {
   const publicRepos = new Set((snapshot.repos ?? []).filter((r) => r.private === false).map((r) => r.fullName));
   const isStructural = (q) => o.driftCauses.includes(q.cause)
     && !(q.cause === 'github-hosted' && publicRepos.has(q.repo));
-  const drifted = [...driftBy('orphan'), ...driftBy('label-mismatch')];
+  // xcode-label: a runner (or host) label names an Xcode its jobs do not get
+  // (lib/xcode-label.js, re-checked daily). Jobs that ask for it run, on the
+  // wrong SDK, so it is drift waiting will not fix, not a queue.
+  const drifted = [...driftBy('orphan'), ...driftBy('label-mismatch'), ...driftBy('xcode-label')];
   const structural = queue.filter(isStructural);
   if (drifted.length || structural.length) {
     push('config-drift', {

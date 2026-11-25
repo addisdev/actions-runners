@@ -37,6 +37,14 @@ A runner that lacks any label in the `runs-on` list is invisible to that job.
 This is how you run a job on a different Xcode version without touching the rest
 of the fleet.
 
+An `xcode-<major>` or `xcode-<major>.<minor>` label must name the Xcode the
+runner's jobs get, or `register.sh` refuses it: the host's selected Xcode, or
+the runner's own one when it is registered with
+`FLEET_RUNNER_DEVELOPER_DIR=/Applications/Xcode-16.3.app/Contents/Developer`.
+fleetd re-checks every runner daily and reports a label Xcode has since moved
+out from under as `config-drift`
+([the rule](reference/scripts.md#scriptsxcode-labelsh)).
+
 > **Adding a second runner?** Pass the same extra labels as the first, or it
 > will not match and will sit permanently idle. The dashboard's **Duplicate**
 > button copies labels automatically.

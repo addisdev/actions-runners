@@ -286,7 +286,11 @@ Set it to what the host can actually run. The safe way to derive it is from the
 runners already on the host: if a runner there carries `ci` and runs jobs with
 it, the host can serve `ci`. Do not add a label for something not installed — a
 host advertising `xcode-27` without it does not fail at placement, it fails
-halfway through somebody's build.
+halfway through somebody's build. An `xcode-*` label here must name the
+**selected** Xcode: `scripts/join-host.sh` fails preflight otherwise,
+`register.sh` refuses the runner autoscale would place with it, and fleetd's
+daily check reports it under `config-drift`
+([the rule](reference/scripts.md#scriptsxcode-labelsh)).
 
 ## Capacity and autoscaling
 
@@ -519,6 +523,8 @@ host and referenced from the LaunchAgent plist written by `agentctl.sh install`.
 | `FLEET_MAX_INSTANCES_PER_REPO` | `4` | Agent-side per-repository cap; keep aligned with the Capacity setting. |
 | `FLEET_HOST_ONLY_LABELS` | `handoff` | Labels that route jobs to the one host whose runners carry them (jobs that hand files to each other through that host's `~/ci-artifacts`). `scripts/mirror-runners.sh` drops them from the runners it copies, instead of skipping those runners, unless this host lists the label in `FLEET_HOST_LABELS`. Empty turns the rule off. See [`scripts/handoff-label.sh`](reference/scripts.md#scriptshandoff-labelsh). |
 | `FLEET_MIRROR_SKIP_REPOS` | (empty) | Repos `scripts/mirror-runners.sh` never copies to this host, for jobs whose needs no label states (an iOS lane on a plain `ci` runner, a suite that expects a local database). Bare names or `owner/repo`, space- or comma-separated. |
+| `FLEET_XCODE_CHECK_HOURS` | `24` | How often fleetd and the agent read this host's Xcode (`scripts/xcode-label.sh facts`) to re-check every runner's `xcode-*` labels and `FLEET_HOST_LABELS` against it. A label that names an Xcode the host does not give its jobs opens the `config-drift` verdict (drift kind `xcode-label`). The labels come from fleetd's runner polling, so the check makes no GitHub call. |
+| `FLEET_RUNNER_DEVELOPER_DIR` | (unset) | `register.sh` only: give the new runner an Xcode other than the selected one (`DEVELOPER_DIR` in its `.env`); its `xcode-*` label is checked against that Xcode. |
 | `FLEET_XCODE_VERSION` | (unset) | The Xcode every runner host builds with, e.g. `27.0`. `scripts/join-host.sh` fails preflight when this host's `xcodebuild -version` differs, because with runners on two hosts a job's SDK would otherwise depend on which host GitHub picked. |
 | `FLEET_RUNNER_PATH` | `/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin` | The PATH every job gets. `register.sh` writes it to each runner's `.path` (which `config.sh` would otherwise fill from the registering shell) and `.env`; `scripts/runner-path.sh` aligns older runners. Keep it the same on every host. |
 | `FLEET_MAX_TOTAL_RUNNERS` | `8` | Agent-side runner cap, sent to coordinator for placement scoring. |

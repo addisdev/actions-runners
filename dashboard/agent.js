@@ -43,6 +43,7 @@ import { loadOffset, saveOffset, readPending, advance } from './lib/admission-sh
 import { createShmSampler, lowFreeFromEnv } from './lib/shm.js';
 import { autonomyStep, AUTONOMY_DEFAULT_MS } from './lib/agent-autonomy.js';
 import { drainsToReassert, reassertArgs, markerStillHeld } from './lib/host-switch.js';
+import { createXcodeFacts, DEFAULT_CHECK_MS } from './lib/xcode-label.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -217,6 +218,14 @@ if (!existsSync(CONFIG.root)) fail(`FLEET_ROOT does not exist: ${CONFIG.root}`);
 // reports null, which headroom() treats as unknown rather than as zero.
 let lastSwapCounters = null;
 const sampleShm = createShmSampler({ logPath: CONFIG.shmLog, lowFree: lowFreeFromEnv() });
+// The Xcode this host gives its jobs, read once a day (lib/xcode-label.js). The
+// coordinator holds the runners' labels and does the comparing.
+const sampleXcode = createXcodeFacts({
+  root: CONFIG.root,
+  script: join(HERE, '..', 'scripts', 'xcode-label.sh'),
+  everyMs: Number(process.env.FLEET_XCODE_CHECK_HOURS ?? 24) * 3_600_000 || DEFAULT_CHECK_MS,
+  onError: (err) => warn('xcode facts:', err.message),
+});
 
 // One host's state, in the same shape the coordinator's own collector produces,
 // so mergeHostSnapshots has nothing special to do for local versus remote.
@@ -225,9 +234,10 @@ async function collect() {
   // All three shell out and are async. Without the await these were Promises,
   // jobs.get() threw on the first runner, and collect() rejected on every tick —
   // an agent that started cleanly and then never reported anything.
-  const [jobs, procs, vitals, shm] = await Promise.all([
+  const [jobs, procs, vitals, shm, xcode] = await Promise.all([
     launchdJobs(), runnerProcesses(), hostVitals(),
     sampleShm().catch((err) => { warn('shm sample:', err.message); return null; }),
+    sampleXcode().catch(() => null),
   ]);
 
   const runners = dirs.map((d) => {
@@ -330,6 +340,9 @@ async function collect() {
     // (lib/admit-gate.js, lib/tiers.js). Read from this host's fleet.env, the
     // file the hook itself reads.
     admission: admissionReport(host, admissionSettings({ root: CONFIG.root })),
+    // The selected Xcode and any runner's own DEVELOPER_DIR Xcode, refreshed
+    // daily; the coordinator checks the runners' xcode-* labels against it.
+    xcode,
   };
 }
 
