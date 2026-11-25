@@ -103,9 +103,21 @@ if [ "$HAS_XCODE" -eq 1 ]; then
     warn "FLEET_XCODE_VERSION not set: nothing checks that this Xcode ($XCODE_HERE) is the one the other hosts build with"
   fi
 fi
-case ",${FLEET_HOST_LABELS:-}," in
-  *,xcode-*) [ "$HAS_XCODE" -eq 1 ] || bad "FLEET_HOST_LABELS advertises an xcode label but xcodebuild does not run" ;;
-esac
+# The rule register.sh applies to a runner's labels (scripts/xcode-label.sh),
+# applied to the labels placement reads for this host: an xcode-* label here
+# must name the selected Xcode, or autoscale places a runner whose label lies.
+# shellcheck source=scripts/xcode-label.sh
+. "$HERE/scripts/xcode-label.sh"
+XCODE_SELECTED="$(xcode_label_version "")" || XCODE_SELECTED=""
+if host_label_problems="$(xcode_label_check "$XCODE_SELECTED" "$(xcode_label_selected_dir)" "${FLEET_HOST_LABELS:-}")"; then
+  case ",${FLEET_HOST_LABELS:-}," in
+    *,[Xx][Cc][Oo][Dd][Ee]-[0-9]*) ok "FLEET_HOST_LABELS: every xcode-* label names Xcode $XCODE_SELECTED" ;;
+  esac
+else
+  while IFS= read -r line; do
+    if [ -n "$line" ]; then bad "FLEET_HOST_LABELS: $line"; fi
+  done <<< "$host_label_problems"
+fi
 
 # Runners whose job PATH (.path) is not the fleet's: they find a different
 # python3, node or git than their twins on other hosts. scripts/runner-path.sh.

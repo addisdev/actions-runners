@@ -51,6 +51,8 @@ without `--repair` — have no `--apply` because there is nothing to guard.
 | `scripts/test-health.sh` | Shell tests for `health.sh` | runs against a temporary fleet |
 | `scripts/test-ps-shim.sh` | Shell tests for `shims/ps` and its installer | a temporary PATH directory |
 | `scripts/test-preflight-tools.sh` | Shell tests for the CLI-tool checks | stub PATH and a temporary database |
+| `scripts/xcode-label.sh` | The rule for `xcode-*` labels: `check`, `version`, `facts`; sourced by `register.sh` and `join-host.sh` | read-only |
+| `scripts/test-xcode-label.sh` | Shell tests for the `xcode-*` label rule and `register.sh`'s refusal | a stand-in `xcodebuild` and a temporary fleet |
 | `scripts/infer-checks.py` | Work out which preflight checks this fleet needs | read-only |
 | `scripts/check-tools.sh` | Check the CLI tools in `scripts/cli-tools.txt` on the runners' PATH | read-only |
 | `dashboard/fleetctl.sh` | Install, run, inspect, back up and restore the dashboard daemon | n/a — subcommands |
@@ -79,17 +81,28 @@ Examples:
 ./register.sh owner/project-web ci playwright
 ```
 
-It parses no flags. The repository is the first positional argument; every
-argument after it is an extra label. Multiple labels are passed to `config.sh`
-as a single comma-separated `--labels` value (`ci,playwright`).
+It parses one flag, `--force-xcode-label` (below). The repository is the first
+positional argument; every other argument after it is an extra label. Multiple
+labels are passed to `config.sh` as a single comma-separated `--labels` value
+(`ci,playwright`).
 
 | Variable | Effect |
 |---|---|
 | `RUNNER_INSTANCE` | Which instance this is. `1` (the default) keeps the bare directory name; anything else appends `-<n>`, so instance 2 of `app-ios` lives in `app-ios-2`. |
 | `FLEET_ROOT` | Where runners are registered. Defaults to the script's own directory, so a clone somewhere else registers into itself rather than silently building a second fleet. |
 | `RUNNER_TOKEN` | A registration token supplied by the caller instead of being minted with `gh`. See the SSH note in [Get started](../getting-started.md). |
+| `FLEET_RUNNER_DEVELOPER_DIR` | An Xcode for this runner other than the host's selected one, e.g. `/Applications/Xcode-26.6.app/Contents/Developer`. Written to the runner's `.env` as `DEVELOPER_DIR`, so every job on it builds with that Xcode, and its `xcode-*` label is checked against it. |
 
 What it refuses to do:
+
+- **It will not register a label that names an Xcode its jobs would not get.**
+  `xcode-<major>` and `xcode-<major>.<minor>` must match `xcodebuild -version`
+  under the runner's `DEVELOPER_DIR` (`FLEET_RUNNER_DEVELOPER_DIR`) or, without
+  one, the host's `xcode-select -p`: `xcode-27` matches any 27.x, `xcode-26.6`
+  only 26.6.x. Other labels are not checked. The check runs before anything is
+  downloaded or created, and the message names the label that would be true.
+  `--force-xcode-label` registers anyway, with a warning. The rule is
+  [`scripts/xcode-label.sh`](#scriptsxcode-labelsh).
 
 - **It will not register on top of an existing runner.** If the target
   directory already has a `.runner` file it exits and prints the commands to
@@ -109,6 +122,26 @@ are inert: both hooks exit immediately unless `FLEET_ADMIT_MODE` is set in
 When `gh` cannot authenticate locally, the post-registration status check is
 skipped rather than reported as a failure — `svc.sh install` and `svc.sh start`
 are the real evidence that it worked.
+
+### `scripts/xcode-label.sh`
+
+The one rule for runner labels that name an Xcode, shared by `register.sh`
+(refuses a wrong label), `scripts/join-host.sh` (checks `FLEET_HOST_LABELS`) and
+the fleet's daily re-check (fleetd and the agent run `facts`).
+
+```bash
+scripts/xcode-label.sh check [--developer-dir DIR] ci,xcode-27   # exit 1 and one line per wrong label
+scripts/xcode-label.sh version [--developer-dir DIR]             # e.g. 27.2
+scripts/xcode-label.sh facts [--root FLEET_ROOT]                 # selected Xcode, and runners with their own DEVELOPER_DIR
+```
+
+A label names the Xcode a job **gets**: the runner's `DEVELOPER_DIR` if its
+`.env` sets one, else the selected Xcode. There is no label for "installed but
+not selected": a runner that should build with a second Xcode gets it in its
+`.env` (`FLEET_RUNNER_DEVELOPER_DIR` at registration) and that Xcode's label.
+A host where `xcodebuild` does not answer has no Xcode, so every `xcode-*`
+label there is wrong. `scripts/xcode-label-cases.tsv` is the case table the
+shell and JavaScript copies of the rule are both tested against.
 
 ### `status.sh`
 

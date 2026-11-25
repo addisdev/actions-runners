@@ -86,6 +86,7 @@ import { classifyAnnotations, classifyCancelled, heldSeconds, HOLD_BLAME_MIN_S }
 import { HaCoordinator } from './lib/ha.js';
 import { collectHostReport } from './lib/host-report.js';
 import { createShmSampler, lowFreeFromEnv } from './lib/shm.js';
+import { createXcodeFacts, xcodeLabelDrift, DEFAULT_CHECK_MS as XCODE_CHECK_MS } from './lib/xcode-label.js';
 import { createVerdictTracker, computeVerdict, buildGlance, loadFailureFacts, compactRun } from './lib/verdict.js';
 import { createEtaBaselines, estimateQueue } from './lib/eta.js';
 import { createDiskForecaster } from './lib/disk-forecast.js';
@@ -434,6 +435,15 @@ const jobClass = createJobClass({
   shortJobS: () => admissionSettings({ root: CONFIG.root }).shortJobS,
 });
 const sampleShm = createShmSampler({ logPath: CONFIG.shmLog, lowFree: lowFreeFromEnv() });
+// This host's Xcode, read once a day; agents report theirs in the heartbeat.
+// Compared with every runner's xcode-* labels below (lib/xcode-label.js).
+const sampleXcode = createXcodeFacts({
+  root: CONFIG.root,
+  script: join(HERE, '..', 'scripts', 'xcode-label.sh'),
+  everyMs: Number(process.env.FLEET_XCODE_CHECK_HOURS ?? 24) * 3_600_000 || XCODE_CHECK_MS,
+  onError: (err) => warn('xcode facts:', err.message),
+});
+let localXcode = null;
 // host_samples rows from before host_id existed are this host's own vitals.
 try {
   db.prepare('UPDATE host_samples SET host_id = ? WHERE host_id IS NULL').run(CONFIG.replicaId);
@@ -924,6 +934,30 @@ const LOCAL_HOST_ID = CONFIG.replicaId;
 // it ages out it reads as a second host that has gone down.
 const remoteHosts = () => [...hostState.values()].filter((h) => h.id !== LOCAL_HOST_ID);
 
+// The hosts the daily Xcode label check reads (lib/xcode-label.js): this one
+// and every agent host, each with the runners it reported itself and the
+// labels GitHub lists for those exact names.
+function xcodeHosts(localRunners, elsewhere) {
+  const ghLabels = new Map((elsewhere ?? []).map((r) => [r.name, r.labels ?? []]));
+  const hosts = [{
+    name: CONFIG.hostName ?? 'this host',
+    labels: CONFIG.hostLabels,
+    xcode: localXcode,
+    runners: (localRunners ?? []).filter((r) => r.registered)
+      .map((r) => ({ name: r.name, dirName: r.dirName, labels: r.labels ?? [] })),
+  }];
+  for (const h of remoteHosts()) {
+    hosts.push({
+      name: h.name ?? h.id,
+      labels: h.labels ?? [],
+      xcode: h.xcode ?? null,
+      runners: (h.runners ?? []).filter((r) => ghLabels.has(r.name))
+        .map((r) => ({ name: r.name, dirName: r.dirName, labels: ghLabels.get(r.name) })),
+    });
+  }
+  return hosts;
+}
+
 const REMOTE_ACTIONS = new Set([
   'runner.duplicate',
   'runner.drain',
@@ -1046,6 +1080,7 @@ function hostRecordFromPayload(hostId, lastSeen, payload) {
     host: payload.host ?? {},
     capacity: payload.capacity ?? null,
     admission: payload.admission ?? null,
+    xcode: payload.xcode ?? null,
     runnerCount: runners.length,
     version: payload.version ?? 1,
     drained: Boolean(payload.drained),
@@ -2042,12 +2077,14 @@ async function fastTick(progress = null) {
   refreshGroups();
 
   stage(progress, 'local probes');
-  const [launchd, processes, vitals, shm] = await Promise.all([
+  const [launchd, processes, vitals, shm, xcode] = await Promise.all([
     launchdJobs(),
     runnerProcesses(),
     hostVitals(),
     sampleShm().catch((err) => { warn('shm sample:', err.message); return null; }),
+    sampleXcode().catch(() => null),
   ]);
+  localXcode = xcode;
 
   const repos = reposToPoll();
   const ghRunnersByRepo = new Map();
@@ -2360,6 +2397,15 @@ async function fastTick(progress = null) {
   const drift = deriveDrift({
     runners, elsewhere, active, repos: repoRoster, now: started, classify: classifyRun,
   });
+  // A runner label that names an Xcode its host no longer gives its jobs
+  // (Xcode updated or reselected under it). Each host's own runner list,
+  // joined to GitHub's labels by exact name: the labels come from the polling
+  // above, so this costs no API call.
+  try {
+    drift.push(...xcodeLabelDrift(xcodeHosts(runners, elsewhere)));
+  } catch (err) {
+    warn('xcode labels:', err.message);
+  }
 
   // Persist cause TRANSITIONS only, never one row per tick. A run stuck for an
   // hour is one row that changes when the diagnosis changes, which is what makes
@@ -3906,6 +3952,7 @@ const server = http.createServer(async (req, res) => {
           host: hostVitalsIn,
           capacity: body.capacity ?? null,
           admission: body.admission ?? null,
+          xcode: body.xcode ?? null,
           repos: body.repos ?? [],
           // Persisted with the rest so a coordinator restart does not put a
           // deliberately drained host back into rotation the moment it comes up,
@@ -3930,6 +3977,7 @@ const server = http.createServer(async (req, res) => {
         host: body.host ?? {},
         capacity: body.capacity ?? null,
         admission: body.admission ?? null,
+        xcode: body.xcode ?? null,
         runnerCount: body.runners.length,
         version: body.version ?? 1,
         drained: Boolean(body.drained),
@@ -4549,6 +4597,7 @@ async function main() {
           host: payload.host ?? {},
           capacity: payload.capacity ?? null,
           admission: payload.admission ?? null,
+          xcode: payload.xcode ?? null,
           runnerCount: (payload.runners ?? []).length,
           version: row.agent_version ?? 1,
           drained: Boolean(payload.drained),

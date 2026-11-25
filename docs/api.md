@@ -380,7 +380,7 @@ any time and decoders should ignore what they do not know.
 | 4 | `shm-low` | warning | fewer than `FLEET_SHM_LOW_FREE` System V shared memory segments are free on a reporting host, counting orphans the next job hook will remove as free, or that host's `hooks/shm-reap.sh` logged a `low` event in the last 30 min. Critical, titled "full", when none are free |
 | 5 | `saturated` | warning | two or more `runner-lost` jobs in an hour, sustained paging, or critical memory pressure. A run queued because the headroom gate is at capacity is `waiting`, not this |
 | 6 | `account-blocked` | warning | an `account-blocked` or `account-quota` job in the last 6 hours |
-| 7 | `config-drift` | warning | an orphan or label mismatch, or a queue cause that waiting cannot fix (`unserved`, `role-unserved`, `label-mismatch`, `github-hosted`) |
+| 7 | `config-drift` | warning | an orphan or label mismatch, a runner or host `xcode-*` label that names an Xcode its jobs do not get (`xcode-label`, checked daily), or a queue cause that waiting cannot fix (`unserved`, `role-unserved`, `label-mismatch`, `github-hosted`) |
 | 8 | `waiting` | ok | runs are queued or held for an admission slot, and nothing above explains them |
 | 9 | `clear` | ok | none of the above |
 

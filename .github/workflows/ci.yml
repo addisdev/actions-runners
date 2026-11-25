@@ -156,6 +156,8 @@ jobs:
         run: bash scripts/test-preflight-tools.sh
       - name: runner-path.sh — one job PATH per runner
         run: bash scripts/test-runner-path.sh
+      - name: xcode-* labels name the Xcode a job gets (rule + register.sh refusal)
+        run: bash scripts/test-xcode-label.sh
       - name: shims/ps — the runner's orphan scan without a ps per process
         run: bash scripts/test-ps-shim.sh
       - name: Build box bootstrap (dry run)

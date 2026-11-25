@@ -1,0 +1,24 @@
+# label	xcode version (- = xcodebuild does not answer)	expect: match | mismatch | ignored
+# Read by scripts/test-xcode-label.sh and dashboard/test/xcode-label.test.js, so
+# the shell rule and fleetd's copy of it cannot drift apart.
+xcode-27	27.2	match
+xcode-27	27.0.1	match
+xcode-27	26.6	mismatch
+xcode-26	27.2	mismatch
+xcode-26.6	26.6	match
+xcode-26.6	26.6.1	match
+xcode-26.6	26.5	mismatch
+xcode-26.6	27.2	mismatch
+xcode-27.2	27.2	match
+xcode-27.0	27	match
+xcode-27.1	27.2	mismatch
+Xcode-27	27.2	match
+xcode-27	-	mismatch
+xcode-26.6	-	mismatch
+ci	27.2	ignored
+release	-	ignored
+xcode	27.2	ignored
+xcodegen	27.2	ignored
+xcode-beta	27.2	ignored
+xcode-27-beta	27.2	ignored
+macos-15	27.2	ignored

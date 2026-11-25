@@ -8,6 +8,23 @@ version numbers (`v0.1.0`, `v0.1.1`, etc.).
 
 ## [Unreleased]
 
+### Added
+
+- **A runner label that names an Xcode must be true.** `xcode-<major>` and
+  `xcode-<major>.<minor>` must match the Xcode a job on that runner gets: the
+  runner's `DEVELOPER_DIR` if its `.env` sets one, else the host's selected
+  Xcode (`xcodebuild -version`). One rule, `scripts/xcode-label.sh`:
+  `register.sh` refuses a wrong label before downloading anything
+  (`--force-xcode-label` registers anyway), `scripts/join-host.sh` applies it
+  to `FLEET_HOST_LABELS` in place of its own check, and fleetd re-checks every
+  runner and host label once a day (`FLEET_XCODE_CHECK_HOURS`) against the
+  Xcode each host reports, opening `config-drift` (drift kind `xcode-label`)
+  for a label Xcode has moved out from under. The labels come from fleetd's
+  runner polling: no GitHub call. A runner that should build with a second,
+  non-selected Xcode gets it with `FLEET_RUNNER_DEVELOPER_DIR` at
+  registration. Seen 11-19: ultra and forge advertised `xcode-26` with Xcode
+  27.2 selected (Apple SDK floor plan, X6).
+
 ### Fixed
 
 - **`health.sh --repair` no longer stops runners that are running a job.**

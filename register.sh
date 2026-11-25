@@ -18,6 +18,17 @@
 # match the same `runs-on:` and will sit idle while the first one queues —
 # which looks exactly like the problem you were trying to fix.
 #
+# A label that names an Xcode (`xcode-27`, `xcode-26.6`) must name the Xcode a
+# job on this runner gets, or registration is refused (scripts/xcode-label.sh
+# has the rule). For a runner that builds with an Xcode other than the selected
+# one, give it that Xcode in its .env:
+#
+#   FLEET_RUNNER_DEVELOPER_DIR=/Applications/Xcode-26.6.app/Contents/Developer \
+#     ./register.sh owner/repo xcode-26.6
+#
+# --force-xcode-label (anywhere after the repo) registers a mismatching label
+# anyway, for the moment between installing an Xcode and selecting it.
+#
 # There is no way to cover "every repo, including future ones" from here if the
 # repos belong to a USER account. Runners attach to a repo, an organization, or
 # an enterprise, and a user account has none of the latter two — so an
@@ -42,7 +53,13 @@ append_label() {
   label="${label%"${label##*[![:space:]]}"}"
   [ -n "$label" ] && EXTRA_LABELS+=("$label")
 }
+FORCE_XCODE_LABEL=0
 while [ $# -gt 0 ]; do
+  if [ "$1" = "--force-xcode-label" ]; then
+    FORCE_XCODE_LABEL=1
+    shift
+    continue
+  fi
   # The dashboard Duplicate action passes comma-separated labels in one arg;
   # the shell path passes each label separately. Both end up as --labels a,b,c.
   if [[ "$1" == *","* ]]; then
@@ -64,6 +81,55 @@ SHA="5a2cd92908a93d7276a194e1de6008099f3e7946f3f8e14aa7a1a7b4a31fdec2"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${FLEET_ROOT:-$HERE}"
 NAME="$(basename "$REPO")"
+
+# A label that names an Xcode is a promise about the SDK every job here builds
+# with, and GitHub takes labels as free text. Checked before anything is
+# downloaded or created, against the Xcode the runner will actually get: its
+# own DEVELOPER_DIR (FLEET_RUNNER_DEVELOPER_DIR) or the host's selected one.
+# 2026-11-19: ultra and forge advertised xcode-26 with Xcode 27.2 selected.
+RUNNER_DEVELOPER_DIR="${FLEET_RUNNER_DEVELOPER_DIR:-}"
+XCODE_LABEL_LIB="$HERE/scripts/xcode-label.sh"
+XCODE_LABELS=()
+for l in "${EXTRA_LABELS[@]:-}"; do
+  [[ "$l" =~ ^[Xx][Cc][Oo][Dd][Ee]-[0-9]+(\.[0-9]+)?$ ]] && XCODE_LABELS+=("$l")
+done
+if [ ${#XCODE_LABELS[@]} -gt 0 ] || [ -n "$RUNNER_DEVELOPER_DIR" ]; then
+  if [ ! -f "$XCODE_LABEL_LIB" ]; then
+    XCODE_PROBLEMS="cannot check ${XCODE_LABELS[*]:-DEVELOPER_DIR}: $XCODE_LABEL_LIB is missing (register from a full clone)"
+  else
+    # shellcheck source=scripts/xcode-label.sh
+    . "$XCODE_LABEL_LIB"
+    XCODE_HERE="$(xcode_label_version "$RUNNER_DEVELOPER_DIR")" || XCODE_HERE=""
+    XCODE_WHERE="${RUNNER_DEVELOPER_DIR:-$(xcode_label_selected_dir)}"
+    XCODE_PROBLEMS=""
+    if [ -n "$RUNNER_DEVELOPER_DIR" ] && [ -z "$XCODE_HERE" ]; then
+      XCODE_PROBLEMS="FLEET_RUNNER_DEVELOPER_DIR=$RUNNER_DEVELOPER_DIR: xcodebuild does not answer there"
+    fi
+    if [ ${#XCODE_LABELS[@]} -gt 0 ]; then
+      XCODE_MISMATCH="$(xcode_label_check "$XCODE_HERE" "$XCODE_WHERE" "${XCODE_LABELS[@]}")" || true
+      [ -z "$XCODE_MISMATCH" ] || XCODE_PROBLEMS="${XCODE_PROBLEMS:+$XCODE_PROBLEMS
+}$XCODE_MISMATCH"
+    fi
+  fi
+  if [ -n "$XCODE_PROBLEMS" ]; then
+    if [ "$FORCE_XCODE_LABEL" -eq 1 ]; then
+      echo "==> warning (--force-xcode-label): $XCODE_PROBLEMS" >&2
+    else
+      {
+        echo "register.sh: refusing to register $REPO: a label names an Xcode its jobs would not get."
+        printf '%s\n' "$XCODE_PROBLEMS" | sed 's/^/  /'
+        if [ -n "${XCODE_HERE:-}" ]; then
+          echo "  The label for the Xcode they would get is xcode-${XCODE_HERE%%.*} (or xcode-$(printf '%s' "$XCODE_HERE" | cut -d. -f1-2) for its minor)."
+        fi
+        echo "  For another installed Xcode, give this runner its own:"
+        echo "    FLEET_RUNNER_DEVELOPER_DIR=/Applications/Xcode-<version>.app/Contents/Developer $0 $REPO ${EXTRA_LABELS[*]:-}"
+        echo "  --force-xcode-label registers anyway (the label stays wrong until the Xcode changes)."
+      } >&2
+      exit 1
+    fi
+  fi
+fi
+
 # Instance 1 keeps the bare name, so adding the second-runner feature left every
 # already-registered runner's directory and name untouched.
 SUFFIX=""
@@ -132,6 +198,9 @@ fi
 # makes the Waiting Board hooks do nothing, so CI never files waits or inbox
 # items on the operator's board.
 printf 'WB_SKIP=1\n' >> .env
+# The Xcode this runner's jobs get when it is not the host's selected one
+# (checked above against the runner's xcode-* label).
+[ -z "$RUNNER_DEVELOPER_DIR" ] || printf 'DEVELOPER_DIR=%s\n' "$RUNNER_DEVELOPER_DIR" >> .env
 
 echo "==> registering with $REPO"
 # RUNNER_TOKEN lets a caller supply the registration token instead of minting it

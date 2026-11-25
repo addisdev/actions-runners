@@ -45,7 +45,7 @@ The ladder is ordered so that the first rung makes the ones below it meaningless
 | `shm-low` | the host's shared memory table is (nearly) full; Postgres suites fail with `could not create shared memory segment: No space left on device` | not the code: do not "fix" the test; tell the user and re-run once there is room |
 | `saturated` | jobs lost contact mid-step: host starvation, not code | do not re-run or "fix" the test; wait, or tell the user |
 | `account-blocked` | GitHub refused jobs (billing) or a storage quota is full | not the code; tell the user |
-| `config-drift` | a workflow's labels match no runner, or a repo has none | fix `runs-on:` or ask the user for a runner |
+| `config-drift` | a workflow's labels match no runner, a repo has none, or a runner's xcode-* label names an Xcode its host does not give jobs | fix `runs-on:` or ask the user for a runner |
 | `waiting` | queued behind a busy runner; a queue is not a stall | wait on the checks |
 | `clear` | nothing wrong with the fleet | the failure is probably real; read its log |
 <!-- /generated:verdicts -->
